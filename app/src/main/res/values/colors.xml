@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ic_launcher_background">#000000</color>
+    <!-- The window ground before Compose draws: black in every system theme, because the app is pinned dark (Theme.kt). -->
+    <color name="window">#000000</color>
+</resources>

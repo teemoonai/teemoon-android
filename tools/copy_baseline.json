@@ -1,0 +1,253 @@
+{
+  "_comment": "A RATCHET, not a waiver list. Every copy divergence known on 2026-09-20, so a NEW one fails the audit while these are worked through. `platform` and `template` rows are correct as they stand; `todo` rows are real work and are deliberately not excused. A bare path-and-string with no class and no reason is how structure_audit_allow.json grew the blanket entry that hid the web chip vanishing — every row here carries both.",
+  "recorded": "2026-09-20",
+  "rows": [
+    {
+      "file": "teemoon/Views/Chat/ChatView.swift",
+      "ios": "copy model id",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Chat/ChatView.swift",
+      "ios": "restart download",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Chat/ErrorMessageView.swift",
+      "ios": "copy debug info",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Chat/GroundingSourcesView.swift",
+      "ios": "how i bulk-deleted 14,000 tweets without paying for the api",
+      "class": "sample",
+      "why": "sample content in a plain constant, not shipped copy; no preview stripper reaches it."
+    },
+    {
+      "file": "teemoon/Views/Chat/GroundingSourcesView.swift",
+      "ios": "redact — mass delete posts and messages",
+      "class": "sample",
+      "why": "sample content in a plain constant, not shipped copy; no preview stripper reaches it."
+    },
+    {
+      "file": "teemoon/Views/Chat/GroundingSourcesView.swift",
+      "ios": "teisseire117/deletetweets",
+      "class": "sample",
+      "why": "sample content in a plain constant, not shipped copy; no preview stripper reaches it."
+    },
+    {
+      "file": "teemoon/Views/Chat/ImageRowView.swift",
+      "ios": "teemoon hasn\\u{2019}t matched this guest-os build to a published near.ai release — it may be newer than this app\\u{2019}s records, or a build outside the public releases. it can\\u{2019}t confirm this is a known-good image",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Chat/RecipeCardView.swift",
+      "ios": "more pinned by tag only \\u{2014} not individually verifiable here",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Chat/RecipeCardView.swift",
+      "ios": "verifying recipe\\u{2026}",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Chat/RequestDebugView.swift",
+      "ios": "copy debug info",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Chat/TrustLadder.swift",
+      "ios": "model image → public source",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Chat/TrustLadder.swift",
+      "ios": "only glm-5.1 can decrypt",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Chat/TrustLadder.swift",
+      "ios": "the same quote measures the booted compose",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Chat/TrustLadder.swift",
+      "ios": "v0.4.2 → a1b2c3d",
+      "class": "sample",
+      "why": "sample content in a plain constant, not shipped copy; no preview stripper reaches it."
+    },
+    {
+      "file": "teemoon/Views/Chat/TrustLadder.swift",
+      "ios": "who sees plaintext · vllm-proxy-rs + sglang",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Chat/TrustLadderView+None.swift",
+      "ios": "choose an end-to-end encrypted model",
+      "class": "superseded",
+      "why": "CORRECT AS ABSENT, triaged 2026-09-21. Android says 'switch to an end-to-end encrypted model on near.ai' or 'end-to-end encryption is available on near.ai' instead, from EncryptedModelCTA (ported at 79dde59, which is AFTER the sha this audit reads TrustLadderView+None at). That was a fix, not a rewording: the iOS string here read 'choose an end-to-end encrypted model' from an NVIDIA chat and opened a list of near.ai models with no provider named, whenever a near.ai setup existed — keyed or not. The two Android strings name near.ai and gate on whether a usable key exists. Restoring the iOS wording would restore the bug."
+    },
+    {
+      "file": "teemoon/Views/Chat/TrustLadderView+None.swift",
+      "ios": "the technical reason, for the record",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Chat/TrustLadderView+None.swift",
+      "ios": "why there's nothing to attest",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Chat/TrustLadderView+Sections.swift",
+      "ios": "copy this into your terminal to re-verify on your own machine, with your own fresh nonces",
+      "class": "reworded",
+      "why": "REWORDED, triaged 2026-09-21. Android's section is 'verify it yourself' / 'the script embeds this session's attested values and re-fetches fresh proofs to compare — on your own machine. don't take our word for it.' Same two claims as iOS's 're-check the live service yourself' + 'copy this into your terminal … with your own fresh nonces': it runs on your machine, and the proofs are fresh rather than replayed. Not aligning them, because the Android wording names what the script DOES; if one side should move it is iOS, and that is their call."
+    },
+    {
+      "file": "teemoon/Views/Chat/TrustLadderView+Sections.swift",
+      "ios": "re-check the live service yourself",
+      "class": "reworded",
+      "why": "REWORDED, triaged 2026-09-21. Android's section is 'verify it yourself' / 'the script embeds this session's attested values and re-fetches fresh proofs to compare — on your own machine. don't take our word for it.' Same two claims as iOS's 're-check the live service yourself' + 'copy this into your terminal … with your own fresh nonces': it runs on your machine, and the proofs are fresh rather than replayed. Not aligning them, because the Android wording names what the script DOES; if one side should move it is iOS, and that is their call."
+    },
+    {
+      "file": "teemoon/Views/Chat/VerificationRunView.swift",
+      "ios": "a plain-language walkthrough",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Chat/VerificationRunView.swift",
+      "ios": "how teemoon proves your privacy",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Chat/VerificationRunView.swift",
+      "ios": "learn more",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Chat/VerificationRunView.swift",
+      "ios": "new to this? how teemoon proves your privacy",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Chat/VerificationRunView.swift",
+      "ios": "re-run verification",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Chat/VerificationRunView.swift",
+      "ios": "read near.ai’s guide",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Chat/VerificationRunView.swift",
+      "ios": "· added by teemoon",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Chat/WebSearchOffer.swift",
+      "ios": "\\u{201d}). needs a brave account with a card on file. you get $5 of free credit per month (about 1,000 searches); extra queries bill your card. setup takes a few minutes on their site",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Chat/WebSearchOffer.swift",
+      "ios": "the model searches when it needs to (e.g. \\u{201c}",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Settings/DownloadingModelRow.swift",
+      "ios": "cancel download",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Settings/ModelBrowserView.swift",
+      "ios": "price · high to low",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Settings/ModelBrowserView.swift",
+      "ios": "price · low to high",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Settings/OllamaModelDownloadView.swift",
+      "ios": "` is already on this machine — downloading again just checks for a newer build",
+      "class": "template",
+      "why": "Android renders the same sentence from a template, so the literal differs and the screen does not."
+    },
+    {
+      "file": "teemoon/Views/Settings/ProviderConnectionSection.swift",
+      "ios": "the key is stored in the ios keychain, not in teemoon's own files",
+      "class": "platform",
+      "why": "PLATFORM, triaged 2026-09-21. Android says the same sentence with the right noun — 'the android keystore' / 'the keystore on this device' / 'written to the keystore'. Saying 'keychain' on Android would name a thing the OS does not have, and the sentence exists to tell the user WHERE their key is; getting the place wrong is worse than saying nothing. See AddEditProviderScreen.kt and AppSettingsScreens.kt."
+    },
+    {
+      "file": "teemoon/Views/Settings/ProviderPresentationModifiers.swift",
+      "ios": "the provider was saved, but the key could not be written to the keychain",
+      "class": "platform",
+      "why": "PLATFORM, triaged 2026-09-21. Android says the same sentence with the right noun — 'the android keystore' / 'the keystore on this device' / 'written to the keystore'. Saying 'keychain' on Android would name a thing the OS does not have, and the sentence exists to tell the user WHERE their key is; getting the place wrong is worse than saying nothing. See AddEditProviderScreen.kt and AppSettingsScreens.kt."
+    },
+    {
+      "file": "teemoon/Views/Settings/SearchSettingsView.swift",
+      "ios": "stored in the keychain on this device — not synced, so a new phone means doing this again. brave sees the search terms, never your conversation",
+      "class": "platform",
+      "why": "PLATFORM, triaged 2026-09-21. Android says the same sentence with the right noun — 'the android keystore' / 'the keystore on this device' / 'written to the keystore'. Saying 'keychain' on Android would name a thing the OS does not have, and the sentence exists to tell the user WHERE their key is; getting the place wrong is worse than saying nothing. See AddEditProviderScreen.kt and AppSettingsScreens.kt."
+    },
+    {
+      "file": "teemoon/Views/Settings/SettingsView.swift",
+      "ios": "close settings",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Where/SearchFirstModelBrowser.swift",
+      "ios": "check the key and network, or type a model id below",
+      "class": "platform",
+      "why": "LAYOUT, triaged 2026-09-21. Android says the same sentence ending 'type a model id above.' — because on this screen the type-an-id field IS above the empty state, where iOS puts it below. Copying the iOS word would point the reader at the wrong half of the screen."
+    },
+    {
+      "file": "teemoon/Views/Where/SearchFirstModelBrowser.swift",
+      "ios": "search-first for large catalogs (e.g. openrouter). same pick action as the standard model browser",
+      "class": "merged",
+      "why": "NOT APPLICABLE, triaged 2026-09-21. This footer exists to explain how iOS's search-first browser differs from its standard one. Android has a single ModelBrowserScreen — SearchFirstModelBrowser.swift and ModelBrowserView.swift both map to it (af15442, 'one model browser') — so there is no other browser to contrast with, and a sentence comparing this screen to itself would confuse rather than orient."
+    },
+    {
+      "file": "teemoon/Views/Where/WhereRow.swift",
+      "ios": "cancel download",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    },
+    {
+      "file": "teemoon/Views/Where/WhereSheetView+FirstRun.swift",
+      "ios": "no on-device model is installed. reconnect to use cloud or home — or to download one to this phone, which then works offline",
+      "class": "todo",
+      "why": "UNTRIAGED — real until someone reads the screen."
+    }
+  ],
+  "_fixed": "3 row(s) pruned on 2026-09-20 because the divergence is gone. The baseline records what is OUTSTANDING, not a history — a row that no longer reproduces would otherwise sit here forever looking like work."
+}

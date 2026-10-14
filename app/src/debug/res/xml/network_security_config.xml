@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- The CONFIG half of the cleartext gate. iOS reaches a self-hosted server over plain http with ATS's
+     NSAllowsLocalNetworking; Android's config cannot express private networks (it names domains, not RFC-1918
+     ranges), so it permits cleartext here and the RUNTIME half decides: TeemoonHttp.cleartextGate, which every
+     HTTP client in the app is built with, refuses plain http to anything Provider.isPrivateHost does not call
+     private (loopback, RFC-1918, link-local, Tailscale, .local, .ts.net). The halves ship together — this file
+     without the gate is a security regression; the gate without this file is what shipped until 2026-10-02,
+     when cleartext was allowed only to the emulator's 10.0.2.2 and "connect a computer" at http://192.168.x.x
+     failed on every real phone. The ledger (sourceAbsent) keeps every client on TeemoonHttp. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

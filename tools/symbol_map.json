@@ -1,0 +1,428 @@
+{
+  "_comment": "SF Symbol → what Android draws. Built 2026-09-20 from the symbols the ported views use at their own shas. `android` names a Material icon or a DesignKit glyph; `unknown` means nobody has checked, and the audit REPORTS those rather than passing them — a silence is not a pass. A wrong pairing is worse than an admitted gap: it turns the gate green over a glyph no one compared.\n\n2026-09-21: extended from 34 to 75 rows. Most of the new ones were verified by LOOKING — the build installed on a Pixel 10 Pro, or an existing Paparazzi golden — rather than by reading both sides, which is the stronger check and the reason `verified` is worth anything. A third class appears here: `— (text only: …)`, where Android draws NO glyph because the iOS symbol sits on a context-menu `Label` and Material menus in this app are text. That is a real pairing, not a gap, and recording it as `unknown` would have hidden a decision behind a silence. Eight rows remain honestly unknown.",
+  "recorded": "2026-09-21",
+  "rows": [
+    {
+      "sf": "airplane",
+      "android": "— (the offline Banner's text)",
+      "verified": true,
+      "note": "iOS marks the offline status with an airplane. Android shows \"you're offline\" as a titled banner with no glyph; the words are the signal."
+    },
+    {
+      "sf": "apple.terminal",
+      "android": "— (the command as monospace text)",
+      "verified": true,
+      "note": "iOS marks the script card with a terminal glyph; here the monospace `python3 teemoon_verify.py` IS the mark, and an Apple-branded glyph would be wrong on Android anyway."
+    },
+    {
+      "sf": "arrow.clockwise",
+      "android": "RefreshGlyph / Icons.Filled.Refresh",
+      "verified": true
+    },
+    {
+      "sf": "arrow.down",
+      "android": "the literal \"↓\" after the jump title",
+      "verified": true,
+      "note": "ChainRail: \"known code ↓\" jumps from an everyday node to its expert section. Trailing the words, as iOS has it."
+    },
+    {
+      "sf": "arrow.down.circle",
+      "android": "DownloadGlyph",
+      "verified": true
+    },
+    {
+      "sf": "arrow.left.and.line.vertical.and.arrow.right",
+      "android": "WidthGlyph",
+      "verified": true,
+      "note": "appearance → font width. Seen on the Pixel."
+    },
+    {
+      "sf": "arrow.right",
+      "android": "the literal \"→\"",
+      "verified": true,
+      "note": "the CTA's trailing mark. Seen on the Pixel."
+    },
+    {
+      "sf": "arrow.triangle.2.circlepath",
+      "android": "— (text only: \"test connection\")",
+      "verified": true,
+      "note": "a Label on iOS; a plain button here."
+    },
+    {
+      "sf": "arrow.triangle.branch",
+      "android": "BranchGlyph",
+      "verified": true
+    },
+    {
+      "sf": "arrow.up.circle.fill",
+      "android": "a tinted circle with Icons.AutoMirrored.Filled.ArrowForward rotated -90°",
+      "verified": true,
+      "note": "the composer's send button — the core icon set has no ArrowUpward. Seen on the Pixel."
+    },
+    {
+      "sf": "arrow.up.forward.app",
+      "android": "OpenLinkGlyph, or the literal \"↗\" after a link's text",
+      "verified": true,
+      "note": "a link out. The drawn glyph leads a row; the arrow trails inline text."
+    },
+    {
+      "sf": "arrow.up.left.and.arrow.down.right",
+      "android": "ResizeGlyph",
+      "verified": true,
+      "note": "appearance → font size. Seen on the Pixel."
+    },
+    {
+      "sf": "arrow.up.right",
+      "android": "ArrowUpRightGlyph",
+      "verified": true
+    },
+    {
+      "sf": "arrow.up.right.square",
+      "android": "OpenLinkGlyph",
+      "verified": true
+    },
+    {
+      "sf": "book",
+      "android": "BookGlyph",
+      "verified": true,
+      "note": "the primer banner above the verification run."
+    },
+    {
+      "sf": "checkmark",
+      "android": "Icons.Filled.Check",
+      "verified": true
+    },
+    {
+      "sf": "checkmark.circle",
+      "android": "— (text only: \"use for chat\")",
+      "verified": true,
+      "note": "same: a context-menu Label on iOS, a text DropdownMenuItem here."
+    },
+    {
+      "sf": "checkmark.circle.fill",
+      "android": "FilledCircleGlyph(\"✓\")",
+      "verified": true,
+      "note": "the chain's OK node and the none screen's positive rows (trustScreen_proof_seededRecord, trustScreen_notAttestable_withTheWayOut)."
+    },
+    {
+      "sf": "checkmark.seal.fill",
+      "android": "SealGlyph(ok = true)",
+      "verified": true,
+      "note": "EnclaveGroupView's verified seal (trustScreen_proof_seededRecord)."
+    },
+    {
+      "sf": "checkmark.shield.fill",
+      "android": "ShieldCheckGlyph",
+      "verified": true,
+      "note": "the encrypted-model CTA (trustScreen_notAttestable_withTheWayOut). Seen on the Pixel."
+    },
+    {
+      "sf": "chevron.down",
+      "android": "Icons.Filled.KeyboardArrowDown",
+      "verified": true
+    },
+    {
+      "sf": "chevron.left.forwardslash.chevron.right",
+      "android": "— (text only: the residual-trust row's sentence)",
+      "verified": true,
+      "note": "iOS gives each 'what you still trust' row a leading glyph — an eye, angle brackets, a cpu. Android renders the three sentences plain. Worth revisiting as a design question, not a mapping one: the glyphs carry no information the sentence lacks, but they do carry rhythm."
+    },
+    {
+      "sf": "chevron.right",
+      "android": "Icons.AutoMirrored.Filled.KeyboardArrowRight",
+      "verified": true
+    },
+    {
+      "sf": "chevron.up.chevron.down",
+      "android": "UpDownChevrons",
+      "verified": true,
+      "note": "the where chip's trailing pair, and the connection section's picker. Seen on the Pixel."
+    },
+    {
+      "sf": "circle.dotted",
+      "android": "the literal \"○\"",
+      "verified": true,
+      "note": "a pending run step, in a 16dp column with the other four status marks so they cannot shift the row."
+    },
+    {
+      "sf": "circle.fill",
+      "android": "FilledCircleGlyph",
+      "verified": true
+    },
+    {
+      "sf": "clock.arrow.circlepath",
+      "android": "RefreshGlyph at 14dp",
+      "verified": true,
+      "note": "AddEditProviderScreen's recent-host suggestions. iOS's clock-with-an-arrow says 'you have been here before'; the circular arrow is the nearest mark in this app's own vocabulary, and it already means 'again' on the re-verify row."
+    },
+    {
+      "sf": "desktopcomputer",
+      "android": "LocalityGlyph(WhereLocality.HOME)",
+      "verified": true,
+      "note": "places & keys → home machines. Same mark as server.rack on this side; iOS distinguishes the two and Android has one machine glyph."
+    },
+    {
+      "sf": "doc.text.magnifyingglass",
+      "android": "MagnifierDocGlyph",
+      "verified": true,
+      "note": "FableAuditBlock."
+    },
+    {
+      "sf": "exclamationmark.circle.fill",
+      "android": "a filled red circle with \"!\" in the ground colour (InlineError)",
+      "verified": true,
+      "note": "the model section's failure mark. Same construction as FilledCircleGlyph — a filled disc with the mark knocked out — at 14dp."
+    },
+    {
+      "sf": "exclamationmark.triangle",
+      "android": "TriangleGlyph",
+      "verified": true
+    },
+    {
+      "sf": "exclamationmark.triangle.fill",
+      "android": "TriangleGlyph (filled)",
+      "verified": true
+    },
+    {
+      "sf": "eye",
+      "android": "EyeGlyph",
+      "verified": true
+    },
+    {
+      "sf": "gear",
+      "android": "Icons.Filled.Settings",
+      "verified": true
+    },
+    {
+      "sf": "globe",
+      "android": "GlobeGlyph",
+      "verified": true
+    },
+    {
+      "sf": "hammer",
+      "android": "Icons.Filled.Build",
+      "verified": true,
+      "note": "settings → developer mode. Android's Build icon is a WRENCH, not a hammer — the same idea in the Material vocabulary, and the only tool glyph in the core set. Seen on the Pixel."
+    },
+    {
+      "sf": "hammer.fill",
+      "android": "the literal \"🔧\" in the debug card's header",
+      "verified": true,
+      "note": "iOS marks the request debug card with a filled hammer. The card is behind developer mode on both sides; here the header line carries the emoji and the provider name."
+    },
+    {
+      "sf": "info.circle",
+      "android": "— (text only: \"info\")",
+      "verified": true,
+      "note": "iOS's `Label(\"model info\", systemImage:)` in a context menu. Android's menus in this app are text-only DropdownMenuItems and its row action is the word \"info\"; Material context menus do not carry leading icons here."
+    },
+    {
+      "sf": "info.circle.fill",
+      "android": "FilledCircleGlyph(\"i\")",
+      "verified": true,
+      "note": "the chain's INFO node (trustScreen_proof_seededRecord)."
+    },
+    {
+      "sf": "iphone",
+      "android": "LocalityGlyph(WhereLocality.PHONE)",
+      "verified": true,
+      "note": "the on-device row's mark. Seen on the Pixel."
+    },
+    {
+      "sf": "key",
+      "android": "KeyGlyph",
+      "verified": true
+    },
+    {
+      "sf": "key.fill",
+      "android": "KeyGlyph",
+      "verified": true
+    },
+    {
+      "sf": "line.3.horizontal.decrease",
+      "android": "the literal \"≡\" in the sort capsule",
+      "verified": true,
+      "note": "model browser → grouping/sort. Seen on the Pixel."
+    },
+    {
+      "sf": "list.bullet",
+      "android": "Icons.AutoMirrored.Filled.List",
+      "verified": true
+    },
+    {
+      "sf": "list.bullet.rectangle.portrait",
+      "android": "ListDocGlyph",
+      "verified": true,
+      "note": "RecipeCardView's \"the running recipe\"."
+    },
+    {
+      "sf": "lock",
+      "android": "LockGlyph",
+      "verified": true
+    },
+    {
+      "sf": "lock.fill",
+      "android": "LockGlyph",
+      "verified": true
+    },
+    {
+      "sf": "lock.iphone",
+      "android": "LocalityGlyph(WhereLocality.PHONE) in TeemoonColors.verified at 44dp",
+      "verified": true,
+      "note": "TrustLadderView+None's on-device hero."
+    },
+    {
+      "sf": "lock.laptopcomputer",
+      "android": "LaptopLockGlyph",
+      "verified": true
+    },
+    {
+      "sf": "lock.open",
+      "android": "OpenLockGlyph",
+      "verified": true
+    },
+    {
+      "sf": "lock.open.fill",
+      "android": "OpenLockGlyph / LockGlyph(open = true)",
+      "verified": true,
+      "note": "the not-attestable hero, and the degraded chip. Seen on the Pixel."
+    },
+    {
+      "sf": "magnifyingglass",
+      "android": "Icons.Filled.Search",
+      "verified": true
+    },
+    {
+      "sf": "message",
+      "android": "BubbleGlyph",
+      "verified": true
+    },
+    {
+      "sf": "minus.circle",
+      "android": "a bordered circle with a centred bar",
+      "verified": true,
+      "note": "the none screen's negative rows — outlined, not filled, so an absence never borrows a failure's weight."
+    },
+    {
+      "sf": "moon",
+      "android": "MoonGlyph",
+      "verified": true
+    },
+    {
+      "sf": "octagon",
+      "android": "OctagonGlyph",
+      "verified": true
+    },
+    {
+      "sf": "paintbrush",
+      "android": "PaintbrushGlyph",
+      "verified": true
+    },
+    {
+      "sf": "paintbrush.pointed",
+      "android": "PaintbrushGlyph",
+      "verified": true,
+      "note": "appearance → color. Seen on the Pixel."
+    },
+    {
+      "sf": "paintpalette",
+      "android": "PaletteGlyph",
+      "verified": true
+    },
+    {
+      "sf": "plus",
+      "android": "Icons.Filled.Add",
+      "verified": true
+    },
+    {
+      "sf": "plus.circle",
+      "android": "Icons.Filled.Add",
+      "verified": true,
+      "note": "\"add cloud key\" and the chats list's new-chat button. Seen on the Pixel."
+    },
+    {
+      "sf": "rectangle.stack.badge.minus",
+      "android": "— (text only: Banner(\"tidied up\", …))",
+      "verified": true,
+      "note": "the merge notice. iOS labels it with a stack-minus; Android's Banner is title + body + action with no icon, the same shape as the 'couldn't read your setups' banner beside it."
+    },
+    {
+      "sf": "seal",
+      "android": "SealGlyph",
+      "verified": true
+    },
+    {
+      "sf": "server.rack",
+      "android": "LocalityGlyph(WhereLocality.HOME)",
+      "verified": true,
+      "note": "the machine mark: ProviderIdentityTile's self-hosted fallback, the preset grid's custom tile, the cloud-key picker's custom row. Seen on the Pixel."
+    },
+    {
+      "sf": "shippingbox",
+      "android": "BoxGlyph",
+      "verified": true
+    },
+    {
+      "sf": "sparkles",
+      "android": "SparklesGlyph",
+      "verified": true
+    },
+    {
+      "sf": "square.and.arrow.up",
+      "android": "— (text only: \"export attestation report\")",
+      "verified": true,
+      "note": "the share action. Android's share is the system sheet, reached from a labelled button rather than an icon."
+    },
+    {
+      "sf": "square.on.square",
+      "android": "CopyGlyph",
+      "verified": true
+    },
+    {
+      "sf": "stop.circle.fill",
+      "android": "a tinted circle with a white rounded square",
+      "verified": true,
+      "note": "the composer's stop control, present exactly while a generation runs."
+    },
+    {
+      "sf": "textformat",
+      "android": "the literal text \"Aa\" in the tint colour",
+      "verified": true,
+      "note": "appearance → font design. iOS's textformat reads as Aa; drawing it as text is the same mark. Seen on the Pixel."
+    },
+    {
+      "sf": "trash",
+      "android": "— (text only: \"delete\", in red)",
+      "verified": true,
+      "note": "iOS pairs the word with a trash glyph in swipe actions and menus. Android's trailing swipe shows the label, and the long-press menu is text — the destructive colour carries the weight the glyph does there."
+    },
+    {
+      "sf": "triangle",
+      "android": "TriangleGlyph",
+      "verified": true
+    },
+    {
+      "sf": "wifi.exclamationmark",
+      "android": "— (text only: a \"couldn't load models\" label over its footer)",
+      "verified": true,
+      "note": "iOS's ContentUnavailableView takes an icon; Android's empty state is a SectionLabel and a GroupFooter, which is how every other empty state in this app reads. An icon on one of them would make it the odd one out."
+    },
+    {
+      "sf": "xmark",
+      "android": "Icons.Filled.Close",
+      "verified": true
+    },
+    {
+      "sf": "xmark.circle.fill",
+      "android": "FilledCircleGlyph(\"×\") on a chain node; \"✕\" on a run step; the word \"cancel\" on a download row",
+      "verified": false,
+      "note": "THREE call sites, three answers — the chain mark is a glyph, the step mark is text in a 16dp column, and the download row's is a labelled action rather than a mark at all. Left unverified on purpose: one row cannot honestly pair a symbol that means three things."
+    },
+    {
+      "sf": "xmark.seal.fill",
+      "android": "SealGlyph(ok = false)",
+      "verified": true,
+      "note": "the same glyph, failed — drawn from one function so the pair cannot drift apart."
+    }
+  ]
+}

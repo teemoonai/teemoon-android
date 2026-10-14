@@ -1,0 +1,37 @@
+# The offline suite and every screen's snapshot, on every push. A public
+# README is a claim; this is the receipt.
+#
+# What runs here: `./gradlew test` (1700+ JVM tests, no keys, no network; the
+# behavior ledger runs first) and `:app:verifyPaparazziDebug` (the Compose
+# snapshots, rendered on the JVM). What does not: the device journeys in
+# app/src/androidTest — they need the AVD or a phone, and they are what caught
+# the send-gate and follow bugs; see tools/device_suite.sh.
+name: test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  jvm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Unit tests
+        run: ./gradlew test --no-daemon --console=plain
+      - name: Snapshots
+        run: ./gradlew :app:verifyPaparazziDebug --no-daemon --console=plain
+      - name: Keep the snapshot deltas when they differ
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: paparazzi-deltas
+          path: app/build/paparazzi/failures
+          if-no-files-found: ignore

@@ -1,0 +1,44 @@
+# The release artifact is built HERE, from the public tag, on a clean runner — never on a developer's machine.
+# The job produces the UNSIGNED universal APK and prints its sha256; the maintainer downloads it, signs it with
+# the app-signing key (which never leaves the maintainer's machine) and attaches it to the GitHub release.
+# Signing adds only the signing block, so the signed release still matches a clean rebuild entry for entry
+# (docs/REPRODUCIBLE.md) — the check that release-verify.yml runs when the release is published.
+name: release-build
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: tag to build
+        required: true
+jobs:
+  universal-apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: bundle (unsigned, arm64 — the GitHub door)
+        run: ./gradlew -q :app:bundleRelease -Pteemoon.abi=arm64
+      - name: bundletool 1.18.3, pinned by checksum
+        run: |
+          curl -sL -o bundletool.jar https://github.com/google/bundletool/releases/download/1.18.3/bundletool-all-1.18.3.jar
+          echo "a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29  bundletool.jar" | sha256sum -c
+      - name: universal APK
+        run: |
+          java -jar bundletool.jar build-apks --bundle=app/build/outputs/bundle/release/app-release.aab --output=out.apks --mode=universal
+          unzip -p out.apks universal.apk > teemoon-unsigned.apk
+          NAME=$(grep -oE 'versionName = "[^"]+"' app/build.gradle.kts | cut -d'"' -f2); CODE=$(grep -oE 'versionCode = [0-9]+' app/build.gradle.kts | grep -oE '[0-9]+')
+          mv teemoon-unsigned.apk "teemoon-$NAME-$CODE-unsigned.apk"; sha256sum "teemoon-$NAME-$CODE-unsigned.apk" | tee unsigned.sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-apk
+          path: |
+            teemoon-*-unsigned.apk
+            unsigned.sha256

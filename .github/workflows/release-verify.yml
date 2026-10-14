@@ -1,0 +1,94 @@
+# Does the published APK match the source at its tag?  Runs when a release is published (and by hand for any
+# tag): rebuilds the tag on a clean runner, downloads the APK attached to the release, compares every entry with
+# tools/verify_release.py (signature files set aside), and writes the verdict and both hashes into the release
+# notes so a reader sees them without opening Actions. A mismatch fails the job and says so in the notes.
+#
+# After a VERIFIED verdict, and only then, the same job mirrors the two release assets to the Cloudflare R2 bucket
+# teemoon.ai serves from (the no-Play / China path must not depend on GitHub's reachability), then writes
+# latest.json last. The step is skipped when the R2 secrets are absent, so the check never waits on the mirror.
+name: release-verify
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: release tag to verify
+        required: true
+permissions:
+  contents: write
+jobs:
+  rebuild-and-compare:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.event.release.tag_name }}
+      GH_TOKEN: ${{ github.token }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_ACCOUNT_ID: eb687f63827846141f75d375d6f9784a
+      R2_BUCKET: teemoon-android-releases
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.tag || github.event.release.tag_name }}
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '25'
+      - uses: gradle/actions/setup-gradle@v4
+      - name: rebuild the tag
+        run: ./gradlew -q :app:bundleRelease -Pteemoon.abi=arm64
+      - name: bundletool 1.18.3, pinned by checksum
+        run: |
+          curl -sL -o bundletool.jar https://github.com/google/bundletool/releases/download/1.18.3/bundletool-all-1.18.3.jar
+          echo "a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29  bundletool.jar" | sha256sum -c
+          java -jar bundletool.jar build-apks --bundle=app/build/outputs/bundle/release/app-release.aab --output=out.apks --mode=universal
+          unzip -p out.apks universal.apk > rebuilt.apk
+      - name: download the released APK
+        run: |
+          mkdir release && gh release download "$TAG" --pattern 'teemoon-*.apk' --dir release
+          ls -la release
+      - name: compare
+        id: cmp
+        run: |
+          set +e
+          python3 tools/verify_release.py release/teemoon-*.apk rebuilt.apk | tee verdict.txt
+          echo "rc=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+      - name: write the verdict into the release notes
+        run: |
+          RC=${{ steps.cmp.outputs.rc }}; RUN="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          gh release view "$TAG" --json body --jq .body > notes.md
+          sed -i '/^## reproducibility check/,$d' notes.md
+          { echo; echo "## reproducibility check"; echo
+            if [ "$RC" = "0" ]; then echo "**verified**: a clean rebuild of tag \`$TAG\` on GitHub Actions matches the attached APK byte for byte, signature set aside ([run]($RUN))."
+            else echo "**MISMATCH**: a clean rebuild of tag \`$TAG\` does NOT match the attached APK ([run]($RUN)). Do not trust this release until this is explained."; fi
+            echo; echo '```'; cat verdict.txt; echo '```'; } >> notes.md
+          gh release edit "$TAG" --notes-file notes.md
+          exit "$RC"
+      - name: mirror the verified release to R2 (skipped without the secrets)
+        if: env.R2_ACCESS_KEY_ID != ''
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_EC2_METADATA_DISABLED: 'true'
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+        run: |
+          set -euo pipefail
+          EP="https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com"
+          APK=$(ls release/teemoon-*.apk); NAME=$(basename "$APK"); SUM="$APK.sha256"
+          gh release download "$TAG" --pattern "$NAME.sha256" --dir release --clobber
+          HEX=$(sha256sum "$APK" | cut -d' ' -f1); B64=$(openssl dgst -sha256 -binary "$APK" | base64 -w0)
+          grep -q "$HEX" "$SUM" || { echo "the .sha256 asset does not name the apk's hash"; exit 1; }
+          SIZE=$(stat -c %s "$APK"); PUB=$(gh release view "$TAG" --json publishedAt --jq .publishedAt)
+          VN=$(grep -oE 'versionName = "[^"]+"' app/build.gradle.kts | cut -d'"' -f2); VC=$(grep -oE 'versionCode = [0-9]+' app/build.gradle.kts | grep -oE '[0-9]+')
+          put() { aws s3api put-object --endpoint-url "$EP" --bucket "$R2_BUCKET" --key "$1" --body "$2" --content-type "$3" ${4:+--checksum-sha256 "$4"} > /dev/null; echo "  put $1"; }
+          put "releases/$TAG/$NAME" "$APK" application/vnd.android.package-archive "$B64"
+          put "releases/$TAG/$NAME.sha256" "$SUM" text/plain
+          # latest.json LAST: the worker reads only this, so the apk and its hash are in place before anything points at them.
+          printf '{"tag":"%s","versionName":"%s","versionCode":%s,"apk":"releases/%s/%s","sha256":"releases/%s/%s.sha256","apkSha256":"%s","size":%s,"publishedAt":"%s"}\n' \
+            "$TAG" "$VN" "$VC" "$TAG" "$NAME" "$TAG" "$NAME" "$HEX" "$SIZE" "$PUB" > latest.json
+          cat latest.json; put latest.json latest.json application/json
+          # read back what the worker will read, and check it is what we wrote
+          aws s3api get-object --endpoint-url "$EP" --bucket "$R2_BUCKET" --key latest.json back.json > /dev/null && cmp latest.json back.json && echo "mirror: $TAG is live in $R2_BUCKET"

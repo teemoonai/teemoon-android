@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Android 17's NPU Manager schedules NPU work only for apps that declare the NPU: on a Pixel 11 (Tensor G6) an app
+         targeting 37 without it is refused ("NPU config not found, client is not privileged, and target SDK version is 37
+         or higher", Firebase Test Lab, 2026-10-14). Not required, so Play still offers the app to phones without an NPU.
+         https://source.android.com/docs/core/perf/npu-manager -->
+    <uses-feature android:name="android.hardware.npu" android:required="false" />
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- A cloud turn can take minutes, and a backgrounded app goes to oom_score_adj 900 within one — the top of
+         the kill list (measured, Pixel 10 Pro, 2026-09-21). A foreground service holds the process near 200 so
+         the turn finishes while the user is elsewhere; iOS cannot do this at all, since a suspended app cannot
+         hold a streaming connection. dataSync is the type: this is a network transfer that must not be deferred.
+         POST_NOTIFICATIONS is teemoon's FIRST permission prompt (INTERNET and ACCESS_NETWORK_STATE do not
+         prompt). Denying it does not break the feature — the service still runs and the turn still completes;
+         only the telling is lost — which is why it is asked for in context and not at launch. -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+
+    <!-- allowBackup=false is PARITY, not a new tradeoff. teemoonApp.swift:459
+         (hardenConversationStore) excludes the SwiftData store and its WAL/SHM
+         sidecars from backup and sets .completeUnlessOpen protection;
+         LocalModelCatalog.swift:166 does the same for downloaded models. Chat
+         history already does not ride iCloud backup on iOS, deliberately.
+         Cost, shared with iOS: history does not survive a device migration. -->
+    <application
+        android:name=".TeemoonApplication"
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:networkSecurityConfig="@xml/network_security_config"
+        android:label="${appLabel}"
+        android:icon="@mipmap/ic_launcher"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:enableOnBackInvokedCallback="true"
+        android:theme="@style/Theme.Teemoon"
+        android:pageSizeCompat="enabled">
+        <!-- pageSizeCompat: every LOAD segment is 16 KB aligned, but the RELRO segments of five prebuilt libraries end
+             on a 4 KB boundary — (VirtAddr + MemSiz) % 0x4000 != 0 — and Android 17 shows "this app isn't 16 KB
+             compatible: RELRO alignment check failed" at launch — for DEBUGGABLE builds only, measured on the Pixel
+             10 Pro (Android 17, 4 KB pages, 2026-10-02): the release APK showed nothing, and this attribute does not
+             silence the debug warning. What it does matter for is a real 16 KB device, where such a library can
+             segfault: there compat mode runs it correctly. The offenders and their newest builds, per tools/check_16k.py:
+               libLiteRt.so (litert 2.2.0, newest)        libandroidx.graphics.path.so (graphics-path 1.1.0, newest)
+               libdcap_qvl_mobile.so (0.6.5 newest; pinned 0.5.2 with iOS)
+               libjnidispatch.so (fixed in JNA 5.19.1)    liblitertlm_jni.so (fixed in litertlm 0.17.1)
+             Remove this once tools/check_16k.py passes on the release APK. Play blocks non-16-KB updates from
+             2027-02-01. -->
+
+        <!-- Accelerator libraries LiteRT-LM dlopens for the GPU and NPU backends.
+             Since API 31 a vendor library listed in /vendor/etc/public.libraries.txt is
+             NOT loadable unless the app names it here: the dlopen fails and the runtime
+             reports it as absent. That is why the Pixel 10 Pro said "Can not find OpenCL
+             library on this device" while /vendor/lib64/libOpenCL.so was sitting there,
+             public, the whole time (2026-09-15). Declaring it is the whole GPU fix.
+
+             EVERY ONE IS required="false": a device without a given library must still
+             install and simply fall down the ladder to one it has. Naming a library a
+             device does not ship is free; failing to name one it does ship costs the
+             accelerator. So this list is deliberately broader than any single phone —
+             the OpenCL names cover the common vendors, the edgetpu/gxp names are
+             Google Tensor's NPU stack. -->
+        <uses-native-library android:name="libOpenCL.so" android:required="false" />
+        <uses-native-library android:name="libOpenCL-pixel.so" android:required="false" />
+        <uses-native-library android:name="libOpenCL-car.so" android:required="false" />
+        <uses-native-library android:name="libGLES_mali.so" android:required="false" />
+        <uses-native-library android:name="libedgetpu_litert.so" android:required="false" />
+        <uses-native-library android:name="libedgetpu_client.google.so" android:required="false" />
+        <uses-native-library android:name="libedgetpu_util.so" android:required="false" />
+        <uses-native-library android:name="libedgetpu_tachyon.google.so" android:required="false" />
+        <uses-native-library android:name="libgxp.so" android:required="false" />
+        <uses-native-library android:name="lib_aion_buffer.so" android:required="false" />
+        <!-- The one that makes the rest reachable: libvndksupport is how an app loads a VENDOR library
+             (android_load_sphal_library), which is what the Tensor dispatch library does to reach
+             libedgetpu_litert. Without it the dispatch API fails to initialize even though every edgetpu
+             name above is declared. Read off Google's own app, which declares exactly these (2026-09-15).
+             libcdsprpc is Qualcomm's DSP RPC, named by the runtime binary itself. -->
+        <uses-native-library android:name="libvndksupport.so" android:required="false" />
+        <uses-native-library android:name="libcdsprpc.so" android:required="false" />
+        <activity
+            android:configChanges="uiMode|orientation|screenSize|screenLayout|keyboardHidden"
+            android:windowSoftInputMode="adjustResize"
+            android:name=".MainActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+        <!-- A phone-model download keeps the network while backgrounded (DownloadService): a backgrounded app lost
+             its connection six seconds after Home (AVD, 2026-10-02). Same dataSync type: a user-started file transfer. -->
+        <!-- A copied key's clear, delivered by a system alarm so it outlives the process (Clipboard.copySensitive). -->
+        <receiver
+            android:name=".ClipClearReceiver"
+            android:exported="false" />
+        <service
+            android:name=".DownloadService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+        <service
+            android:name=".TurnService"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+    </application>
+</manifest>
