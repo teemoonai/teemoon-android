@@ -15,7 +15,7 @@ enum class BackendKind {
     /** A vendor NPU through a dispatch library found from the APK's `nativeLibraryDir`. */
     NPU,
 
-    /** Google Tensor's own path. Both 0.16.1 and 0.17.0 reject it: "Not recognized backend: 5". */
+    /** Google Tensor's own path. 0.16.1, 0.17.0 and 0.18.0 all reject it: "Not recognized backend: 5" (0.18.0 on a Pixel 10 Pro, 2026-10-14). */
     GOOGLE_TENSOR,
 
     /** Always last, always present: the floor the ladder can never fall through. */
@@ -59,7 +59,7 @@ object BackendLadder {
      * `LocalModelStorage.ref` mark the model `requiresNpu` and the factory use that one rung alone. See
      * [ai.teemoon.providers.LocalModelCatalog.npuBundle].
      *
-     * `Backend.GOOGLE_TENSOR` is absent for a different reason: both 0.16.1 and 0.17.0 reject it outright, "Not
+     * `Backend.GOOGLE_TENSOR` is absent for a different reason: 0.16.1, 0.17.0 and 0.18.0 reject it outright, "Not
      * recognized backend: 5". The native side's own list reads [CPU, GPU, NPU, GPU_ARTISAN, CPU_ARTISAN,
      * GOOGLE_TENSOR_ARTISAN, TENSOR_LLM] and the Kotlin binding exposes no ARTISAN variant to map onto.
      */
@@ -83,14 +83,14 @@ object BackendLadder {
      *   Adreno 840 (Galaxy S26 Ultra) GPU   24 → 52   raw; 26 → 69 through the app
      *   PowerVR (Pixel 10 Pro) GPU           9 → 7
      *   Tensor G5 CPU, 4 threads            17 → 14
-     *   Tensor G5 NPU                       16 → 14
+     *   Tensor G5 NPU                       16 → 14; 0.18.0: 19.0 → 17.8 (medians of 3, interleaved, 2026-10-14)
      *   Snapdragon 8 Elite NPU (S25 Ultra)  33 → 37   2026-10-14, single runs; the benchmark campaign's repeats decide
      *
      * So: the GPU rung on Qualcomm silicon, and the Snapdragon 8 Elite's NPU; nowhere else. `Build.HARDWARE` is "qcom"
      * on Snapdragon boards and `Build.SOC_MODEL` reads "SM8850"; either is enough. The factory also checks the FILE carries a drafter.
      */
     fun wantsSpeculativeDecoding(kind: BackendKind, socModel: String, hardware: String): Boolean {
-        // The Snapdragon 8 Elite's NPU too (33 → 37 tok/s, above); the Tensor NPU still loses with it (16 → 14).
+        // The Snapdragon 8 Elite's NPU too (33 → 37 tok/s, above); the Tensor NPU still loses with it (16 → 14; 19.0 → 17.8 on 0.18.0).
         if (kind == BackendKind.NPU) return socModel.trim().lowercase() == "sm8750"
         if (kind != BackendKind.GPU) return false
         val soc = socModel.uppercase()

@@ -76,8 +76,10 @@ androidx-test-espresso-core = { module = "androidx.test.espresso:espresso-core",
 compose-ui-test-manifest = { module = "androidx.compose.ui:ui-test-manifest" }
 dcap-qvl-android = { module = "com.phala:dcap-qvl-android", version.ref = "dcapQvl" }
 
-# S2 resolved 2026-09-03: 0.16.1 is the current stable Kotlin API (0.17.0-alpha1 exists); the Swift side vendors the 0.14-era wrapper.
-litertlm-android = { module = "com.google.ai.edge.litertlm:litertlm-android", version = "0.16.1" }
+# S2 resolved 2026-09-03 at 0.16.1; 2026-10-14 0.18.0, which pins LiteRT ~2.3.0 — the vendored libLiteRt and NPU dispatchers
+# (ondevice/src/main/jniLibs) move with it: 2.3.0 added `get_hooks` to LiteRtDispatchInterface, so a 2.2.0 dispatcher does not fit.
+# The Swift side vendors the 0.14-era wrapper.
+litertlm-android = { module = "com.google.ai.edge.litertlm:litertlm-android", version = "0.18.0" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

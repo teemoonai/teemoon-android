@@ -59,7 +59,7 @@ class LiteRTToolBridge(private val registry: LiteRTToolRegistry = LiteRTToolRegi
     }
 
     /**
-     * The Kotlin binding (litertlm-android 0.16.1) is the other way round from
+     * The Kotlin binding (litertlm-android 0.16.1, unchanged in 0.18.0 — LiteRtBindingTest) is the other way round from
      * the Swift one: `tool(OpenApiTool)` parses the description as the FLAT
      * `{name, description, parameters}` object (it reads `name` straight off
      * the top level and NPEs on the envelope), and `ToolManager` adds the

@@ -330,18 +330,18 @@ class OnDeviceDecodeBenchTest {
         val path = storage.npuFile(gemma, bundle!!).path
         assumeTrue("Tensor bundle not staged", File(path).isFile)
         ExperimentalFlags.enableBenchmark = true
-        for ((label, spec) in listOf("npu" to false, "npu+speculative" to true)) {
+        for ((label, spec) in listOf("npu" to BenchSpec.SPECULATIVE, "npu+speculative" to true)) {
             ExperimentalFlags.enableSpeculativeDecoding = spec
             val engine = Engine(EngineConfig(
                 modelPath = path, backend = Backend.NPU(npuDir),
-                maxNumTokens = 4096, cacheDir = ctx.cacheDir.path))
+                maxNumTokens = BenchSpec.MAX_TOKENS, cacheDir = ctx.cacheDir.path))
             try {
                 val t0 = System.currentTimeMillis(); engine.initialize(); val load = System.currentTimeMillis() - t0
                 val conv = engine.createConversation(ConversationConfig(
-                    maxOutputToken = 128, thinkingConfig = ThinkingConfig(false)))
+                    maxOutputToken = BenchSpec.SHORT_MAX_OUTPUT, thinkingConfig = ThinkingConfig(false)))
                 try {
                     val wall = System.currentTimeMillis()
-                    val reply = conv.sendMessage("Write a short paragraph about the planet Jupiter.")
+                    val reply = conv.sendMessage(BenchSpec.SHORT_PROMPT)
                     val text = reply.contents.contents.filterIsInstance<Content.Text>().joinToString("") { it.text }
                     val b = conv.getBenchmarkInfo()
                     log("$label load=${load}ms ttft=${b.timeToFirstTokenInSecond}s prefill=${b.lastPrefillTokenCount}tok (${b.lastPrefillTokensPerSecond.toInt()}tok/s) " +
@@ -363,19 +363,18 @@ class OnDeviceDecodeBenchTest {
         val npuBundle = LocalModelCatalog.npuBundle(gemma, Build.SOC_MODEL.orEmpty())
         val npuPath = npuBundle?.let { storage.npuFile(gemma, it).path }?.takeIf { File(it).isFile }
         ExperimentalFlags.enableBenchmark = true
-        ExperimentalFlags.enableSpeculativeDecoding = null
-        val para = "The verifier checks the quote against the collateral, binds the measurement to the model that was loaded, and records the outcome in the ledger so a later reader can audit the claim without trusting the operator. "
-        val longPrompt = "Summarise the following in one sentence.\n\n" + para.repeat(48)   // ~2000 tokens
+        ExperimentalFlags.enableSpeculativeDecoding = BenchSpec.SPECULATIVE
+        val longPrompt = BenchSpec.LONG_PROMPT
         val runs = buildList {
             npuPath?.let { add(Triple("npu", it, Backend.NPU(npuDir))) }
             add(Triple("cpu4", general, Backend.CPU(4, 4)))
             add(Triple("gpu", general, Backend.GPU()))
         }
         for ((label, path, backend) in runs) {
-            val engine = Engine(EngineConfig(modelPath = path, backend = backend, maxNumTokens = 4096, cacheDir = ctx.cacheDir.path))
+            val engine = Engine(EngineConfig(modelPath = path, backend = backend, maxNumTokens = BenchSpec.MAX_TOKENS, cacheDir = ctx.cacheDir.path))
             try {
                 val t0 = System.currentTimeMillis(); engine.initialize(); val load = System.currentTimeMillis() - t0
-                val conv = engine.createConversation(ConversationConfig(maxOutputToken = 32, thinkingConfig = ThinkingConfig(false)))
+                val conv = engine.createConversation(ConversationConfig(maxOutputToken = BenchSpec.LONG_MAX_OUTPUT, thinkingConfig = ThinkingConfig(false)))
                 try {
                     val wall = System.currentTimeMillis()
                     conv.sendMessage(longPrompt)

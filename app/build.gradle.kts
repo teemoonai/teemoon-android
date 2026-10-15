@@ -39,7 +39,7 @@ android {
         // teemoon-ios a411f18; drift 0 since 2026-10-02, kit 0.5.0) — and versionCode is that release's iOS build
         // number × 100 + the beta number, 99 for the release itself. 1.0.4 is iOS build 38: 1.0.4-beta.1 → 3801, beta.2 → 3802,
         // 1.0.4 → 3899, and iOS's next build starts above both, so Play's codes only ever rise.
-        versionCode = 3912   // 1.0.4 with the 2026-10-13/14 audit fixes: key hygiene, notification channels, clipboard expiry, seeding gate (3912); 3911 1.0.4 pinned dark and running LiteRT as iOS does (thinking off, 4800 cap), search payload sized to the bundle's window (3911); 3910 the first verified rebuild; 3908 the Play review build; 3899 the first 1.0.4
+        versionCode = 3913   // 1.0.4 on LiteRT-LM 0.18.0 / LiteRT 2.3.0: faster NPU prefill and decode (3913); 1.0.4 with the 2026-10-13/14 audit fixes: key hygiene, notification channels, clipboard expiry, seeding gate (3912); 3911 1.0.4 pinned dark and running LiteRT as iOS does (thinking off, 4800 cap), search payload sized to the bundle's window (3911); 3910 the first verified rebuild; 3908 the Play review build; 3899 the first 1.0.4
         versionName = "1.0.4"
         testInstrumentationRunner = "ai.teemoon.app.TeemoonTestRunner"   // arms UiTestSeeding (UiTestSeeding.armed)
     }

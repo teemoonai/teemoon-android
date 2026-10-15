@@ -124,7 +124,7 @@ README.
 
 | library | source | license |
 |---|---|---|
-| `libLiteRt.so`, `libLiteRtDispatch_GoogleTensor.so`, `libteemoon_dispatch_qualcomm.so` (`libLiteRtDispatch_Qualcomm.so`) | LiteRT v2.2.0 (google-ai-edge/LiteRT) | Apache-2.0 |
+| `libLiteRt.so`, `libLiteRtDispatch_GoogleTensor.so`, `libteemoon_dispatch_qualcomm.so` (`libLiteRtDispatch_Qualcomm.so`) | LiteRT v2.3.0 (google-ai-edge/LiteRT) | Apache-2.0 |
 | `libQnnHtp.so`, `libQnnHtpV79Stub.so`, `libQnnHtpV79Skel.so`, `libQnnSystem.so` | Qualcomm AI Engine Direct runtime, `com.qualcomm.qti:qnn-runtime:2.50.0` | Qualcomm's licence and notices, `ondevice/src/main/assets/licenses/qnn/` (`LICENSE.pdf`, `NOTICE.txt`) — packed into the APK too |
 
 ## Conformance fixtures

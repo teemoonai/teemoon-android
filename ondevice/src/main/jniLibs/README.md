@@ -6,9 +6,9 @@ the official releases ship no x86_64 build. The APK packs them byte for byte (ne
 
 | file | what it is | source | sha256 (first 16) |
 |---|---|---|---|
-| `libLiteRt.so` | the LiteRT C API | `com.google.ai.edge.litert:litert:2.2.0` (Google Maven) | `97355a36cb8ac762` |
-| `libLiteRtDispatch_GoogleTensor.so` | the Google Tensor NPU dispatcher | `litert_npu_runtime_libraries.zip`, LiteRT v2.2.0, `google_tensor_runtime/` | `35b59265eb8595a1` |
-| `libteemoon_dispatch_qualcomm.so` | the Qualcomm NPU dispatcher (`libLiteRtDispatch_Qualcomm.so`, renamed — see below) | same zip, `qualcomm_runtime_v79/` | `c4abfff6c99ec218` |
+| `libLiteRt.so` | the LiteRT C API | `com.google.ai.edge.litert:litert:2.3.0` (Google Maven) | `e5b7e3413a8b428b` |
+| `libLiteRtDispatch_GoogleTensor.so` | the Google Tensor NPU dispatcher | `com.google.ai.edge.litert:litert-npu-runtime-google-tensor:2.3.0` (Google Maven) | `e38144002de11a15` |
+| `libteemoon_dispatch_qualcomm.so` | the Qualcomm NPU dispatcher (`libLiteRtDispatch_Qualcomm.so`, renamed — see below) | `com.google.ai.edge.litert:litert-npu-runtime-qualcomm:2.3.0` (Google Maven) | `22e2d581555617c4` |
 | `libQnnHtp.so` | Qualcomm QNN runtime | `com.qualcomm.qti:qnn-runtime:2.50.0` (Maven Central) | `30e2981965e687d7` |
 | `libQnnHtpV79Skel.so` | QNN runtime, Hexagon v79 (Snapdragon 8 Elite) | same | `860c9d2e7c937c9f` |
 | `libQnnHtpV79Stub.so` | same | same | `d9f5eca67297125c` |

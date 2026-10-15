@@ -3534,7 +3534,7 @@
         {
           "path": "teemoon/Inference/LiteRTTransport.swift",
           "sha": "v1.0.4",
-          "note": "REBUILD over litertlm-android 0.16.1: EngineConfig/initialize with GPU→CPU fallback, the flags, createConversation, the Flow stream, getBenchmarkInfo; @a411f18: 1.0.4 parity: ios_only 2, no_behavior 3, ported 6"
+          "note": "REBUILD over litertlm-android 0.16.1 (0.18.0 since 2026-10-14): EngineConfig/initialize with GPU→CPU fallback, the flags, createConversation, the Flow stream, getBenchmarkInfo; @a411f18: 1.0.4 parity: ios_only 2, no_behavior 3, ported 6"
         },
         {
           "path": "teemoon/Inference/LiteRTTransport.swift",
@@ -3548,7 +3548,7 @@
         }
       ],
       "status": "complete",
-      "note": "REBUILD over litertlm-android 0.16.1. Android-only beyond the Swift: the backend ladder, the decode probe and the cached verdict (BackendLadder/BackendMemo) — iOS makes no runtime backend choice",
+      "note": "REBUILD over litertlm-android 0.16.1 (0.18.0 since 2026-10-14). Android-only beyond the Swift: the backend ladder, the decode probe and the cached verdict (BackendLadder/BackendMemo) — iOS makes no runtime backend choice",
       "blocked": "needs a phone"
     },
     {
@@ -3599,6 +3599,42 @@
       "sources": [],
       "status": "android-only",
       "note": "diagnostic, not a gate: decode/prefill on each backend with nothing downstream, context and thread sweeps, the raw NPU run"
+    },
+    {
+      "kotlin": "app/src/androidTest/kotlin/ai/teemoon/app/LiteRtBindingTest.kt",
+      "sources": [],
+      "status": "android-only",
+      "note": "the two places the app leans on litertlm-android's API shape: the bundle's drafter read (ModelInfo/LlmCapability since 0.18.0) and a conversation with web_search attached opening and answering"
+    },
+    {
+      "kotlin": "app/src/androidTest/kotlin/ai/teemoon/app/NpuBundleProbeTest.kt",
+      "sources": [],
+      "status": "android-only",
+      "note": "DIAGNOSTIC for remote labs: downloads THIS chip's NPU bundle, verifies it, answers on the NPU short and long, and once from the background"
+    },
+    {
+      "kotlin": "app/src/androidTest/kotlin/ai/teemoon/app/TensorPathProbeTest.kt",
+      "sources": [],
+      "status": "android-only",
+      "note": "DIAGNOSTIC: speculative decoding off/on on the chip's NPU bundle, interleaved with repeats, and whether Backend.GOOGLE_TENSOR starts"
+    },
+    {
+      "kotlin": "app/src/androidTest/kotlin/ai/teemoon/app/BenchSpec.kt",
+      "sources": [],
+      "status": "android-only",
+      "note": "the benchmark prompts and settings shared by the on-device benches"
+    },
+    {
+      "kotlin": "app/src/androidTest/kotlin/ai/teemoon/app/GoogleMethodBenchTest.kt",
+      "sources": [],
+      "status": "android-only",
+      "note": "DIAGNOSTIC: the model card's method (the runtime's own benchmark(), 1024 prefill / 256 decode) on npu, gpu and cpu, warm-up then interleaved repeats, thermal logged per run"
+    },
+    {
+      "kotlin": "app/src/androidTest/kotlin/ai/teemoon/app/BundleFetch.kt",
+      "sources": [],
+      "status": "android-only",
+      "note": "the farm probes' bundle download: the app's URL, resumable, checksum verified before the move"
     },
     {
       "kotlin": "providers/src/main/kotlin/ai/teemoon/providers/LocalModelStorage.kt",

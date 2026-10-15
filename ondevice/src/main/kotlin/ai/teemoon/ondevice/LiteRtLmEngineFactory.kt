@@ -1,6 +1,6 @@
 // ports: teemoon/Inference/LiteRTTransport.swift @ v1.0.4 (EngineCache.engine's EngineConfig/initialize, enableExperimentalFeatures,
 //        the createConversation calls, the sendMessageStream text extraction, getBenchmarkInfo) — REBUILD over
-//        com.google.ai.edge.litertlm:litertlm-android 0.16.1. Everything runtime-neutral is :inference's LiteRTTransport.
+//        com.google.ai.edge.litertlm:litertlm-android 0.18.0. Everything runtime-neutral is :inference's LiteRTTransport.
 // ports: teemoon/Inference/LiteRTTransport.swift @ v1.0.4 (constrained decoding off, set per conversation)
 package ai.teemoon.ondevice
 
@@ -13,7 +13,6 @@ import ai.teemoon.inference.LocalEngineHandle
 import ai.teemoon.inference.LocalInferenceError
 import ai.teemoon.inference.LocalRole
 import com.google.ai.edge.litertlm.Backend
-import com.google.ai.edge.litertlm.Capabilities
 import com.google.ai.edge.litertlm.Content
 import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.Conversation
@@ -22,7 +21,9 @@ import com.google.ai.edge.litertlm.Engine
 import com.google.ai.edge.litertlm.EngineConfig
 import com.google.ai.edge.litertlm.ExperimentalApi
 import com.google.ai.edge.litertlm.ExperimentalFlags
+import com.google.ai.edge.litertlm.LlmCapability
 import com.google.ai.edge.litertlm.Message
+import com.google.ai.edge.litertlm.ModelInfo
 import com.google.ai.edge.litertlm.OpenApiTool
 import com.google.ai.edge.litertlm.ThinkingConfig
 import com.google.ai.edge.litertlm.tool
@@ -136,7 +137,7 @@ class LiteRtLmEngineFactory(
      * backend is rejected on the same footing as a loud one.
      */
     private fun hasDrafter(modelPath: String): Boolean = runCatching {
-        Capabilities(modelPath).use { it.hasSpeculativeDecodingSupport() }
+        ModelInfo.from(modelPath).use { (it as? LlmCapability)?.hasSpeculativeDecodingSupport() == true }
     }.onFailure { log("[litert] capabilities unreadable, speculative decoding stays off: ${it.message}") }.getOrDefault(false)
         .also { log("[litert] bundle drafter: $it") }
 

@@ -8,7 +8,7 @@ import java.nio.file.Files
  * The directory `Backend.NPU` is handed, which decides WHICH vendor's dispatch library LiteRT loads.
  *
  * LiteRT lists that directory — subdirectories too, in no guaranteed order — for every `libLiteRtDispatch*.so`, warns
- * "Multiple dispatch libraries found", and takes the FIRST (litert_dispatch.cc `GetSharedLibraryPath`, LiteRT v2.2.0).
+ * "Multiple dispatch libraries found", and takes the FIRST (litert_dispatch.cc `GetSharedLibraryPath`, LiteRT v2.2.0 and v2.3.0; 2.3.0 also logs each candidate).
  * With the Tensor and the Qualcomm dispatcher side by side in `nativeLibraryDir`, a phone of either vendor could be
  * handed the other's — which is why the Qualcomm lab build (2026-10-07) had to park the Tensor one.
  *
