@@ -17,7 +17,8 @@ object RequestDebugText {
             info.thinkingTime?.let { "think ${it.debugFormatted()}" },
             info.generationTime?.let { "gen ${it.debugFormatted()}" },
             info.outputTokens?.let { "${it}tok" },
-            info.tokensPerSecond?.let { String.format(Locale.US, "%.0ftok/s", it) })
+            info.firstLineTokensPerSecond?.let { String.format(Locale.US, "%.0ftok/s", it) })
+        info.localStatsLine?.let { parts += it }
         if (timing.isNotEmpty()) parts += timing.joinToString(" · ")
         info.url?.let { parts += "\n--- URL ---\n${DebugHeaderRedaction.copyURLString(it)}" }
         info.requestHeaders?.takeIf { it.isNotEmpty() }?.let { parts += "\n--- Headers ---\n${DebugHeaderRedaction.copyHeaderBlock(it)}" }

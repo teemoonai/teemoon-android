@@ -97,8 +97,8 @@ class LiteRtLmEngineFactory(
             // measured in BackendLadder.wantsSpeculativeDecoding (Adreno 26 → 69 tok/s, and on the Snapdragon 8 Elite's NPU;
             // PowerVR, CPU and the Tensor NPU all slower with it). `null` leaves the runtime's own default alone. And only when the file carries
             // a drafter: `Capabilities` reads the bundle's header, the same check iOS has.
-            ExperimentalFlags.enableSpeculativeDecoding =
-                if (BackendLadder.wantsSpeculativeDecoding(kind, socModel, hardware) && hasDrafter(modelPath)) true else null
+            val speculative = BackendLadder.wantsSpeculativeDecoding(kind, socModel, hardware) && hasDrafter(modelPath)
+            ExperimentalFlags.enableSpeculativeDecoding = if (speculative) true else null
             val engine = Engine(EngineConfig(modelPath = modelPath, backend = backendFor(kind), maxNumTokens = contextTokens, cacheDir = cacheDir))
             val started = System.currentTimeMillis()
             try {
@@ -114,7 +114,7 @@ class LiteRtLmEngineFactory(
                 memo.remember(key, kind)
                 backendLabel = label(kind)
                 log("[litert] engine on ${label(kind)} (ready in ${System.currentTimeMillis() - started}ms)")
-                return@withContext Handle(engine, log)
+                return@withContext Handle(engine, log, label(kind), speculative)
             } catch (t: Throwable) {
                 lastFailure = t; runCatching { engine.close() }
                 // The reason matters more than the failure: this line is how the next device's story gets read.
@@ -173,7 +173,10 @@ class LiteRtLmEngineFactory(
         }
     }
 
-    private class Handle(private val engine: Engine, private val log: (String) -> Unit) : LocalEngineHandle {
+    private class Handle(
+        private val engine: Engine, private val log: (String) -> Unit,
+        override val backend: String, override val speculative: Boolean,
+    ) : LocalEngineHandle {
         private var conversation: Conversation? = null
 
         override suspend fun stream(spec: LocalConversationSpec, onPiece: suspend (String) -> Unit) {

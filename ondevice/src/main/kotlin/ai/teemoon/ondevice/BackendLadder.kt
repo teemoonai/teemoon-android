@@ -84,14 +84,19 @@ object BackendLadder {
      *   PowerVR (Pixel 10 Pro) GPU           9 → 7
      *   Tensor G5 CPU, 4 threads            17 → 14
      *   Tensor G5 NPU                       16 → 14; 0.18.0: 19.0 → 17.8 (medians of 3, interleaved, 2026-10-14)
-     *   Snapdragon 8 Elite NPU (S25 Ultra)  33 → 37   2026-10-14, single runs; the benchmark campaign's repeats decide
+     *   Snapdragon 8 Elite NPU (S25 Ultra)  37.7 → 37.7  medians of 3, 2026-10-15: Google's sm8750 bundle carries NO
+     *                                       drafter (its table of contents has no tf_lite_mtp_drafter); the 33 → 37 of
+     *                                       2026-10-14 was single runs, i.e. noise
      *
-     * So: the GPU rung on Qualcomm silicon, and the Snapdragon 8 Elite's NPU; nowhere else. `Build.HARDWARE` is "qcom"
+     * Real text matters: on 0.18.0 the Adreno 840 drafter gives +28% on long-form writing and 95–96 tok/s on a code edit
+     * through the app (2026-10-15, docs/BENCHMARKS.md); `benchmark()`'s synthetic tokens defeat it.
+     *
+     * So: the GPU rung on Qualcomm silicon; nowhere else. `Build.HARDWARE` is "qcom"
      * on Snapdragon boards and `Build.SOC_MODEL` reads "SM8850"; either is enough. The factory also checks the FILE carries a drafter.
      */
     fun wantsSpeculativeDecoding(kind: BackendKind, socModel: String, hardware: String): Boolean {
-        // The Snapdragon 8 Elite's NPU too (33 → 37 tok/s, above); the Tensor NPU still loses with it (16 → 14; 19.0 → 17.8 on 0.18.0).
-        if (kind == BackendKind.NPU) return socModel.trim().lowercase() == "sm8750"
+        // No NPU: the Tensor NPU loses with it (16 → 14; 19.0 → 17.8 on 0.18.0) and the sm8750 bundle has no drafter.
+        if (kind == BackendKind.NPU) return false
         if (kind != BackendKind.GPU) return false
         val soc = socModel.uppercase()
         return hardware.lowercase().startsWith("qcom") || Regex("^(SM|SDM|SXR|QCM|QCS)[0-9]").containsMatchIn(soc)

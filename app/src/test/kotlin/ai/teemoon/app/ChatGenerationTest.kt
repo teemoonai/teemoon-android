@@ -173,4 +173,35 @@ class RequestDebugTextTest {
         assertTrue(text.contains("--- Tool: web_search · n:5 \"news\" 2 · Response for LLM ---"))
         assertTrue(text.endsWith("--- Response ---\n62°F"))
     }
+
+    private fun cardInfo(local: ai.teemoon.inference.LocalTurnStats?) = LastRequestDebugInfo(providerName = "Gemma 4 E2B", modelID = "m", url = null,
+        requestHeaders = null, requestBodyJson = null, responseBody = null, toolCalls = emptyList(), threadID = "t",
+        totalDuration = 10.0, timeToFirstToken = 0.6, outputTokens = 899, isE2EEActive = false, teeVerification = null, localStats = local)
+
+    @Test fun anOnDeviceTurnLeadsWithDecodeThenPrefillThenTheBackend() {
+        val info = cardInfo(ai.teemoon.inference.LocalTurnStats("gpu", speculative = true, prefillTokens = 1191, prefillTokensPerSecond = 2139.4))
+        assertEquals("decode 96tok/s · prefill 2139tok/s · gpu + speculative", info.localStatsLine)
+        assertNull("decode is shown once, on the speed line", info.firstLineTokensPerSecond)
+        assertTrue(RequestDebugText.debugText(info).contains("decode 96tok/s · prefill 2139tok/s · gpu + speculative"))
+    }
+
+    @Test fun anNpuTurnWithoutADrafterSaysNothingAboutSpeculativeDecoding() {
+        val info = cardInfo(ai.teemoon.inference.LocalTurnStats("npu", speculative = false, prefillTokens = 1191, prefillTokensPerSecond = 2082.0))
+        assertEquals("decode 96tok/s · prefill 2082tok/s · npu", info.localStatsLine)
+    }
+
+    @Test fun aCloudTurnKeepsItsOneLine() {
+        val info = cardInfo(null)
+        assertNull(info.localStatsLine)
+        assertEquals(96.0, info.firstLineTokensPerSecond!!, 0.5)
+    }
+
+    @Test fun theTransportsLocalStatsReachTheCard() {
+        val gen = ChatGeneration()
+        gen.seedDebugInfo("Gemma 4 E2B", "m", null, "t", expectingE2EE = false)
+        val stats = ai.teemoon.inference.LocalTurnStats("gpu", speculative = true, prefillTokens = 10, prefillTokensPerSecond = 100.0)
+        gen.recordSuccess(RequestResult(url = null, requestHeaders = null, requestBodyJson = null, responseBody = "x", toolCalls = emptyList(),
+            outputTokens = 5, teeVerification = null, isE2eeActive = false, localStats = stats), "Gemma 4 E2B", "m", "t")
+        assertEquals(stats, gen.lastRequestDebugInfo?.localStats)
+    }
 }

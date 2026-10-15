@@ -263,7 +263,7 @@
         },
         {
           "path": "teemoon/Providers/Provider+Presets.swift",
-          "sha": "v1.0.4",
+          "sha": "54617ce",
           "note": "the presets: near.ai default (glm-5.3-flash), grok-4.6 and moonshotai/kimi-k3 fallbacks, matchingPreset by match key. Everything in the file up to c3fb76d except keyValidationEndpoint's OpenRouter case (fbedb79)."
         },
         {
@@ -273,7 +273,7 @@
         },
         {
           "path": "teemoon/Providers/Provider+Presets.swift",
-          "sha": "v1.0.4",
+          "sha": "54617ce",
           "note": "inferenceBaseUrl only: the direct host from EndpointDirectory.persistedBase (c93914c), not the shipped column"
         }
       ],
@@ -4179,7 +4179,7 @@
       "sources": [
         {
           "path": "teemoon/Providers/ListPriceSnapshot.swift",
-          "sha": "v1.0.4",
+          "sha": "54617ce",
           "note": "@a411f18: 1.0.4 parity: needs_port 4, no_behavior 1 (ported 2026-10-02)"
         }
       ],
@@ -4814,6 +4814,18 @@
       ],
       "status": "complete",
       "note": "header-derived entry (2026-10-06)"
+    },
+    {
+      "kotlin": "providers/src/test/kotlin/ai/teemoon/providers/FireworksPresetDefaultTest.kt",
+      "sources": [
+        {
+          "path": "teemoon/Providers/Provider+Presets.swift",
+          "sha": "54617ce",
+          "note": "the Fireworks preset's default: kimi-k3 since kimi-k2p6 left serverless (2026-10-15)"
+        }
+      ],
+      "status": "complete",
+      "note": "added with the 1.0.5 (3915) Fireworks fix"
     },
     {
       "kotlin": "providers/src/test/kotlin/ai/teemoon/providers/ProviderHealingTest.kt",

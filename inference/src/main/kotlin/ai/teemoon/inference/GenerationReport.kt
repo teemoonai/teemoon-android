@@ -126,6 +126,21 @@ data class TurnReport(
      * distinct from a verification that ran and failed.
      */
     val verify: (suspend () -> ResponseVerification?)? = null,
+
+    /** What the on-device engine did this turn, for the developer card's second line. Null for any network transport. */
+    val localStats: LocalTurnStats? = null,
+)
+
+/**
+ * The on-device runtime's own account of a turn: where it ran, whether the drafter was on, and how fast it read the
+ * prompt. No load time: the engine loads when the model is chosen (the warm-up), not per turn. Decode speed is not here — the card already derives it from the turn's own
+ * clock, for every transport alike.
+ */
+data class LocalTurnStats(
+    val backend: String,
+    val speculative: Boolean,
+    val prefillTokens: Int,
+    val prefillTokensPerSecond: Double,
 )
 
 /** Result delivered on successful stream completion. */
@@ -146,4 +161,6 @@ data class RequestResult(
     val teeVerification: ResponseVerification?,
     /** Whether this request/response was encrypted with application-layer E2EE. */
     val isE2eeActive: Boolean,
+    /** See [TurnReport.localStats]. */
+    val localStats: LocalTurnStats? = null,
 )

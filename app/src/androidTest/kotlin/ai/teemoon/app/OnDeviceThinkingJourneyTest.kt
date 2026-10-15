@@ -305,4 +305,71 @@ class OnDeviceThinkingJourneyTest {
         Thread.sleep(1_500)
         assertTrue("a dismissed thread was offered search again", !tagExists("chat.webOffer"))
     }
+
+    /**
+     * Not a journey: a capture. Sends each `-e devcard_prompts` prompt ("|"-separated) in a fresh chat with developer mode on,
+     * waits for the reply to finish, and saves a screenshot with the request debug card under it — the app's own
+     * measurement of that real turn (output tokens over first-token-to-end) — to the app's external files dir as
+     * devcard-N.png, logging the card's line. `-e devcard_cool_s` (default 120) waits for the phone to cool to its
+     * starting battery temperature before each prompt. Opt-in: it never asserts on speed.
+     */
+    @Test fun devCardCapture() {
+        // `-e devcard_tasks rewrite,code,summarize` names BenchSpec.TASKS (the long prompts cannot travel through a shell);
+        // `-e devcard_repeat 2` sends each that many times, each in a fresh chat.
+        val repeatN = (InstrumentationRegistry.getArguments().getString("devcard_repeat") ?: "1").toInt()
+        val prompts = (InstrumentationRegistry.getArguments().getString("devcard_tasks")?.split(",")?.map { BenchSpec.TASKS.getValue(it.trim()) }
+            ?: InstrumentationRegistry.getArguments().getString("devcard_prompts")?.split("|")?.map { it.trim() }?.filter { it.isNotEmpty() })
+            ?.flatMap { p -> List(repeatN) { p } }
+        assumeTrue("no devcard_prompts", !prompts.isNullOrEmpty())
+        val coolS = (InstrumentationRegistry.getArguments().getString("devcard_cool_s") ?: "120").toInt()
+        fun tenths() = ctx.registerReceiver(null, android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED))?.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, -1) ?: -1
+        val start = tenths()
+        val dir = ctx.getExternalFilesDir(null)!!
+        prompts!!.forEachIndexed { i, prompt ->
+            val t0 = System.currentTimeMillis()
+            while (System.currentTimeMillis() - t0 < coolS * 1000L && tenths() > start) Thread.sleep(5_000)
+            scenario?.close()
+            launchOnDevice(UiTestSeeding.EXTRA_DEVELOPER to true)
+            // A video of the round, beside the screenshot: screenrecord runs from just before the send until the card has
+            // landed (SIGINT finalises the file). It lives on the device's shell side, so the test only starts and stops it.
+            val ui = InstrumentationRegistry.getInstrumentation().uiAutomation
+            val video = File(dir, "devcard-$i.mp4")
+            // `-e devcard_video false`: the encoder shares the chip and cost ~10% of decode on the S26 Ultra (86 vs 95).
+            val record = InstrumentationRegistry.getArguments().getString("devcard_video") != "false"
+            if (record) { ui.executeShellCommand("screenrecord --time-limit 180 --bit-rate 8000000 ${video.path}").close(); Thread.sleep(800) }
+            // `-e devcard_hold_ms 2000`: the typed prompt stays on screen that long before the send, so an outside recording
+            // (the Mac capturing the lab's stream) opens on it. `devcard_tail_ms`: how long to stay on the finished card.
+            val holdMs = (InstrumentationRegistry.getArguments().getString("devcard_hold_ms") ?: "0").toLong()
+            if (holdMs > 0) {
+                compose.onAllNodes(hasTestTag("chat.composer"))[0].performClick()
+                // `-e devcard_type_ms 55`: the instruction (up to the first blank line) is typed a character at a time, as a
+                // person would, and the rest — the pasted code — lands at once, as a paste does.
+                val typeMs = (InstrumentationRegistry.getArguments().getString("devcard_type_ms") ?: "0").toLong()
+                val cut = prompt.indexOf("\n\n").let { if (it < 0) prompt.length else it }
+                if (typeMs > 0) {
+                    prompt.substring(0, cut).forEach { ch -> compose.onAllNodes(hasSetTextAction())[0].performTextInput(ch.toString()); Thread.sleep(typeMs) }
+                    Thread.sleep(400)
+                    if (cut < prompt.length) compose.onAllNodes(hasSetTextAction())[0].performTextInput(prompt.substring(cut))
+                } else compose.onAllNodes(hasSetTextAction())[0].performTextInput(prompt)
+                android.util.Log.w("teemoon", "[devcard] $i prompt on screen")
+                Thread.sleep(holdMs)
+                compose.onAllNodes(hasTestTag("chat.send"))[0].performClick()
+            } else send(prompt)
+            val deadline = System.currentTimeMillis() + 300_000
+            Thread.sleep(3_000)
+            while (System.currentTimeMillis() < deadline && (streaming || !screenText().contains("tok/s"))) Thread.sleep(500)
+            Thread.sleep(1_500)
+            val card = screenText().lines().filter { it.contains("tok/s") || it.contains("ttft") }.joinToString(" | ")
+            android.util.Log.w("teemoon", "[devcard] $i battery=${tenths() / 10.0}C prompt=\"${prompt.take(80)}\" card=$card")
+            InstrumentationRegistry.getInstrumentation().sendStatus(2, android.os.Bundle().apply { putString("devcard", "$i ${tenths() / 10.0}C ${prompt.take(60)} :: $card") })
+            // Stay on the finished card BEFORE stopping the recorder: screenrecord drops its last second or so on SIGINT,
+            // and a video stopped as the card landed ended mid-stream (S26 Ultra, 2026-10-15).
+            android.util.Log.w("teemoon", "[devcard] $i card on screen")
+            Thread.sleep((InstrumentationRegistry.getArguments().getString("devcard_tail_ms") ?: "0").toLong())
+            if (record) { ui.executeShellCommand("pkill -INT screenrecord").close(); Thread.sleep(1_500) }
+            InstrumentationRegistry.getInstrumentation().uiAutomation.takeScreenshot()?.let { bmp ->
+                File(dir, "devcard-$i.png").outputStream().use { bmp.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it) }
+            }
+        }
+    }
 }

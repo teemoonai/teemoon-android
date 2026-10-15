@@ -8,6 +8,8 @@
 // pure function here with a test; the composables only lay it out.
 package ai.teemoon.app
 
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.foundation.layout.BoxWithConstraints
 import ai.teemoon.inference.GroundingSource
 import ai.teemoon.inference.LlmError
 import ai.teemoon.inference.ToolCallDebugFormat
@@ -278,7 +280,7 @@ fun RequestDebugCard(info: LastRequestDebugInfo, onCopy: (String) -> Unit, modif
             info.url?.let { InlineRow("url", it) }
             if (info.totalDuration != null || info.timeToFirstToken != null) {
                 val parts = listOfNotNull(info.totalDuration?.debugFormatted(), info.timeToFirstToken?.let { "ttft ${it.debugFormatted()}" }, info.thinkingTime?.let { "think ${it.debugFormatted()}" },
-                    info.generationTime?.let { "gen ${it.debugFormatted()}" }, info.outputTokens?.let { "${it}tok" }, info.tokensPerSecond?.let { String.format(Locale.US, "%.0ftok/s", it) })
+                    info.generationTime?.let { "gen ${it.debugFormatted()}" }, info.outputTokens?.let { "${it}tok" }, info.firstLineTokensPerSecond?.let { String.format(Locale.US, "%.0ftok/s", it) })
                 HorizontalDivider(Modifier.padding(start = 12.dp))
                 // ONE LINE, always (RequestDebugView): the chain is a shape as much as a set of numbers — six values in a row
                 // read as one measurement of one request, wrapped they read as two of something. So the line SCALES DOWN
@@ -286,9 +288,26 @@ fun RequestDebugCard(info: LastRequestDebugInfo, onCopy: (String) -> Unit, modif
                 // and dropped the scale, so a long chain was CLIPPED: near.ai's "… · 11282tok · " lost its tok/s off the
                 // right edge while Fireworks' shorter chain kept it (user-reported, 2026-09-23).
                 val statsStyle = MaterialTheme.typography.labelSmall.copy(fontFamily = mono, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                BasicText(parts.joinToString(" · "), style = statsStyle, maxLines = 1,
-                    autoSize = TextAutoSize.StepBased(minFontSize = statsStyle.fontSize * 0.75f, maxFontSize = statsStyle.fontSize),
-                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp))
+                // On-device turns lead with the speed line (decode · prefill · backend), the timings under it — no divider
+                // between: one measurement in two rows. ONE size for both, the largest at which the longer line fits (down to
+                // the same 0.75 floor as iOS's minimumScaleFactor), so the rows never render at two sizes.
+                val lines = listOfNotNull(info.localStatsLine, parts.joinToString(" · "))
+                BoxWithConstraints(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
+                    val measurer = rememberTextMeasurer()
+                    val maxPx = constraints.maxWidth
+                    val size = remember(lines, maxPx) {
+                        var sp = statsStyle.fontSize.value
+                        val floor = sp * 0.75f
+                        while (sp > floor && lines.any { measurer.measure(it, statsStyle.copy(fontSize = sp.sp), maxLines = 1, softWrap = false).size.width > maxPx }) sp -= 0.25f
+                        sp.coerceAtLeast(floor).sp
+                    }
+                    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        lines.forEachIndexed { n, line ->
+                            BasicText(line, style = statsStyle.copy(fontSize = size), maxLines = 1, softWrap = false,
+                                modifier = if (n == 0 && info.localStatsLine != null) Modifier.testTag("chat.debug.localStats") else Modifier)
+                        }
+                    }
+                }
             }
             info.promptBudget?.takeIf { it.looksTruncated }?.let { budget ->
                 HorizontalDivider(Modifier.padding(start = 12.dp))

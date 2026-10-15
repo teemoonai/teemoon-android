@@ -46,12 +46,31 @@ data class LastRequestDebugInfo(
     val promptBudget: PromptBudget? = null,
     val isE2EEActive: Boolean,
     val teeVerification: ResponseVerification?,
+    /** On-device turns only: the engine's own account (backend, drafter, load, prefill). See [localStatsLine]. */
+    val localStats: ai.teemoon.inference.LocalTurnStats? = null,
 ) {
     val generationTime: Double?
         get() { val total = totalDuration ?: return null; val ttft = timeToFirstToken ?: return null; return maxOf(0.0, total - ttft) }
     /** Tokens over the window the model was actually producing: thinking plus generation, never the network wait. */
     val tokensPerSecond: Double?
         get() { val tokens = outputTokens ?: return null; val window = (thinkingTime ?: 0.0) + (generationTime ?: 0.0); return if (window > 0) tokens / window else null }
+
+    /**
+     * On-device turns only, the card's FIRST line: the speeds, decode first (what the reader feels — how fast the answer
+     * streams), then prefill, then where they came from — "decode 96tok/s · prefill 2139tok/s · gpu + speculative". The
+     * timing chain moves under it and drops its tok/s, so decode appears once. No load time: the engine loads when
+     * Gemma is chosen in the where chip (the warm-up), not when a message is sent, so it is not this turn's. Cloud turns
+     * have no speed line: there, prefill cannot be told apart from the network.
+     */
+    val localStatsLine: String?
+        get() = localStats?.let { s ->
+            listOfNotNull(tokensPerSecond?.let { String.format(java.util.Locale.US, "decode %.0ftok/s", it) },
+                String.format(java.util.Locale.US, "prefill %.0ftok/s", s.prefillTokensPerSecond),
+                s.backend + if (s.speculative) " + speculative" else "").joinToString(" · ")
+        }
+
+    /** The first line's tok/s, unless the second line carries it (on-device). */
+    val firstLineTokensPerSecond: Double? get() = if (localStats != null) null else tokensPerSecond
 }
 
 class ChatGeneration {
@@ -171,7 +190,8 @@ class ChatGeneration {
             toolCalls = result.toolCalls, threadID = threadID, totalDuration = existing?.totalDuration, timeToFirstToken = existing?.timeToFirstToken,
             thinkingTime = thought ?: existing?.thinkingTime, outputTokens = result.outputTokens ?: existing?.outputTokens,
             promptBudget = result.promptBudget ?: existing?.promptBudget,
-            isE2EEActive = result.isE2eeActive, teeVerification = result.teeVerification ?: existing?.teeVerification)
+            isE2EEActive = result.isE2eeActive, teeVerification = result.teeVerification ?: existing?.teeVerification,
+            localStats = result.localStats ?: existing?.localStats)
     }
 
     /**

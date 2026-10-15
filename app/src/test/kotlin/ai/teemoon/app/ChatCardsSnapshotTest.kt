@@ -43,6 +43,28 @@ class ChatCardsSnapshotTest {
         paparazzi.snapshot { TeemoonTheme { Surface { Column(Modifier.padding(12.dp)) { RequestDebugCard(info, onCopy = {}) } } } }
     }
 
+    /**
+     * An on-device turn's two lines: the turn's timing as for any provider, then the engine's — backend, drafter, and
+     * prefill beside decode. The S26 Ultra code edit of 2026-10-15 (Samsung RTL): 899 tokens in 9.3 s on the GPU with speculative
+     * decoding, the prompt read at 2,139 tok/s.
+     */
+    @Test fun debugCard_onDeviceShowsPrefillAndDecode() {
+        val info = LastRequestDebugInfo(providerName = "Gemma 4 E2B", modelID = "litert-community/gemma-4-E2B-it-litert-lm", url = null,
+            requestHeaders = mapOf("runtime" to "LiteRT-LM"), requestBodyJson = "[ ]", responseBody = "…", toolCalls = emptyList(),
+            threadID = "t", totalDuration = 10.0, timeToFirstToken = 0.6, outputTokens = 899, isE2EEActive = false, teeVerification = null,
+            localStats = ai.teemoon.inference.LocalTurnStats(backend = "gpu", speculative = true, prefillTokens = 1191, prefillTokensPerSecond = 2139.0))
+        paparazzi.snapshot { TeemoonTheme { Surface { Column(Modifier.padding(12.dp)) { RequestDebugCard(info, onCopy = {}) } } } }
+    }
+
+    /** The same card for an NPU turn without a drafter (Pixel 10 Pro): no "+ speculative". */
+    @Test fun debugCard_onDeviceNpuTurn() {
+        val info = LastRequestDebugInfo(providerName = "Gemma 4 E2B", modelID = "litert-community/gemma-4-E2B-it-litert-lm", url = null,
+            requestHeaders = mapOf("runtime" to "LiteRT-LM"), requestBodyJson = "[ ]", responseBody = "…", toolCalls = emptyList(),
+            threadID = "t", totalDuration = 14.2, timeToFirstToken = 0.5, outputTokens = 266, isE2EEActive = false, teeVerification = null,
+            localStats = ai.teemoon.inference.LocalTurnStats(backend = "npu", speculative = false, prefillTokens = 1191, prefillTokensPerSecond = 2082.0))
+        paparazzi.snapshot { TeemoonTheme { Surface { Column(Modifier.padding(12.dp)) { RequestDebugCard(info, onCopy = {}) } } } }
+    }
+
     @Test fun chatCards_errorDebugChips() {
         val error = LlmError(LlmError.Source.Provider("near.ai glm 5.2"), LlmError.providerMessage(402, "near.ai"), httpStatus = 402,
             url = "https://cloud-api.near.ai/v1/chat/completions", responseBody = "{\"error\":{\"message\":\"Insufficient balance\"}}")

@@ -51,10 +51,11 @@ each release is rebuilt from its tag and compared with the apk: [`docs/REPRODUCI
 
 ### only on Android
 
-- **fast.** on-phone Gemma 4 E2B runs at up to 70 tok/s decode on a Galaxy S26 Ultra's GPU, and prefills nearly
-  5,000 tok/s (a ~1,900-token prompt) on a Galaxy S25 Ultra's NPU. teemoon uses LiteRT 2.3 with speculative decoding
-  (Gemma's own drafter) where it measured faster — Snapdragon GPUs and the Snapdragon 8 Elite's NPU — and picks the
-  NPU, GPU or CPU for each phone, proving each with a test token before using it. NPU support follows the Gemma 4
+- **fast.** on-phone Gemma 4 E2B decodes at up to 96 tok/s on a Galaxy S26 Ultra's GPU when editing code with
+  speculative decoding (Gemma's own drafter; 50–57 tok/s for summaries and short answers), and a Galaxy S25 Ultra's NPU
+  prefills a 1,024-token prompt at about 8,600 tok/s with the first token in 0.14 s. teemoon uses LiteRT 2.3, turns
+  speculative decoding on where it measured faster — Snapdragon GPUs — and picks the NPU, GPU or CPU for each phone,
+  proving each with a test token before using it. NPU support follows the Gemma 4
   bundles Google publishes: Google Tensor G5 and G6 (Pixel 10 and 11 series, except the Pixel 10a) and the Snapdragon
   8 Elite (Galaxy S25, S25+, S25 Ultra, S25 Edge, Z Fold7, OnePlus 13, Xiaomi 15 series and other 8 Elite phones; not
   the S25 FE or Z Flip7, which use Exynos). every other phone runs on its GPU or CPU.

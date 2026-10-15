@@ -220,7 +220,8 @@ class LiteRTTransport(
             // actually sent and the runtime settings ARE the request.
             report = TurnReport(url = null,
                 requestHeaders = mapOf("runtime" to "LiteRT-LM", "model" to File(modelPath).name, "backend" to backendLabel, "context-tokens" to contextTokens.toString(), "tools-offered" to (if (includeTools) tools.size.toString() else "0")),
-                requestBodyJson = prettyMessages(messages), isE2eeActive = false, executedToolCalls = records, verify = null),
+                requestBodyJson = prettyMessages(messages), isE2eeActive = false, executedToolCalls = records, verify = null,
+                localStats = bench?.let { LocalTurnStats(engine.backend ?: backendLabel, engine.speculative, it.prefillTokens, it.prefillTokensPerSecond) }),
         )
     }
 

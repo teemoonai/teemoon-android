@@ -107,6 +107,9 @@ interface LocalEngineHandle {
     suspend fun stream(spec: LocalConversationSpec, onPiece: suspend (String) -> Unit)
     fun benchmark(): LocalBenchmark?
     fun close()
+    /** Where the engine runs ("npu", "gpu", "cpu") and whether its drafter is on. */
+    val backend: String? get() = null
+    val speculative: Boolean get() = false
 }
 
 /** Builds engines. The LiteRT-LM binding lives in :ondevice; tests use a scripted one. */

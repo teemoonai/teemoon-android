@@ -35,15 +35,16 @@ class BackendLadderTest {
     }
 
     /** Build.SOC_MODEL is API 31+ and some devices leave it empty: the Pixel board name is the second source. */
-    /** The 2x2 measured on 2026-09-16: only Adreno's GPU rung gains from a drafter; every other cell lost speed. */
-    @Test fun speculativeDecodingIsForQualcommGpusAndTheSnapdragon8EliteNpu() {
+    /** The 2x2 measured on 2026-09-16: only Adreno's GPU rung gains from a drafter; every other cell lost speed or has none. */
+    @Test fun speculativeDecodingIsForQualcommGpusOnly() {
         assertTrue(BackendLadder.wantsSpeculativeDecoding(BackendKind.GPU, socModel = "SM8850", hardware = "qcom"))
         assertTrue(BackendLadder.wantsSpeculativeDecoding(BackendKind.GPU, socModel = "", hardware = "qcom"))
         assertTrue(BackendLadder.wantsSpeculativeDecoding(BackendKind.GPU, socModel = "SM8750", hardware = ""))
         assertFalse("the CPU lost 17 → 14 with it", BackendLadder.wantsSpeculativeDecoding(BackendKind.CPU, socModel = "SM8850", hardware = "qcom"))
         assertFalse("PowerVR lost 9 → 7 with it", BackendLadder.wantsSpeculativeDecoding(BackendKind.GPU, socModel = "Tensor G5", hardware = "blazer"))
         assertFalse("the Tensor NPU lost 16 → 14 with it", BackendLadder.wantsSpeculativeDecoding(BackendKind.NPU, socModel = "Tensor G5", hardware = "blazer"))
-        assertTrue("the Snapdragon 8 Elite NPU gained 33 → 37", BackendLadder.wantsSpeculativeDecoding(BackendKind.NPU, socModel = "SM8750", hardware = "qcom"))
+        assertFalse("the sm8750 NPU bundle carries no drafter (no tf_lite_mtp_drafter section): 37.7 tok/s off and on, medians of 3, 2026-10-15",
+            BackendLadder.wantsSpeculativeDecoding(BackendKind.NPU, socModel = "SM8750", hardware = "qcom"))
         assertFalse("no other Snapdragon has an NPU bundle", BackendLadder.wantsSpeculativeDecoding(BackendKind.NPU, socModel = "SM8850", hardware = "qcom"))
         assertFalse(BackendLadder.wantsSpeculativeDecoding(BackendKind.GPU, socModel = "", hardware = "ranchu"))
         assertFalse("a MediaTek board is unmeasured", BackendLadder.wantsSpeculativeDecoding(BackendKind.GPU, socModel = "MT6989", hardware = "mt6989"))

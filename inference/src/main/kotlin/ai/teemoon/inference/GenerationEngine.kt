@@ -353,6 +353,7 @@ class GenerationEngine(
                 promptBudget = report.promptBudget,
                 teeVerification = verification,
                 isE2eeActive = report.isE2eeActive,
+                localStats = report.localStats,
             ))
             return finalText
         }

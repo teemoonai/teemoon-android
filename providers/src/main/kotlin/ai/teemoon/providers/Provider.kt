@@ -1,5 +1,5 @@
 // ports: teemoon/Providers/Provider.swift @ v1.0.4
-// ports: teemoon/Providers/Provider+Presets.swift @ v1.0.1 (the four presets + presets array)
+// ports: teemoon/Providers/Provider+Presets.swift @ 54617ce (the four presets + presets array; Fireworks leads with kimi-k3)
 // ports: teemoon/Providers/WhereLocality.swift @ v1.0.4 (isFixedAnswerService; prefersSearchFirstBrowse is gone, df74f65)
 // ports: teemoon/Providers/Provider+Presets.swift @ v1.0.4 (inferenceBaseUrl only: the host from EndpointDirectory, c93914c)
 // ports: teemoon/Providers/Provider+Presets.swift @ v1.0.4 (the grok and openrouter fallback models; matchingPreset by match key)
@@ -333,7 +333,9 @@ data class Provider(
             id = "A0000000-0000-0000-0000-000000000004",
             name = "Fireworks",
             endpoint = "https://api.fireworks.ai/inference/v1/chat/completions",
-            model = "accounts/fireworks/models/kimi-k2p6",
+            // kimi-k2p6 left serverless 2026-10-15; k3 is its successor and the OpenRouter preset already leads with it
+            // (iOS 54617ce).
+            model = "accounts/fireworks/models/kimi-k3",
             supportsModelBrowsing = true,
         )
 
