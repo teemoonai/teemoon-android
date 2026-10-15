@@ -6,6 +6,7 @@
 // ports: teemoon/Providers/ProviderStore+Healing.swift @ v1.0.4 (healRetiredNearAIModels(served:), 4b9d154's step in main's shape)
 // ports: teemoon/Providers/ProviderStore+Healing.swift @ v1.0.4 (nearAIProvider: the active near.ai setup first)
 // ports: teemoon/Providers/ProviderStore.swift @ v1.0.4 (addProvider: the fold, the on-device exemption, the union)
+// ports: teemoon/Providers/ProviderStore+Healing.swift @ 5d2fb66 (FireworksRetirement, fireworksRetirements, healRetiredFireworksModels)
 package ai.teemoon.providers
 
 import java.net.URI
@@ -222,4 +223,52 @@ object ProviderHealing {
         val subject = if (count == 1) "one duplicate setup" else "$count duplicate setups"
         return "teemoon merged $subject — $reason. nothing you could run has been lost."
     }
+
+    /**
+     * A Fireworks model that left serverless, and the one that replaces it. Only ids with a KNOWN successor: a guess
+     * would move someone's setup to a model they never chose. Fireworks' /models needs the key, so this is static.
+     */
+    data class FireworksRetirement(
+        val retired: String,
+        val successor: String,
+        val retiredName: String,
+        val successorName: String,
+        /** The retired id's last shipped price, said in the notice so a dearer successor is never a silent change. */
+        val retiredPrice: String,
+    ) {
+        val notice: String
+            get() = "$retiredName is no longer on fireworks, so your fireworks setup now uses $successorName " +
+                "(${FireworksAdapter.fireworksPrices[successor].orEmpty()} per 1M tokens, was $retiredPrice)."
+    }
+
+    /** kimi-k2p6 left serverless 2026-10-15 while it was the shipped default (iOS 5d2fb66; the user chose "switch and tell"). */
+    val fireworksRetirements: List<FireworksRetirement> = listOf(
+        FireworksRetirement(retired = "accounts/fireworks/models/kimi-k2p6", successor = "accounts/fireworks/models/kimi-k3",
+            retiredName = "kimi k2.6", successorName = "kimi k3", retiredPrice = "$0.95/$4.00"),
+    )
+
+    data class FireworksHeal(val providers: List<Provider>, val moved: List<Provider>, val notices: List<String>)
+
+    /**
+     * Moves Fireworks setups (model and equipped list, replaced in place and de-duplicated) off retired ids, with one
+     * notice per retirement that moved anything. Every saved setup on kimi-k2p6 otherwise failed its next send until the
+     * user picked another model: the 1.0.5 preset change moved only NEW setups.
+     */
+    fun healRetiredFireworksModels(providers: List<Provider>): FireworksHeal {
+        var list = providers
+        val moved = ArrayList<Provider>(); val notices = ArrayList<String>()
+        for (r in fireworksRetirements) {
+            var touched = false
+            list = list.map { p ->
+                val host = p.openAIBaseUrl?.let { runCatching { URI(it).host }.getOrNull() }
+                if (EndpointModelCatalog.Source.resolve(host) != EndpointModelCatalog.Source.FIREWORKS) return@map p
+                val equipped = p.equippedModels?.map { if (it == r.retired) r.successor else it }?.distinct()
+                val healed = (if (p.model == r.retired) p.withModel(r.successor) else p).copy(equippedModels = equipped)
+                if (healed == p) p else { moved += healed; touched = true; healed }
+            }
+            if (touched) notices += r.notice
+        }
+        return FireworksHeal(list, moved, notices)
+    }
+
 }

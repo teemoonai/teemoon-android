@@ -252,6 +252,13 @@ class AppState(context: Context, dao: ChatDao? = null) {
             merge.keysSafeToDelete.forEach { loser -> runCatching { credentials.removeSecrets(loser) } }
             log("[providers] ${merge.notice}")
         }
+        // A Fireworks model that left serverless fails every send until moved (iOS 5d2fb66): move it, and say so once.
+        ProviderHealing.healRetiredFireworksModels(list).let { heal ->
+            if (heal.moved.isEmpty()) return@let
+            list = heal.providers
+            _mergeNotice.value = (listOfNotNull(_mergeNotice.value) + heal.notices).joinToString(" ")
+            log("[providers] moved ${heal.moved.size} fireworks setup(s) off a retired model")
+        }
         if (list != _providers.value) { _providers.value = list; persist() }
     }
 

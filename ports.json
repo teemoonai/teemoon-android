@@ -2641,6 +2641,11 @@
           "path": "teemoon/Providers/ProviderStore.swift",
           "sha": "v1.0.4",
           "note": "addProvider (the fold, its on-device exemption, the union, the machine merge) — AppState's store had its own fold with no exemption until 2026-10-05"
+        },
+        {
+          "path": "teemoon/Providers/ProviderStore+Healing.swift",
+          "sha": "5d2fb66",
+          "note": "FireworksRetirement + healRetiredFireworksModels: saved Fireworks setups off kimi-k2p6, with the notice"
         }
       ],
       "tests": [
@@ -4872,6 +4877,18 @@
       ],
       "status": "complete",
       "note": "header-derived entry (2026-10-06)"
+    },
+    {
+      "kotlin": "providers/src/test/kotlin/ai/teemoon/providers/RetiredFireworksModelHealingTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/ProviderTests.swift",
+          "sha": "5d2fb66",
+          "note": "RetiredFireworksModelHealingTests; the retired-row-gone half waits for the kit sync"
+        }
+      ],
+      "status": "complete",
+      "note": "added with 1.0.5 (3916)"
     }
   ],
   "acceptedDivergences": [
