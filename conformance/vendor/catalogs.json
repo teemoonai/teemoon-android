@@ -16,7 +16,7 @@
           "id" : "accounts/fireworks/models/glm-5p2",
           "isNew" : true,
           "modelPageURL" : "https://app.fireworks.ai/models/fireworks/glm-5p2",
-          "price" : "$1.40/$4.40",
+          "price" : "",
           "summary" : "GLM-5.2 introduces a robust 1M-token context and advanced, multi-effort coding capabilities to significantly enhance performance on long-horizon tasks. Its new IndexShare architecture and improved MTP layer simultaneously boost efficiency by reducing per-token FLOPs and increasing speculative decoding lengths.",
           "vendor" : "Z.ai"
         },
@@ -45,7 +45,7 @@
           "id" : "accounts/fireworks/models/kimi-k2p7-code",
           "isNew" : false,
           "modelPageURL" : "https://app.fireworks.ai/models/fireworks/kimi-k2p7-code",
-          "price" : "$0.95/$4.00",
+          "price" : "",
           "summary" : "Kimi K2.7 Code is a coding-focused agentic model built upon Kimi K2.6. With substantial improvements on real-world long-horizon coding tasks, it strengthens end-to-end task completion across complex software engineering workflows while improving token efficiency, reducing thinking-token usage by approximately 30% compared with Kimi K2.6.",
           "vendor" : "Moonshot"
         },
@@ -60,7 +60,7 @@
           "id" : "accounts/fireworks/models/kimi-k2p6",
           "isNew" : false,
           "modelPageURL" : "https://app.fireworks.ai/models/fireworks/kimi-k2p6",
-          "price" : "$0.95/$4.00",
+          "price" : "",
           "summary" : "Kimi K2.6 is an open-source, native multimodal agentic model that advances practical capabilities in long-horizon coding, coding-driven design, proactive autonomous execution, and swarm-based task orchestration.",
           "vendor" : "Moonshot"
         },

@@ -56,13 +56,14 @@ object OllamaAdapter {
      * Cheap probe: is this endpoint an Ollama server? `GET {root}/api/version`
      * returns `{"version":"…"}`. Swallows all errors → false.
      */
-    suspend fun isOllama(baseUrl: String, client: OkHttpClient = defaultClient): Boolean =
+    suspend fun isOllama(baseUrl: String, client: OkHttpClient = defaultClient, timeoutMs: Long = 5_000): Boolean =
         withContext(Dispatchers.IO) {
             val req = Request.Builder()
                 .url("${rootUrl(baseUrl)}/api/version")
                 .get()
                 .build()
-            val callClient = client.newBuilder().callTimeout(5, TimeUnit.SECONDS).build()
+            // iOS 5f015a9: the first-send probe passes 2 s; the Where sheet keeps 5.
+            val callClient = client.newBuilder().callTimeout(timeoutMs, TimeUnit.MILLISECONDS).build()
             val body = runCatching {
                 callClient.newCall(req).execute().use { resp ->
                     if (!resp.isSuccessful) return@withContext false

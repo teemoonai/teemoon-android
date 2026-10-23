@@ -1,4 +1,4 @@
-// ports: teemoonTests/TLSAttestationVerifierTests.swift @ v1.0.1 — all seven, over the kit's tls class (a live
+// ports: teemoonTests/TLSAttestationVerifierTests.swift @ b34d1ec — all eight, over the kit's tls class (a live
 //        include_tls_fingerprint=true exchange from a near.ai model host, that connection's certificate, and the
 //        outcome production answered per case) + android-only: the probe end to end over the seam.
 package ai.teemoon.confidential
@@ -62,6 +62,23 @@ class TlsAttestationVerifierTest {
     }
 
     /** Android-only: the probe path end to end — the recorded exchange over the seam verifies; a redirect-free non-200 or a missing certificate is inconclusive, never hard. */
+    /** 1.0.6 (iOS b34d1ec): the probe quote was only parsed; now it is DCAP-verified too. */
+    @Test fun dcapFailureFailsAVerifiedBinding() {
+        assertTrue(TlsAttestationVerifier.withQuoteCheck(TlsAttestation.Verified, DcapVerification.Failed("signature invalid")).isHardFailure)
+        assertTrue(TlsAttestationVerifier.withQuoteCheck(TlsAttestation.Verified, DcapVerification.Verified(DcapTcbStatus.REVOKED, "", "")).isHardFailure)
+        assertEquals(TlsAttestation.Verified, TlsAttestationVerifier.withQuoteCheck(TlsAttestation.Verified, DcapVerification.Verified(DcapTcbStatus.OUT_OF_DATE, "", "")))
+        assertEquals(TlsAttestation.Inconclusive("x"), TlsAttestationVerifier.withQuoteCheck(TlsAttestation.Inconclusive("x"), DcapVerification.Failed("y")))
+    }
+
+    /** android-only: a binding that already failed never reaches DCAP (no Intel PCS fetch for a replayed quote). */
+    @Test fun dcapRunsOnlyOnAVerifiedBinding() = runBlocking {
+        var dcapCalls = 0
+        val body = """{"intel_quote":"${TlsKit.intelQuote}","signing_address":"${TlsKit.signingAddress}","signing_algo":"${TlsKit.signingAlgo}","tls_cert_fingerprint":"${TlsKit.tlsCertFingerprint}"}"""
+        val replay = TlsAttestationVerifier(TlsProbe { TlsProbeResult(200, body.toByteArray(), TlsKit.certDer) }, quoteCheck = { dcapCalls++; DcapVerification.Failed("unused") })
+            .verify("https://glm-5-1.completions.near.ai/v1")
+        assertTrue(replay is TlsAttestation.Failed); assertEquals(0, dcapCalls)
+    }
+
     @Test fun probe_endToEndOverTheSeam() = runBlocking {
         val body = """{"intel_quote":"${TlsKit.intelQuote}","signing_address":"${TlsKit.signingAddress}","signing_algo":"${TlsKit.signingAlgo}","tls_cert_fingerprint":"${TlsKit.tlsCertFingerprint}"}"""
         // The verifier mints its own nonce, so the recorded quote (bound to the recorded nonce) reads as a replay — a hard failure, which is the honest answer.

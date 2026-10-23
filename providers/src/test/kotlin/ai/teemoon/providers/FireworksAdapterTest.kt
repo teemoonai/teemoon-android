@@ -1,4 +1,4 @@
-// ports: teemoonTests/ProviderCatalogAdapterTests.swift @ v1.0.4 (the FireworksAdapter suite)
+// ports: teemoonTests/ProviderCatalogAdapterTests.swift @ v1.0.5 (the FireworksAdapter suite)
 package ai.teemoon.providers
 
 import kotlinx.coroutines.test.runTest
@@ -72,7 +72,8 @@ class FireworksAdapterTest {
         assertEquals("Kimi K2.6", kimi.displayName)
         assertEquals("Moonshot", kimi.vendor)
         assertEquals("262k", kimi.contextWindow)
-        assertEquals("\$0.95/\$4.00", kimi.price)
+        assertEquals("off serverless 2026-10-15: no row, no borrowed number", "", kimi.price)
+        assertEquals("the one shipped field: no pricing API", "\$0.30/\$1.20", models.first { it.id == "accounts/fireworks/models/minimax-m3" }.price)
     }
 
     @Test fun toolAndVisionCapabilitiesComeFromTheAPI() {

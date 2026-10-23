@@ -1,4 +1,4 @@
-// ports: teemoon/Providers/EndpointModelCatalog.swift @ v1.0.4 (FailureKind, ProbeResult, failureKind,
+// ports: teemoon/Providers/EndpointModelCatalog.swift @ v1.0.5 (FailureKind, ProbeResult, failureKind,
 //        Source, probe, fetchList, OpenAIModelsResponse. LocalServerKind is its own file.)
 package ai.teemoon.providers
 

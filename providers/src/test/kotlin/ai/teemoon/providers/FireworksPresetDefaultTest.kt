@@ -1,4 +1,4 @@
-// ports: teemoon/Providers/Provider+Presets.swift @ 54617ce (the Fireworks preset's default model)
+// ports: teemoon/Providers/Provider+Presets.swift @ v1.0.5 (the Fireworks preset's default model)
 package ai.teemoon.providers
 
 import org.junit.Assert.assertEquals

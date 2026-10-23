@@ -104,6 +104,42 @@ class OpenAiTransportE2EETest {
         assertTrue(transport.lastRawTranscript.contains("chatcmpl-1"))
     }
 
+    /**
+     * android-only (iOS ad960c7's retry, under E2EE): when near.ai refuses the effort field, the turn is asked again
+     * RE-SEALED from the plaintext — new ciphertext (a fresh envelope per field), never the first request's sealed
+     * bytes. The client key header is the session's, so it is the same on both.
+     */
+    @Test fun anEffortRetryIsSealedAfreshNotResent() {
+        ReasoningEffort.forgetRefusals()
+        val model = ModelKey()
+        val peer = E2EEPeer(model.edPub)
+        val bodies = ArrayList<String>(); val clientKeys = ArrayList<String>()
+        val server = Interceptor { chain ->
+            val body = requestBody(chain).also { bodies += it }; val key = chain.request().header("X-Client-Pub-Key")!!.also { clientKeys += it }
+            if (body.contains("reasoning_effort")) jsonResponse(chain, """{"error":"Invalid reasoning effort."}""", code = 400)
+            else {
+                val sealedReply = E2EEEnvelope.seal("ok".toByteArray(), Ed25519ToX25519.publicKey(key.hexToBytesOrNull()!!)).toHex()
+                jsonResponse(chain, """{"id":"chatcmpl-2","choices":[{"message":{"role":"assistant","content":"$sealedReply"},"finish_reason":"stop"}]}""")
+            }
+        }
+        val near = ai.teemoon.providers.Provider(id = "n", name = "near.ai", endpoint = "https://cloud-api.near.ai/v1", model = "z-ai/glm-5.2", requiresAPIKey = true)
+        val transport = OpenAiTransport("https://cloud-api.near.ai/v1/chat/completions", "z-ai/glm-5.2", "k", client = client(server), teeContext = context(peer, model.edPub),
+            effort = ReasoningEffort.For(ReasoningEffort.FAST, near))
+        val result = runBlocking { transport.runTurn(listOf(mapOf("role" to "user", "content" to "my private data")), false, emptyList()) {} }
+        assertEquals("ok", result.content)
+        assertEquals(2, bodies.size)
+        fun wire(b: String) = Json.parseToJsonElement(b).jsonObject["messages"]!!.jsonArray.first().jsonObject["content"]!!.jsonPrimitive.content
+        assertTrue("the retry's ciphertext is new", wire(bodies[0]) != wire(bodies[1]))
+        // the response key is the session's (E2EEPeer), not per request: the retry answers to the same client key
+        assertEquals(clientKeys[0], clientKeys[1])
+        for (b in bodies) {
+            assertFalse("never plaintext on the wire", b.contains("my private data"))
+            assertEquals("my private data", String(E2EEEnvelope.open(wire(b).hexToBytesOrNull()!!, model.x25519Priv)))
+        }
+        assertFalse(bodies[1].contains("reasoning_effort"))
+        ReasoningEffort.forgetRefusals()
+    }
+
     /** A reply that does not decrypt kills the turn: the ciphertext is never rendered, not even for a beat. */
     @Test fun decryptFailure_failsTheStream_neverRendersCiphertext() {
         val model = ModelKey()
@@ -129,5 +165,31 @@ class OpenAiTransportE2EETest {
         assertEquals("hi", result.content); assertNull(result.report.verify)
         // The signed form: every received line + "\n", the [DONE] event's blank line included.
         assertEquals("data: {\"id\":\"c2\",\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\ndata: [DONE]\n\n", transport.lastRawTranscript)
+    }
+
+    /**
+     * iOS PromptCachePrefixTests.sealingTakesTheSortedPlaintextAndLeavesStrings (904de68): the sort is on the plaintext,
+     * in makeBody, before e2eeSealedBody; sealed fields go out as plain ciphertext strings, in the same message order,
+     * whatever the sort did.
+     */
+    @Test fun sealingTakesTheSortedPlaintextAndLeavesStrings() {
+        var plaintext: ByteArray? = null
+        val capture = Interceptor { chain -> plaintext = Buffer().also { chain.request().body!!.writeTo(it) }.readByteArray(); throw IOException("offline") }
+        val transport = OpenAiTransport("https://cloud-api.near.ai/v1/chat/completions", "z-ai/glm-5.3-flash", "k", client = client(capture))
+        runCatching { runBlocking { transport.runTurn(listOf(mapOf("role" to "system", "content" to "persona"), mapOf("role" to "user", "content" to "my private question")), true, listOf(BraveWebSearchTool(apiKey = "b"))) {} } }
+        val plain = Json.parseToJsonElement(String(plaintext!!, Charsets.UTF_8)).jsonObject
+        assertEquals("the plaintext is sorted before it is sealed", plain.keys.sorted(), plain.keys.toList())
+        val sealed = E2EEStreamCodec(E2EEPeer(ModelKey().edPub)).encryptedBodyIfChanged(plaintext)!!
+        val json = Json.parseToJsonElement(String(sealed, Charsets.UTF_8)).jsonObject
+        val messages = json["messages"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(listOf("system", "user"), messages.map { it["role"]!!.jsonPrimitive.content })
+        for (m in messages) {
+            val content = m["content"] as? kotlinx.serialization.json.JsonPrimitive
+            assertTrue("a sealed content is one ciphertext string", content != null && content.isString)
+            assertFalse(content!!.content.contains("private"))
+        }
+        val fn = json["tools"]!!.jsonArray.first().jsonObject["function"]!!.jsonObject
+        assertTrue("the schema is sealed whole, as a string", (fn["parameters"] as? kotlinx.serialization.json.JsonPrimitive)?.isString == true)
+        assertFalse(String(sealed, Charsets.UTF_8).contains("my private question"))
     }
 }

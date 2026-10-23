@@ -20,7 +20,7 @@
     "source to track."
   ],
   "iosRepo": "https://github.com/teemoonai/teemoon-ios",
-  "followedTag": "v1.0.4",
+  "followedTag": "v1.0.5",
   "kitVersion": "0.5.0",
   "entries": [
     {
@@ -138,6 +138,15 @@
           "path": "teemoon/Chat/ChatViewModel.swift",
           "sha": "v1.0.4",
           "note": "the saved reply's sources are what it cites (GroundingSource.citedOrAll) — ported 2026-10-05, a call site the 1.0.4 sweep missed"
+        },
+        {
+          "path": "teemoon/Chat/ChatViewModel.swift",
+          "sha": "14b2974"
+        },
+        {
+          "path": "teemoon/Chat/ChatViewModel.swift",
+          "sha": "cf57d0c",
+          "note": "turnIsReask: a retry or Think Harder of the first question is not a first message (Android: send's reasking/retried)"
         }
       ],
       "status": "complete",
@@ -263,7 +272,7 @@
         },
         {
           "path": "teemoon/Providers/Provider+Presets.swift",
-          "sha": "54617ce",
+          "sha": "v1.0.5",
           "note": "the presets: near.ai default (glm-5.3-flash), grok-4.6 and moonshotai/kimi-k3 fallbacks, matchingPreset by match key. Everything in the file up to c3fb76d except keyValidationEndpoint's OpenRouter case (fbedb79)."
         },
         {
@@ -273,7 +282,7 @@
         },
         {
           "path": "teemoon/Providers/Provider+Presets.swift",
-          "sha": "54617ce",
+          "sha": "v1.0.5",
           "note": "inferenceBaseUrl only: the direct host from EndpointDirectory.persistedBase (c93914c), not the shipped column"
         }
       ],
@@ -557,7 +566,7 @@
       "sources": [
         {
           "path": "teemoon/Providers/ProviderKeyValidator.swift",
-          "sha": "v1.0.4",
+          "sha": "v1.0.5",
           "note": "Endpoint (+ OPEN_ROUTER), ValidationResult, the /auth/key URL"
         }
       ],
@@ -569,7 +578,7 @@
       "sources": [
         {
           "path": "teemoon/Providers/EndpointModelCatalog.swift",
-          "sha": "v1.0.4",
+          "sha": "v1.0.5",
           "note": "FailureKind, ProbeResult, failureKind, Source, probe, OpenAIModelsResponse. Fetch is injected. LocalServerKind is its own file."
         }
       ],
@@ -581,7 +590,7 @@
       "sources": [
         {
           "path": "teemoon/Providers/ModelDefaultRule.swift",
-          "sha": "v1.0.4",
+          "sha": "v1.0.5",
           "note": "e2eeOnly pool is empty until NearAIModelCatalog lands."
         }
       ],
@@ -593,7 +602,7 @@
       "sources": [
         {
           "path": "teemoonTests/ModelDefaultRuleTests.swift",
-          "sha": "v1.0.4"
+          "sha": "v1.0.5"
         }
       ],
       "status": "complete",
@@ -669,7 +678,7 @@
         },
         {
           "path": "teemoon/Inference/StreamDebugHelpers.swift",
-          "sha": "v1.0.4",
+          "sha": "v1.0.5",
           "note": "apiErrorMessage + ProblemDetails; ErrorDrainer is OpenAiTransport's error path"
         }
       ],
@@ -748,6 +757,11 @@
         {
           "path": "teemoon/Providers/Adapters/OllamaAdapter.swift",
           "sha": "v1.0.1"
+        },
+        {
+          "path": "teemoon/Providers/Adapters/OllamaAdapter.swift",
+          "sha": "5f015a9",
+          "note": "@5f015a9: isOllama takes a timeout (the first-send probe's 2 s; the Where sheet keeps 5)"
         }
       ],
       "status": "complete",
@@ -835,6 +849,11 @@
           "path": "teemoon/Providers/Adapters/FireworksAdapter.swift",
           "sha": "v1.0.4",
           "note": "@a411f18: 1.0.4 parity: needs_port 2, no_behavior 1 (ported 2026-10-02)"
+        },
+        {
+          "path": "teemoon/Providers/Provider+Presets.swift",
+          "sha": "cddc5e6",
+          "note": "@cddc5e6: fireworksPrices only — equals iOS release-1.0.6's 13 rows; 54617ce's seven off-serverless rows dropped in 3917.8 (missed until then)"
         }
       ],
       "status": "complete",
@@ -845,8 +864,8 @@
       "sources": [
         {
           "path": "teemoonTests/ProviderCatalogAdapterTests.swift",
-          "sha": "v1.0.4",
-          "note": "FireworksAdapter suite. Payload reconstructed from assertions, not copied from teemoonTests/Fixtures.; @a411f18: 1.0.4 parity: needs_port 1, ported 4 (ported 2026-10-02)"
+          "sha": "v1.0.5",
+          "note": "FireworksAdapter suite. Payload reconstructed from assertions, not copied from teemoonTests/Fixtures.; @a411f18: 1.0.4 parity: needs_port 1, ported 4 (ported 2026-10-02); @54617ce: @54617ce: the kimi row asserts a blank price, minimax-m3 carries the shipped-price check; the dated-snapshot test is ModelCatalog's, not this suite"
         }
       ],
       "status": "complete",
@@ -1150,7 +1169,8 @@
       "sources": [
         {
           "path": "teemoon/Confidential/AttestationRecord.swift",
-          "sha": "v1.0.1"
+          "sha": "97b2ca9",
+          "note": "@97b2ca9: gpuSigningKeyBoundToHardware"
         }
       ],
       "status": "complete",
@@ -1188,13 +1208,13 @@
       "sources": [
         {
           "path": "teemoon/Confidential/DCAPVerifier.swift",
-          "sha": "v1.0.1",
-          "note": "DCAPVerification, DCAPTcbStatus"
+          "sha": "9722921",
+          "note": "DCAPVerification, DCAPTcbStatus; @9722921: DCAPTcbStatus.isAccepted (allow-list UpToDate/OutOfDate); isHardFailure = !isAccepted"
         },
         {
           "path": "teemoon/Confidential/DCAPService.swift",
-          "sha": "v1.0.1",
-          "note": "RecordDCAPVerification + rollups"
+          "sha": "9722921",
+          "note": "RecordDCAPVerification + rollups; @9722921: TCB allow-list: hasHardFailure + failureReason for a non-accepted status"
         }
       ],
       "status": "complete",
@@ -1205,8 +1225,8 @@
       "sources": [
         {
           "path": "teemoon/Confidential/NRASService.swift",
-          "sha": "v1.0.1",
-          "note": "NRASVerification value type; the service is NrasService.kt"
+          "sha": "d382a55",
+          "note": "NRASVerification value type; the service is NrasService.kt; @d382a55: d382a55 touched only the service; the value type is unchanged"
         }
       ],
       "status": "complete",
@@ -1217,7 +1237,7 @@
       "sources": [
         {
           "path": "teemoon/Confidential/TLSAttestationVerifier.swift",
-          "sha": "v1.0.1",
+          "sha": "b34d1ec",
           "note": "TLSAttestation value type; the verifier is TlsAttestationVerifier.kt"
         }
       ],
@@ -1316,6 +1336,17 @@
       "note": "19/19; +3 Android-only (preview bindings hold, fail-closed negatives, hex)."
     },
     {
+      "kotlin": "confidential/src/test/kotlin/ai/teemoon/confidential/TcbAllowListTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/TcbAllowListTests.swift",
+          "sha": "9722921"
+        }
+      ],
+      "status": "complete",
+      "note": "3/3; the parameterised Swift tests loop over the same arguments"
+    },
+    {
       "kotlin": "confidential/src/test/kotlin/ai/teemoon/confidential/DcapVerificationTest.kt",
       "sources": [
         {
@@ -1377,8 +1408,8 @@
       "sources": [
         {
           "path": "teemoon/Confidential/TEESignatureVerifier.swift",
-          "sha": "v1.0.1",
-          "note": "the ResponseVerification value type only"
+          "sha": "441cecf",
+          "note": "the ResponseVerification value type only; @97b2ca9: SignerUnattested added; GatewayTrustOnly reworded; @441cecf: no change to the value type"
         }
       ],
       "status": "complete",
@@ -1389,7 +1420,7 @@
       "sources": [
         {
           "path": "teemoon/Confidential/ModelArtifact.swift",
-          "sha": "v1.0.4"
+          "sha": "v1.0.5"
         }
       ],
       "status": "complete",
@@ -1400,8 +1431,8 @@
       "sources": [
         {
           "path": "teemoon/Confidential/ConfidentialSession.swift",
-          "sha": "v1.0.4",
-          "note": "outcomeWhenNoDirectHost: a missing direct host degrades for own fleet and stays ordinary for tiers that never had an enclave; hasAuthoritativeDirectory removed.; @a411f18: 1.0.4 parity: needs_port 1, no_behavior 1, ported 3 (the 8 s verifier timer, ported as VerifierTimeout.kt)"
+          "sha": "ebc9bdb",
+          "note": "outcomeWhenNoDirectHost: a missing direct host degrades for own fleet and stays ordinary for tiers that never had an enclave; hasAuthoritativeDirectory removed.; @a411f18: 1.0.4 parity: needs_port 1, no_behavior 1, ported 3 (the 8 s verifier timer, ported as VerifierTimeout.kt); @ebc9bdb: e2eeKey/attestationOutcome poll to the deadline, never join the fetch first"
         },
         {
           "path": "teemoon/Confidential/ConfidentialSession+Verdict.swift",
@@ -1410,8 +1441,8 @@
         },
         {
           "path": "teemoon/Confidential/ConfidentialSession+Refresh.swift",
-          "sha": "v1.0.4",
-          "note": "outcomeWhenNoDirectHost: a missing direct host degrades for own fleet and stays ordinary for tiers that never had an enclave; hasAuthoritativeDirectory removed.; @a411f18: 1.0.4 parity: ported 3"
+          "sha": "ebc9bdb",
+          "note": "outcomeWhenNoDirectHost: a missing direct host degrades for own fleet and stays ordinary for tiers that never had an enclave; hasAuthoritativeDirectory removed.; @a411f18: 1.0.4 parity: ported 3; @ebc9bdb: adopt(record, provider): record + verifiers in one step"
         },
         {
           "path": "teemoon/Confidential/ConfidentialSession+Verifiers.swift",
@@ -1420,8 +1451,8 @@
         },
         {
           "path": "teemoon/Confidential/ConfidentialSession.swift",
-          "sha": "v1.0.4",
-          "note": "provenanceSettled + run token; @a411f18: 1.0.4 parity: needs_port 1, no_behavior 1, ported 3 (the 8 s verifier timer, ported as VerifierTimeout.kt)"
+          "sha": "ebc9bdb",
+          "note": "provenanceSettled + run token; @a411f18: 1.0.4 parity: needs_port 1, no_behavior 1, ported 3 (the 8 s verifier timer, ported as VerifierTimeout.kt); @ebc9bdb: e2eeKey/attestationOutcome poll to the deadline, never join the fetch first"
         },
         {
           "path": "teemoon/Confidential/ConfidentialSession+Verifiers.swift",
@@ -1435,23 +1466,23 @@
         },
         {
           "path": "teemoon/Confidential/ConfidentialSession.swift",
-          "sha": "v1.0.4",
-          "note": "verdictsPending / settleVerifiers / abandonTurn; prepareTurn settles the hard-block-capable verdicts; @a411f18: 1.0.4 parity: needs_port 1, no_behavior 1, ported 3 (the 8 s verifier timer, ported as VerifierTimeout.kt)"
+          "sha": "ebc9bdb",
+          "note": "verdictsPending / settleVerifiers / abandonTurn; prepareTurn settles the hard-block-capable verdicts; @a411f18: 1.0.4 parity: needs_port 1, no_behavior 1, ported 3 (the 8 s verifier timer, ported as VerifierTimeout.kt); @ebc9bdb: e2eeKey/attestationOutcome poll to the deadline, never join the fetch first"
         },
         {
           "path": "teemoon/Confidential/ConfidentialSession.swift",
-          "sha": "v1.0.4",
-          "note": "verdictsPending is attested-only; @a411f18: 1.0.4 parity: needs_port 1, no_behavior 1, ported 3 (the 8 s verifier timer, ported as VerifierTimeout.kt)"
+          "sha": "ebc9bdb",
+          "note": "verdictsPending is attested-only; @a411f18: 1.0.4 parity: needs_port 1, no_behavior 1, ported 3 (the 8 s verifier timer, ported as VerifierTimeout.kt); @ebc9bdb: e2eeKey/attestationOutcome poll to the deadline, never join the fetch first"
         },
         {
           "path": "teemoon/Confidential/ConfidentialSession+Refresh.swift",
-          "sha": "v1.0.4",
-          "note": "clearDerivedState drops the verifier handles; @a411f18: 1.0.4 parity: ported 3"
+          "sha": "ebc9bdb",
+          "note": "clearDerivedState drops the verifier handles; @a411f18: 1.0.4 parity: ported 3; @ebc9bdb: adopt(record, provider): record + verifiers in one step"
         },
         {
           "path": "teemoon/Confidential/ConfidentialSession+Refresh.swift",
-          "sha": "v1.0.4",
-          "note": "directHostMissing; a failed fetch is retried by the staleness check at most once a minute; @a411f18: 1.0.4 parity: ported 3"
+          "sha": "ebc9bdb",
+          "note": "directHostMissing; a failed fetch is retried by the staleness check at most once a minute; @a411f18: 1.0.4 parity: ported 3; @ebc9bdb: adopt(record, provider): record + verifiers in one step"
         },
         {
           "path": "teemoon/Confidential/ConfidentialSession+Verdict.swift",
@@ -1472,8 +1503,8 @@
       "sources": [
         {
           "path": "teemoonTests/AppStateTests.swift",
-          "sha": "v1.0.4",
-          "note": "the ConfidentialSession suite; @a411f18: 1.0.4 parity: needs_port 4, no_behavior 4, ported 11 (ported 2026-10-02)"
+          "sha": "ebc9bdb",
+          "note": "the ConfidentialSession suite; @a411f18: 1.0.4 parity: needs_port 4, no_behavior 4, ported 11 (ported 2026-10-02); @ebc9bdb: aHungAttestationFetchDoesNotOutlastTheKeyWait, adoptingARecordLeavesNoUnlaunchedCheck; awaitValueGivesUpAtItsTimeout has no counterpart (no awaitValue here)"
         },
         {
           "path": "teemoonTests/E2EESecurityExploitTests.swift",
@@ -1487,23 +1518,23 @@
         },
         {
           "path": "teemoonTests/AppStateTests.swift",
-          "sha": "v1.0.4",
-          "note": "aSealedSessionIsVerifyingUntilProvenanceSettles, plus the Android-only cancelled-pass case; @a411f18: 1.0.4 parity: needs_port 4, no_behavior 4, ported 11 (ported 2026-10-02)"
+          "sha": "ebc9bdb",
+          "note": "aSealedSessionIsVerifyingUntilProvenanceSettles, plus the Android-only cancelled-pass case; @a411f18: 1.0.4 parity: needs_port 4, no_behavior 4, ported 11 (ported 2026-10-02); @ebc9bdb: aHungAttestationFetchDoesNotOutlastTheKeyWait, adoptingARecordLeavesNoUnlaunchedCheck; awaitValueGivesUpAtItsTimeout has no counterpart (no awaitValue here)"
         },
         {
           "path": "teemoonTests/AppStateTests.swift",
-          "sha": "v1.0.4",
-          "note": "the three prepareTurn / abandonTurn cases; @a411f18: 1.0.4 parity: needs_port 4, no_behavior 4, ported 11 (ported 2026-10-02)"
+          "sha": "ebc9bdb",
+          "note": "the three prepareTurn / abandonTurn cases; @a411f18: 1.0.4 parity: needs_port 4, no_behavior 4, ported 11 (ported 2026-10-02); @ebc9bdb: aHungAttestationFetchDoesNotOutlastTheKeyWait, adoptingARecordLeavesNoUnlaunchedCheck; awaitValueGivesUpAtItsTimeout has no counterpart (no awaitValue here)"
         },
         {
           "path": "teemoonTests/AppStateTests.swift",
-          "sha": "v1.0.4",
-          "note": "the two verifier-handle cases; @a411f18: 1.0.4 parity: needs_port 4, no_behavior 4, ported 11 (ported 2026-10-02)"
+          "sha": "ebc9bdb",
+          "note": "the two verifier-handle cases; @a411f18: 1.0.4 parity: needs_port 4, no_behavior 4, ported 11 (ported 2026-10-02); @ebc9bdb: aHungAttestationFetchDoesNotOutlastTheKeyWait, adoptingARecordLeavesNoUnlaunchedCheck; awaitValueGivesUpAtItsTimeout has no counterpart (no awaitValue here)"
         },
         {
           "path": "teemoonTests/AppStateTests.swift",
-          "sha": "v1.0.4",
-          "note": "MissingDirectHostReasonTests (2); @a411f18: 1.0.4 parity: needs_port 4, no_behavior 4, ported 11 (ported 2026-10-02)"
+          "sha": "ebc9bdb",
+          "note": "MissingDirectHostReasonTests (2); @a411f18: 1.0.4 parity: needs_port 4, no_behavior 4, ported 11 (ported 2026-10-02); @ebc9bdb: aHungAttestationFetchDoesNotOutlastTheKeyWait, adoptingARecordLeavesNoUnlaunchedCheck; awaitValueGivesUpAtItsTimeout has no counterpart (no awaitValue here)"
         }
       ],
       "status": "partial",
@@ -1515,7 +1546,7 @@
       "sources": [
         {
           "path": "teemoonTests/ModelArtifactTests.swift",
-          "sha": "v1.0.4"
+          "sha": "v1.0.5"
         }
       ],
       "status": "complete",
@@ -1576,7 +1607,7 @@
       "sources": [
         {
           "path": "teemoon/Confidential/AuditIndex.swift",
-          "sha": "v1.0.4",
+          "sha": "v1.0.5",
           "note": "everything but VerdictClass (AuditVerdictClass.kt)"
         }
       ],
@@ -2002,7 +2033,7 @@
       "sources": [
         {
           "path": "teemoon/Providers/ProviderStore+Credentials.swift",
-          "sha": "v1.0.4",
+          "sha": "v1.0.5",
           "note": "adds presetsWithoutKey — matched on the endpoint, for the same reason credential(endpoint) is."
         },
         {
@@ -2088,8 +2119,8 @@
       "sources": [
         {
           "path": "teemoon/Confidential/TEESignatureVerifier.swift",
-          "sha": "v1.0.1",
-          "note": "SignedExchange, ContentBinding, TEEMessageSignature, and the verifier over injected fetch/refetch/sleep seams; TEEContext + AttestationService.fetchSigningAddress are the AttestationService row"
+          "sha": "441cecf",
+          "note": "SignedExchange, ContentBinding, TEEMessageSignature, and the verifier over injected fetch/refetch/sleep seams; TEEContext + AttestationService.fetchSigningAddress are the AttestationService row; @97b2ca9: 1.0.6 verifier: explicit signing_algo=ecdsa (OpenAiTransport.fetchSignature), signature_kind, exact SignedText per kind, ed25519 against the quote-bound model key, gateway at most GatewayTrustOnly, rotation path removed; evaluate() is the pure verdict; @441cecf: ed25519 asked first when the model key is attested; a gateway-kind non-ecdsa answer refetched as ecdsa"
         }
       ],
       "status": "complete"
@@ -2133,7 +2164,29 @@
         {
           "path": "teemoonTests/TEESignatureVerifierTests.swift",
           "sha": "v1.0.1",
-          "note": "decoding (2) + verify (2) + 4 android-only seam tests"
+          "note": "decoding (2) + android-only seam tests over the 1.0.6 verifier (unavailable, no exchange, 404 retry, error envelope, forged ecdsa, content mismatch, fetch failure); the verdict negatives are SignatureVerdictTest"
+        }
+      ],
+      "status": "complete"
+    },
+    {
+      "kotlin": "confidential/src/test/kotlin/ai/teemoon/confidential/SignatureVerdictTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/SignatureVerdictTests.swift",
+          "sha": "97b2ca9",
+          "note": "all 15, over the two captures vendored byte-identical from teemoonTests/Fixtures (src/test/resources/fixtures)"
+        }
+      ],
+      "status": "complete"
+    },
+    {
+      "kotlin": "confidential/src/test/kotlin/ai/teemoon/confidential/ConformanceSignaturesTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/ConformanceVectorsSignatures.swift",
+          "sha": "39d3ff2",
+          "note": "the consuming half (vectorsReproduceUnderProduction, iosAgreesWithTheSDK → androidAgreesWithTheSDK) + one fixture-consistency check; minting stays iOS's"
         }
       ],
       "status": "complete"
@@ -2175,11 +2228,13 @@
       "sources": [
         {
           "path": "teemoon/Confidential/DCAPVerifier.swift",
-          "sha": "v1.0.1"
+          "sha": "9722921",
+          "note": "@9722921: 9722921 touched only the value types (DcapVerification.kt); service doc comment updated"
         },
         {
           "path": "teemoon/Confidential/DCAPService.swift",
-          "sha": "v1.0.1"
+          "sha": "9722921",
+          "note": "@9722921: 9722921 touched only RecordDCAPVerification (DcapVerification.kt) and the TCB policy comment"
         }
       ],
       "status": "complete",
@@ -2235,7 +2290,8 @@
       "sources": [
         {
           "path": "teemoon/Confidential/AttestationService.swift",
-          "sha": "v1.0.4"
+          "sha": "ebc9bdb",
+          "note": "@ebc9bdb: awaitValue's task-group race: no Android counterpart — the model leg is withTimeoutOrNull { task.await() }, which cancels the await at the cap"
         },
         {
           "path": "teemoon/Confidential/AttestationService+Reports.swift",
@@ -2243,11 +2299,12 @@
         },
         {
           "path": "teemoon/Confidential/AttestationService+Model.swift",
-          "sha": "v1.0.4"
+          "sha": "v1.0.5"
         },
         {
           "path": "teemoon/Confidential/AttestationService+GPU.swift",
-          "sha": "v1.0.4"
+          "sha": "97b2ca9",
+          "note": "@97b2ca9: fetchSigningAddress removed (the unverified key-rotation read)"
         },
         {
           "path": "teemoon/Confidential/AttestationService+Routing.swift",
@@ -2255,8 +2312,8 @@
         },
         {
           "path": "teemoon/Inference/ConfidentialLanguageModel.swift",
-          "sha": "v1.0.1",
-          "note": "TEEContext only; the LanguageModel wrapper is GenerationEngine on Android"
+          "sha": "3d561c4",
+          "note": "TEEContext only; the LanguageModel wrapper is GenerationEngine on Android; @3d561c4: effort plumbing: on Android the transport is built in ChatViewModel/AppState.transportFor, which carry it; nothing in AttestationService"
         }
       ],
       "tests": [
@@ -2451,32 +2508,33 @@
       "sources": [
         {
           "path": "teemoon/Confidential/NRASService.swift",
-          "sha": "v1.0.1"
+          "sha": "d382a55",
+          "note": "@d382a55: d382a55: ES384 against NVIDIA's JWKS (LiveNrasKeys, cached 1h, refetched on unknown kid), iss, nbf/exp ±120 s, eat_nonce; JOSE r||s → DER for the JDK verifier"
         }
       ],
       "tests": [
         {
           "path": "teemoonTests/NRASServiceTests.swift",
-          "sha": "b289c52",
-          "note": "7/7 over the kit nras class"
+          "sha": "d382a55",
+          "note": "14/14 over the kit nras class (jwks + verifiedAt) plus the refetch-on-unknown-kid guard"
         }
       ],
       "status": "complete",
       "fixtureClass": "nras",
-      "note": "the http seam is NrasHttpClient; the JWT is read, not signature-verified (TLS trust model, as iOS)"
+      "note": "the http seam is NrasHttpClient, the key seam NrasKeySource, the clock now(); the overall JWT is ES384-verified against NVIDIA's JWKS (d382a55)"
     },
     {
       "kotlin": "confidential/src/main/kotlin/ai/teemoon/confidential/TlsAttestationVerifier.kt",
       "sources": [
         {
           "path": "teemoon/Confidential/TLSAttestationVerifier.swift",
-          "sha": "v1.0.1"
+          "sha": "b34d1ec"
         }
       ],
       "tests": [
         {
           "path": "teemoonTests/TLSAttestationVerifierTests.swift",
-          "sha": "b289c52",
+          "sha": "b34d1ec",
           "note": "7/7 over the kit tls class; +1 Android-only probe test"
         }
       ],
@@ -2553,7 +2611,7 @@
       "sources": [
         {
           "path": "teemoon/Providers/ProviderKeyValidator.swift",
-          "sha": "v1.0.4",
+          "sha": "v1.0.5",
           "note": "validate() over a status-fetch seam"
         }
       ],
@@ -2646,6 +2704,11 @@
           "path": "teemoon/Providers/ProviderStore+Healing.swift",
           "sha": "5d2fb66",
           "note": "FireworksRetirement + healRetiredFireworksModels: saved Fireworks setups off kimi-k2p6, with the notice"
+        },
+        {
+          "path": "teemoon/Providers/ProviderStore+Healing.swift",
+          "sha": "ffcfc00",
+          "note": "@ffcfc00: fireworksRetirements only — FireworksRetirement gains source/place and the NVIDIA row (5d2fb66's table was ported in 1.0.5); f742cc7's pending-notice file is iOS-only (Siri's own store)"
         }
       ],
       "tests": [
@@ -2739,7 +2802,7 @@
         },
         {
           "path": "teemoon/Views/Chat/NoRemoteAttachmentLoader.swift",
-          "sha": "v1.0.4",
+          "sha": "v1.0.5",
           "note": "the exfiltration guard. Android's renderer takes NoOpImageTransformerImpl plus an `image` component that renders alt text, which is the same refusal by different means; the ABSENCE half (no image loader anywhere in the render path) is a behaviorLedger sourceAbsent rule, because there is no line of code to point at."
         }
       ],
@@ -2826,12 +2889,13 @@
         },
         {
           "path": "teemoon/Inference/ChatGeneration+Transcript.swift",
-          "sha": "v1.0.1"
+          "sha": "224ec87",
+          "note": "@224ec87: {{datetime}} resolves to the day; currentTimeNote carries the minute on the outgoing turn"
         },
         {
           "path": "teemoon/Inference/LastRequestDebugInfo.swift",
-          "sha": "v1.0.1",
-          "note": "LastRequestDebugInfo; promptBudget not yet carried (no transport populates it)"
+          "sha": "7cd8c10",
+          "note": "@7cd8c10: effortLevel is \"effort low/high\" / \"thinking off/on\", on device from the \"thinking\" header; the copied line is the same words"
         }
       ],
       "status": "complete"
@@ -2872,7 +2936,7 @@
         },
         {
           "path": "teemoonTests/LLMErrorTests.swift",
-          "sha": "v1.0.4",
+          "sha": "v1.0.5",
           "note": "the three problem-details cases (ApiErrorMessageTest)"
         }
       ],
@@ -2914,6 +2978,11 @@
           "path": "teemoonTests/UnconfiguredSearchTests.swift",
           "sha": "v1.0.1",
           "note": "WebSearchOfferLifetime (5), PendingSearchRetry (3 of 4 — 'consumed without a key' is the view model's runPendingSearchRetryIfReady), GroundingToolAttachment (4); the tool suite is BraveWebSearchToolTest; the settings-screen suites live with AddEditProviderModel/ProviderHealing"
+        },
+        {
+          "path": "teemoonTests/PromptPrefixStabilityTests.swift",
+          "sha": "224ec87",
+          "note": "PromptPrefixStabilityTest (4: the 3 iOS cases + the note's exact shape)"
         }
       ],
       "status": "complete",
@@ -3129,7 +3198,7 @@
         },
         {
           "path": "teemoon/Views/Chat/GenerationActivityChipView.swift",
-          "sha": "v1.0.1",
+          "sha": "4510788",
           "note": "no breathing animation"
         },
         {
@@ -3156,6 +3225,11 @@
           "path": "teemoon/Views/Chat/StreamingMessageView.swift",
           "sha": "v1.0.1",
           "note": "trailingChipVisible + the 1 s stallDelay (TrailingActivityChip)"
+        },
+        {
+          "path": "teemoon/Views/Chat/RequestDebugView.swift",
+          "sha": "6fdcb43",
+          "note": "the timing row carries effort and cache and wraps to two lines (card-one-line, 1.0.7)"
         }
       ],
       "status": "complete"
@@ -3167,6 +3241,11 @@
           "path": "teemoonTests/DebugCopyRedactionTests.swift",
           "sha": "v1.0.1",
           "note": "errorCardCopy/requestCardCopy; the header/url suites are in PresentationLogicTest"
+        },
+        {
+          "path": "teemoonTests/TurnPhasesTests.swift",
+          "sha": "6fdcb43",
+          "note": "theCardsTimingRowEndsWithEffortAndCache"
         }
       ],
       "status": "complete",
@@ -3261,7 +3340,7 @@
       "sources": [
         {
           "path": "teemoon/Views/Settings/ModelBrowserView.swift",
-          "sha": "v1.0.4",
+          "sha": "v1.0.5",
           "note": "the browser on ModelBrowserListing + ModelBrowserDoor: count and one sort/filter menu, typed-id row, three empty states with retry, pull to refresh, flat rows naming vendor and tier. The model card's offers table (835d7c8) is not here."
         },
         {
@@ -3288,7 +3367,7 @@
       "sources": [
         {
           "path": "teemoon/Views/Settings/ModelBrowserView.swift",
-          "sha": "v1.0.4",
+          "sha": "v1.0.5",
           "note": "by tier with the selected check; flat by price; the failed load with its retry; a model detail"
         }
       ],
@@ -3408,7 +3487,7 @@
         },
         {
           "path": "teemoon/Views/Settings/CloudKeyProviderPickerView.swift",
-          "sha": "v1.0.4",
+          "sha": "v1.0.5",
           "note": "CloudKeyPicker (pure) + CloudKeyProviderPickerScreen. The navigation is the host's on both sides; the pop-on-save rule is CloudKeyPicker.dismissAfterReturn."
         }
       ],
@@ -3529,6 +3608,11 @@
           "path": "teemoon/Inference/LiteRTTransport.swift",
           "sha": "v1.0.4",
           "note": "the rule only: an engine is discarded when the turn ends, never under it. The iOS mechanism (poll applicationState, abandon a Metal-wedged decode, re-ask on return) does not apply: Android does not revoke the accelerator from a backgrounded app, and TurnService keeps the turn running — measured, a 1010-token answer finished backgrounded at 10 tok/s; @a411f18: 1.0.4 parity: ios_only 2, no_behavior 3, ported 8"
+        },
+        {
+          "path": "teemoon/Inference/LiteRTTransport.swift",
+          "sha": "a6ce6e8",
+          "note": "@7cd8c10+a6ce6e8: thinking (ThinkingConfig on for Think Harder), cap 4800+2048 as the runtime's maxOutputToken, truncation from the decode count, strippingInlineThought, the \"thinking\" header; the channel thought was never read (Content.Text only)"
         }
       ],
       "status": "complete"
@@ -3790,7 +3874,7 @@
         },
         {
           "path": "teemoon/Views/Chat/ChatComposer.swift",
-          "sha": "v1.0.4",
+          "sha": "v1.0.5",
           "note": "the Composer composable IS this view: the 24pt pill, the >=48pt field, the filled send button and the stop square. Divergences, both deliberate: send stays live when there is no provider so the gate can ANSWER on tap (iOS disables on an empty prompt alone), and the keyboard's action key is Send with a hardware return still breaking the line, which is the Android convention where iOS's macOS arm uses shift-return."
         }
       ],
@@ -3811,7 +3895,7 @@
         },
         {
           "path": "teemoon/App/UITestStoreSeeding.swift",
-          "sha": "v1.0.4",
+          "sha": "v1.0.5",
           "note": "seedLongThread and seedFixtureThreads. seedShapedThreads is NOT ported: it rebuilds threads from thread_shapes.json, measured from the iOS developer's real threads and shipped in that bundle. The data is in neither repo's source, so porting the decoder alone would be a reader with nothing to read — the shapes have to be re-measured on Android first. Left as the one partial here."
         }
       ],
@@ -4003,12 +4087,17 @@
       "sources": [
         {
           "path": "teemoon/Views/Chat/MessageView.swift",
-          "sha": "v1.0.4",
-          "note": "@a411f18: 1.0.4 parity: ported 1"
+          "sha": "8c19327",
+          "note": "@a411f18: 1.0.4 parity: ported 1; @8c19327: @8c19327: the reply menu run 42b12d8..8c19327 — think harder + copy, lowercase (3d081aa), anchored at the finger with no preview (6976e74 supersedes 311b578's preview), double tap selects a word and long press is only the menu (8c19327 supersedes 1e0de3e/fc72885's select text)"
+        },
+        {
+          "path": "teemoon/Views/Chat/ChatView.swift",
+          "sha": "517658f",
+          "note": "@517658f: Think Harder decided when the reply menu opens (Android 043b9f6 found and fixed it the same day)"
         }
       ],
       "status": "complete",
-      "note": "the assistant row (thinking disclosure, answer, sources rule), the user bubble and retry, TimeInterval.formatted, DisclosureState; the NSCache fast paths are Compose remember; copy is a long press, selection is Android's"
+      "note": "the assistant row (thinking disclosure, answer, sources rule), the user bubble and retry, TimeInterval.formatted, DisclosureState; the NSCache fast paths are Compose remember; a long press is the reply menu (think harder, copy), a double tap selects a word (SelectionContainer with its own long press out of reach)"
     },
     {
       "kotlin": "app/src/test/kotlin/ai/teemoon/app/MessageViewsTest.kt",
@@ -4056,7 +4145,7 @@
       "sources": [
         {
           "path": "teemoon/Providers/ModelOffer.swift",
-          "sha": "v1.0.4"
+          "sha": "v1.0.5"
         }
       ],
       "status": "complete",
@@ -4067,7 +4156,7 @@
       "sources": [
         {
           "path": "teemoon/Providers/ModelOffer.swift",
-          "sha": "v1.0.4"
+          "sha": "v1.0.5"
         }
       ],
       "status": "android-only",
@@ -4184,8 +4273,8 @@
       "sources": [
         {
           "path": "teemoon/Providers/ListPriceSnapshot.swift",
-          "sha": "54617ce",
-          "note": "@a411f18: 1.0.4 parity: needs_port 4, no_behavior 1 (ported 2026-10-02)"
+          "sha": "4e74360",
+          "note": "@4e74360: all 142 rows equal iOS build 58 (2026-10-22 snapshot): deepseek-v4-pro-0813 and deepseek-v4.1-flash repriced"
         }
       ],
       "status": "complete",
@@ -4244,7 +4333,7 @@
       "sources": [
         {
           "path": "teemoonTests/ModelBrowserQueryTests.swift",
-          "sha": "v1.0.4"
+          "sha": "v1.0.5"
         }
       ],
       "status": "complete",
@@ -4255,7 +4344,7 @@
       "sources": [
         {
           "path": "teemoon/Presentation/ModelBrowserDoor.swift",
-          "sha": "v1.0.4",
+          "sha": "v1.0.5",
           "note": "the value, browsing (with offersLoader), encryptedPicker"
         }
       ],
@@ -4279,7 +4368,7 @@
       "sources": [
         {
           "path": "teemoon/Presentation/EncryptedModelCTA.swift",
-          "sha": "v1.0.4"
+          "sha": "v1.0.5"
         }
       ],
       "status": "complete",
@@ -4290,7 +4379,7 @@
       "sources": [
         {
           "path": "teemoonTests/EncryptedModelCTATests.swift",
-          "sha": "v1.0.4"
+          "sha": "v1.0.5"
         }
       ],
       "status": "complete",
@@ -4301,7 +4390,7 @@
       "sources": [
         {
           "path": "teemoon/Presentation/PlacesKeysBadge.swift",
-          "sha": "v1.0.4"
+          "sha": "v1.0.5"
         }
       ],
       "status": "complete",
@@ -4312,7 +4401,7 @@
       "sources": [
         {
           "path": "teemoon/Inference/LocalWarmUpPolicy.swift",
-          "sha": "v1.0.4"
+          "sha": "v1.0.5"
         }
       ],
       "status": "complete",
@@ -4323,7 +4412,7 @@
       "sources": [
         {
           "path": "teemoonTests/PlacesKeysBadgeTests.swift",
-          "sha": "v1.0.4"
+          "sha": "v1.0.5"
         }
       ],
       "status": "complete",
@@ -4392,7 +4481,7 @@
       "sources": [
         {
           "path": "teemoon/Inference/LocalWarmUpPolicy.swift",
-          "sha": "v1.0.4"
+          "sha": "v1.0.5"
         }
       ]
     },
@@ -4402,7 +4491,7 @@
       "sources": [
         {
           "path": "teemoonTests/LocalWarmUpPolicyTests.swift",
-          "sha": "v1.0.4",
+          "sha": "v1.0.5",
           "note": "all 3"
         }
       ]
@@ -4540,7 +4629,7 @@
       "sources": [
         {
           "path": "teemoonTests/SensitiveClipboardTests.swift",
-          "sha": "v1.0.4",
+          "sha": "v1.0.5",
           "note": "entry derived from the file's own `// ports:` header, 2026-10-06, so drift is checked here too"
         }
       ],
@@ -4552,7 +4641,7 @@
       "sources": [
         {
           "path": "teemoon/Views/Settings/CloudKeyProviderPickerView.swift",
-          "sha": "v1.0.4",
+          "sha": "v1.0.5",
           "note": "entry derived from the file's own `// ports:` header, 2026-10-06, so drift is checked here too"
         }
       ],
@@ -4576,7 +4665,7 @@
       "sources": [
         {
           "path": "teemoonTests/MarkdownAttachmentExfiltrationTests.swift",
-          "sha": "v1.0.4",
+          "sha": "v1.0.5",
           "note": "entry derived from the file's own `// ports:` header, 2026-10-06, so drift is checked here too"
         }
       ],
@@ -4637,7 +4726,7 @@
       "sources": [
         {
           "path": "teemoon/App/UITestStoreSeeding.swift",
-          "sha": "v1.0.4",
+          "sha": "v1.0.5",
           "note": "entry derived from the file's own `// ports:` header, 2026-10-06, so drift is checked here too"
         }
       ],
@@ -4688,8 +4777,8 @@
       "sources": [
         {
           "path": "teemoonTests/NRASServiceTests.swift",
-          "sha": "v1.0.1",
-          "note": "entry derived from the file's own `// ports:` header, 2026-10-06, so drift is checked here too"
+          "sha": "d382a55",
+          "note": "entry derived from the file's own `// ports:` header, 2026-10-06, so drift is checked here too; @d382a55: d382a55: the seven token negatives, over the kit's jwks + verifiedAt (kit nras.json from 885af26)"
         }
       ],
       "status": "complete",
@@ -4712,7 +4801,7 @@
       "sources": [
         {
           "path": "teemoonTests/TLSAttestationVerifierTests.swift",
-          "sha": "v1.0.1",
+          "sha": "b34d1ec",
           "note": "entry derived from the file's own `// ports:` header, 2026-10-06, so drift is checked here too"
         }
       ],
@@ -4825,7 +4914,7 @@
       "sources": [
         {
           "path": "teemoon/Providers/Provider+Presets.swift",
-          "sha": "54617ce",
+          "sha": "v1.0.5",
           "note": "the Fireworks preset's default: kimi-k3 since kimi-k2p6 left serverless (2026-10-15)"
         }
       ],
@@ -4854,7 +4943,7 @@
       "sources": [
         {
           "path": "teemoonTests/PrivateHostTests.swift",
-          "sha": "60c6158",
+          "sha": "v1.0.5",
           "note": "entry derived from the file's own `// ports:` header, 2026-10-06, so drift is checked here too"
         }
       ],
@@ -4883,12 +4972,266 @@
       "sources": [
         {
           "path": "teemoonTests/ProviderTests.swift",
-          "sha": "5d2fb66",
-          "note": "RetiredFireworksModelHealingTests; the retired-row-gone half waits for the kit sync"
+          "sha": "ffcfc00",
+          "note": "RetiredFireworksModelHealingTests incl. the NVIDIA pair (ffcfc00) and the retired-row-gone half (kit synced in 3917.8); f742cc7's PendingHealNoticeTests are iOS-only (a Siri turn's own store), not ported"
         }
       ],
       "status": "complete",
       "note": "added with 1.0.5 (3916)"
+    },
+    {
+      "kotlin": "inference/src/main/kotlin/ai/teemoon/inference/TurnPhases.kt",
+      "sources": [
+        {
+          "path": "teemoon/Inference/TurnPhases.swift",
+          "sha": "c76f3bd",
+          "note": "Android wrote the kinds first; the line, labels and cache share follow iOS so the cards read the same"
+        },
+        {
+          "path": "teemoon/Inference/TurnPhases.swift",
+          "sha": "6fdcb43",
+          "note": "cacheReporting by host and the cache line's missing-figure rule only (cache-line-missing, 1.0.7)"
+        }
+      ],
+      "status": "complete"
+    },
+    {
+      "kotlin": "inference/src/main/kotlin/ai/teemoon/inference/ReasoningEffort.kt",
+      "sources": [
+        {
+          "path": "teemoon/Inference/ReasoningEffort.swift",
+          "sha": "09dcb6e",
+          "note": "@09dcb6e: isRefusal matches with separators removed, so xAI's camel-case 'reasoningEffort' is a refusal. 517658f's DEBUG seededKinds is UiTestSeeding seed_local_kind (9bb512e); 5f015a9's classifyIfNeeded is FirstSendKindProbe. @7cd8c10: ReasoningControl (resolve/note/current), per-control bodyFields, canThinkHarder, card words, the wider refusal; 6a86ac3/f01ac73/6fdcb43 already here (every round one level; the card's wording)"
+        }
+      ],
+      "status": "complete",
+      "note": "chat sends FAST (low) by default (ChatViewModel.send; the maintainer 2026-10-19 via pm): Fireworks/near.ai/xAI reasoning_effort, OpenRouter reasoning.effort; think harder=high, the follow-up after a tool result low; NVIDIA/home/on-device/built-in grounding null; never none. A 400 naming the parameter re-runs the turn once without it (OpenAiTransport) and the host|model is remembered for the process. ReasoningEffort.For carries the provider into OpenAiTransport (Android's transport takes an endpoint, not a Provider)."
+    },
+    {
+      "kotlin": "inference/src/test/kotlin/ai/teemoon/inference/ReasoningEffortTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/ReasoningEffortTests.swift",
+          "sha": "09dcb6e",
+          "note": "@09dcb6e: the camel-case refusals in onlyA400NamingTheParameterIsARefusal, + Android-only xAIsCamelCaseRefusalIsRetriedWithoutTheField through the transport. @7cd8c10: the per-provider rows (OpenRouter by supported_parameters, unverified servers, Ollama, NVIDIA, near.ai cap, on-device/Brave Answers, card words); + Android-only aRefusedModelOffersNoThinkHarder and the transport body pins"
+        }
+      ],
+      "status": "complete",
+      "note": "all Swift tests (chatSendsLowByDefault, fireworksNearAndXAIUseReasoningEffort, neverNone, onlyA400NamingTheParameterIsARefusal, aModelThatRefusesIsAskedAgainWithoutItAndRemembered, aKeyThePersonSetInExtraParametersWins and the 3d561c4 four); + Android-only: on-device/built-in grounding null, the unset-effort body pinned byte-for-byte across six providers, a set effort reaching the body (low on the follow-up), a bare 'effort' is not a refusal. The E2EE retry re-seal is OpenAiTransportE2EETest.anEffortRetryIsSealedAfreshNotResent."
+    },
+    {
+      "kotlin": "providers/src/main/kotlin/ai/teemoon/providers/FirstSendKindProbe.kt",
+      "sources": [
+        {
+          "path": "teemoon/Inference/ReasoningEffort.swift",
+          "sha": "5f015a9"
+        }
+      ],
+      "status": "complete",
+      "note": "ReasoningControl.classifyIfNeeded and the launch's probed answers, as a providers-layer class (AppState.firstSendKind, awaited by ChatViewModel before the turn) so the on-device path stays untouched; the 2 s /api/version probe via OllamaAdapter.isOllama with a 2 s connect/read client"
+    },
+    {
+      "kotlin": "providers/src/test/kotlin/ai/teemoon/providers/FirstSendKindProbeTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/ReasoningEffortTests.swift",
+          "sha": "5f015a9"
+        }
+      ],
+      "status": "complete",
+      "note": "anUnclassifiedServerIsAskedOnceAndAnOllamaAnswerCounts, aNoIsRememberedAndACloudHostIsNeverAsked; + Android-only aFailingProbeNeverStopsTheSend (the audit: a probe error is a launch 'no', the send goes out unchanged; a stop propagates)"
+    },
+    {
+      "kotlin": "inference/src/main/kotlin/ai/teemoon/inference/InlineThoughtFilter.kt",
+      "sources": [
+        {
+          "path": "teemoon/Inference/LiteRTTransport.swift",
+          "sha": "a6ce6e8"
+        }
+      ],
+      "status": "complete",
+      "note": "InlineThoughtFilter, as iOS; in front of the stream's elision in LiteRTTransport (ThinkingContentParser's opener check looked only at the start of the text)"
+    },
+    {
+      "kotlin": "inference/src/test/kotlin/ai/teemoon/inference/OnDeviceThinkingTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/LiteRTConversationReuseTests.swift",
+          "sha": "a6ce6e8"
+        }
+      ],
+      "status": "complete",
+      "note": "anInlineThoughtIsStrippedFromTheReply, anInlineThoughtNeverReachesAPartial (chunk sizes 1-12); + Android-only through the transport: the sentinel in no partial/reply/reasoning/card/log, Think Harder's ThinkingConfig and 6848 cap, a capped turn truncated with no reply. aThinkingTurnIsNeverKept/aConversationIsNotReusedAcrossThinkingModes are ConversationReuseTest's"
+    },
+    {
+      "kotlin": "inference/src/main/kotlin/ai/teemoon/inference/SessionAffinity.kt",
+      "sources": [
+        {
+          "path": "teemoon/Inference/SessionAffinity.swift",
+          "sha": "ead8674"
+        }
+      ],
+      "status": "complete",
+      "note": "keyed by the thread id string; sent by OpenAiTransport (affinityID), threaded through ChatViewModel's makeTransport and AppState.transportFor"
+    },
+    {
+      "kotlin": "inference/src/test/kotlin/ai/teemoon/inference/SessionAffinityTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/SessionAffinityTests.swift",
+          "sha": "ead8674"
+        }
+      ],
+      "status": "complete"
+    },
+    {
+      "kotlin": "inference/src/main/kotlin/ai/teemoon/inference/StreamTimeouts.kt",
+      "sources": [
+        {
+          "path": "teemoon/Inference/StreamStallWatchdog.swift",
+          "sha": "8780c32"
+        }
+      ],
+      "status": "complete",
+      "note": "REBUILD over Okio timeouts: the client's readTimeout is the 600 s header wait; once headers are in, the body source's timeout is narrowed to the 240 s stream idle. No polling task: Okio's own timeout closes the socket (HTTP/1) or cancels the stream (HTTP/2). Wired in OpenAiTransport (HTTPTransport.swift's half of 8780c32)."
+    },
+    {
+      "kotlin": "inference/src/test/kotlin/ai/teemoon/inference/StreamStallTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/StreamStallTests.swift",
+          "sha": "8780c32"
+        }
+      ],
+      "status": "complete",
+      "note": "2 of 3 Swift tests (the watchdog's clock test has no Android counterpart: no watchdog object); over a real local socket: late headers outlast the stream bound, a stall after headers times out with the partial kept and no reply text in the error"
+    },
+    {
+      "kotlin": "inference/src/main/kotlin/ai/teemoon/inference/ProviderWait.kt",
+      "sources": [
+        {
+          "path": "teemoon/Inference/ProviderWait.swift",
+          "sha": "4510788"
+        }
+      ],
+      "status": "complete",
+      "note": "The engine's onAwaitingResponse (GenerationEngine.swift's half of 9e090f8) and OpenAiTransport's onResponse at the headers (HTTPTransport.swift's half) feed ChatGeneration.noteResponseWait; ChatCards.ActivityState.WaitingForProvider shows it from 5 s with the turn's count (4510788)."
+    },
+    {
+      "kotlin": "inference/src/test/kotlin/ai/teemoon/inference/ProviderWaitTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/ProviderWaitTests.swift",
+          "sha": "9e090f8"
+        }
+      ],
+      "status": "complete"
+    },
+    {
+      "kotlin": "app/src/androidTest/kotlin/ai/teemoon/app/ProviderWaitJourneyTest.kt",
+      "sources": [
+        {
+          "path": "teemoonUITests/ProviderWaitUITests.swift",
+          "sha": "9e090f8"
+        }
+      ],
+      "status": "complete",
+      "note": "FakeSseServer(headerDelayMs) holds every completion's headers, as EmbeddedFakeSSEServer.headerDelay does."
+    },
+    {
+      "kotlin": "app/src/test/kotlin/ai/teemoon/app/ThinkHarderTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/ThinkHarderTests.swift",
+          "sha": "7cd8c10",
+          "note": "@7cd8c10: no cap but near.ai's lives in ReasoningEffortTest.itAsksForHighEffortAndRoomToThink; here itIsNotOfferedWhereNothingCanChange (ChatView.canThinkHarder)"
+        }
+      ],
+      "status": "complete",
+      "note": "3 of 3 Swift tests (itAsksForHighEffortAndRoomToThink lives in :inference's ReasoningEffortTest); + Android-only: the newest-finished-reply gate, Think Harder replacing the reply, a retry keeping the time, earlier turns byte-identical turn to turn. ThinkHarderUITests is ChatControlsContractTest.theNewestReplyOffersThinkHarderAndAnEarlierOneDoesNot (device; AVD green 2026-10-19)."
+    },
+    {
+      "kotlin": "app/src/main/kotlin/ai/teemoon/app/ReplySupersession.kt",
+      "sources": [
+        {
+          "path": "teemoon/Chat/ReplySupersession.swift",
+          "sha": "14b2974"
+        }
+      ],
+      "status": "complete",
+      "note": "Immutable (the stream writes it off the main thread). ChatViewModel holds it in ChatGeneration.superseding and mirrors it to ChatUiState; the .replace save is ChatRepository.supersede (one Room transaction: delete the old reply, restamp the question, save the new one). ChatScreen: visible() rows, 45% dim over 200 ms, a 150 ms crossfade of the slot at the swap (AnimatedContent), the brain chip \"thinking harder...\" (ActivityState.ThinkingHarder); animations off snaps both."
+    },
+    {
+      "kotlin": "app/src/test/kotlin/ai/teemoon/app/ThinkHarderKeepReplyTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/ThinkHarderKeepReplyTests.swift",
+          "sha": "14b2974"
+        }
+      ],
+      "status": "complete",
+      "note": "5 of 5 Swift tests over the view model and ChatRepository; + Android-only: a stop after the first text puts the old reply back, and the restored reply keeps its own generating time. The interruption test reads the store as the next launch would."
+    },
+    {
+      "kotlin": "app/src/test/kotlin/ai/teemoon/app/CacheLineOnSendTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/CardPhasesOnSendTests.swift",
+          "sha": "cf57d0c"
+        }
+      ],
+      "status": "complete",
+      "note": "aReaskOfTheFirstQuestionIsNotAFirstMessage ported; + Android-only aPlainSendShowsFirstMessageThenTheFigure (iOS fade6fc's gap, absent on Android: beginTurn resets the clock on every send)."
+    },
+    {
+      "kotlin": "inference/src/test/kotlin/ai/teemoon/inference/XAIRequestShapeTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/XAIRequestShapeTests.swift",
+          "sha": "94b8500"
+        }
+      ],
+      "status": "complete",
+      "note": "1 of 1; Android's allowed key set adds tool_choice, which its transport sends with tools and iOS's does not"
+    },
+    {
+      "kotlin": "inference/src/test/kotlin/ai/teemoon/inference/PromptCachePrefixTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/PromptCachePrefixTests.swift",
+          "sha": "904de68"
+        }
+      ],
+      "status": "complete",
+      "note": "3 of 3: aRequestBodyIsTheSameBytesEveryTime and sortingNeverReordersAnArray here; sealingTakesTheSortedPlaintextAndLeavesStrings in OpenAiTransportE2EETest (its key fixtures). OpenAiTransport.makeBody sorts keys at every depth (it was insertion-ordered, stable already)"
+    },
+    {
+      "kotlin": "inference/src/test/kotlin/ai/teemoon/inference/OnDeviceCardToolsTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/OnDeviceCardToolsTests.swift",
+          "sha": "ca3d155"
+        }
+      ],
+      "status": "complete",
+      "note": "3 of 3; + LiteRTTransportTest checks the report itself carries the tools (one per tools-offered) and no tools key without them"
+    },
+    {
+      "kotlin": "inference/src/test/kotlin/ai/teemoon/inference/ConformanceRequestsTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/ConformanceRequestVectors.swift",
+          "sha": "7eb6c31"
+        }
+      ],
+      "status": "complete",
+      "note": "the consuming half of conformance/requests.json: Android's bar is the rule (same bytes, sorted keys, turn 2 extends turn 1 through the last shared message) and iOS's messages, not iOS's bytes — kotlinx does not escape '/', and the body carries tool_choice"
+    },
+    {
+      "kotlin": "app/src/test/kotlin/ai/teemoon/app/ConsecutiveSendsPrefixTest.kt",
+      "sources": [],
+      "status": "complete",
+      "note": "android-only: two normal sends through ChatViewModel → GenerationEngine → OpenAiTransport on Fireworks with search offered; send 2 extends send 1 byte for byte (the requests.json rule through the app layer; iOS 58's 0% cache question, 2026-10-22). Guard only: the live three-send cache check is the handoff gate"
     }
   ],
   "acceptedDivergences": [
@@ -4940,7 +5283,7 @@
       "decided": "2026-09-21"
     }
   ],
-  "baselineCommit": "3abe3e2",
+  "baselineCommit": "304d6bd",
   "behaviorLedger": {
     "_comment": "Wiring parity: what tools/behavior_ledger.py asserts on every :app:check. Logic is tested by the JVM suites; this pins the CALL SITES, where defects in a port tend to live.",
     "uniqueDefinition": [
@@ -5024,7 +5367,8 @@
       {
         "file": "inference/src/main/kotlin/ai/teemoon/inference/OpenAiTransport.kt",
         "mustContain": [
-          "readTimeout(240, TimeUnit.SECONDS)",
+          "readTimeout(StreamTimeouts.HEADER_WAIT_MS, TimeUnit.MILLISECONDS)",
+          "StreamTimeouts.startStream(source, streamIdleMs)",
           "callTimeout(0, TimeUnit.MILLISECONDS)"
         ]
       },
@@ -5110,7 +5454,7 @@
       {
         "file": "app/src/main/kotlin/ai/teemoon/app/ChatScreen.kt",
         "mustContain": [
-          "vm.retryLastTurn(acceptedDegrade = true)",
+          "vm.retryLastTurn(acceptedDegrade = true, effort = ",
           "vm.send(prompt, acceptedDegrade = true)"
         ]
       },

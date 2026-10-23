@@ -4,9 +4,13 @@
 //        screen, one test per control: what a tap opens, and what it must NOT open.
 package ai.teemoon.app
 
+import androidx.compose.ui.test.SemanticsMatcher
+import androidx.compose.ui.test.onNodeWithText
+import org.junit.Assert.assertEquals
 import android.content.Intent
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.doubleClick
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.performClick
@@ -43,7 +47,7 @@ class ChatControlsContractTest {
     private fun tap(label: String) { compose.waitUntil(10_000) { exists(label) }; compose.onAllNodes(hasText(label, substring = true) or hasContentDescription(label))[0].performClick(); compose.waitForIdle(); Thread.sleep(700) }
     private fun tapTag(tag: String) { compose.waitUntil(10_000) { tagExists(tag) }; compose.onAllNodesWithTag(tag)[0].performClick(); compose.waitForIdle(); Thread.sleep(700) }
     /** [slow]: a reply that streams for ~30 s, so a test can act mid-stream — the default 3 lines at 4 ms is over in under a second. */
-    private fun launch(thinking: Boolean = false, braveKey: Boolean = false, slow: Boolean = false, failStatus: Int? = null, developer: Boolean = false, lines: Int = 3) {
+    private fun launch(thinking: Boolean = false, braveKey: Boolean = false, slow: Boolean = false, failStatus: Int? = null, developer: Boolean = false, lines: Int = 3, ollama: Boolean = false) {
         // slow = a word every 150 ms (~20 s): faster, the stream's main-thread recompositions leave the v1 Compose rule
         // no idle frame to sync on mid-stream, and the stop control "never appears" to a lookup
         server = if (slow) FakeSseServer(lines = 12, delayMs = 150, thinking = thinking) else FakeSseServer(lines = lines, delayMs = 4, thinking = thinking, failStatus = failStatus)
@@ -54,6 +58,7 @@ class ChatControlsContractTest {
             putExtra(UiTestSeeding.EXTRA_LOCAL_ENDPOINT, server!!.baseUrl); putExtra(UiTestSeeding.EXTRA_LOCAL_MODEL, "fake-model")
             if (braveKey) putExtra(UiTestSeeding.EXTRA_GROUNDING, true) else putExtra(UiTestSeeding.EXTRA_NO_BRAVE_KEY, true)   // the device may hold a key from an earlier seed
             if (developer) putExtra(UiTestSeeding.EXTRA_DEVELOPER, true)
+            if (ollama) putExtra(UiTestSeeding.EXTRA_LOCAL_KIND, "ollama")
         }
         scenario = ActivityScenario.launch(intent)
         compose.waitUntil(20_000) { tagExists("chat.composer") }; Thread.sleep(2_500)
@@ -92,6 +97,41 @@ class ChatControlsContractTest {
     @Test fun theWebChipWithAKeyTogglesInPlace() { launch(braveKey = true); tapTag("chat.webSearchChip"); Thread.sleep(800); assertTrue("something opened over the chat", tagExists("chat.send") && !exists("web search") && !exists("ready now")) }
 
     /** The user bubble's context menu: copy. */
+    /**
+     * 1.0.6 (the maintainer, 2026-10-19; iOS ThinkHarderUITests): a reply's long press offers "think harder" on the NEWEST finished
+     * reply only, above "copy" — and no "select text" (iOS 8c19327: a double tap selects). Think Harder asks the question
+     * again in place of that reply.
+     */
+    @Test fun theNewestReplyOffersThinkHarderAndAnEarlierOneDoesNot() {
+        // On a server whose effort field takes effect (iOS 7cd8c10): the fake, stored as an Ollama box.
+        launch(ollama = true); sendAndWait("first question"); sendAndWait("second question")
+        val replies = compose.onAllNodes(hasText("first question") or hasText("second question")).fetchSemanticsNodes().size
+        assertTrue(replies >= 2)
+        val answers = compose.onAllNodes(SemanticsMatcher("a reply") { n -> n.config.contains(androidx.compose.ui.semantics.SemanticsActions.CustomActions) })
+        val n = answers.fetchSemanticsNodes().size
+        assertTrue("both replies carry the menu's actions", n >= 2)
+        answers[0].performTouchInput { down(center); advanceEventTime(1_000); up() }
+        compose.waitUntil(5_000) { exists(ReplyMenu.COPY) }
+        assertTrue("an earlier reply: no think harder", !exists(ReplyMenu.THINK_HARDER)); assertTrue("select text is gone", !exists("select text"))
+        androidx.test.espresso.Espresso.pressBack(); compose.waitForIdle()
+        answers[n - 1].performTouchInput { down(center); advanceEventTime(1_000); up() }
+        compose.waitUntil(5_000) { exists(ReplyMenu.THINK_HARDER) }
+        compose.onNodeWithText(ReplyMenu.THINK_HARDER).performClick()
+        compose.waitUntil(30_000) { !tagExists("chat.stop") && exists("second question") }
+        // Counted as replies, not question texts: the header's title carries the question too, and whether the first
+        // bubble is composed depends on the scroll (Think Harder no longer empties the list under it, iOS 14b2974).
+        assertEquals("the reply was replaced, not added to", n, answers.fetchSemanticsNodes().size)
+    }
+
+    /** A custom endpoint takes no effort field, so Think Harder would only ask again: not offered (iOS 7cd8c10). */
+    @Test fun aCustomEndpointOffersNoThinkHarder() {
+        launch(); sendAndWait("first question")
+        val answers = compose.onAllNodes(SemanticsMatcher("a reply") { n -> n.config.contains(androidx.compose.ui.semantics.SemanticsActions.CustomActions) })
+        answers[answers.fetchSemanticsNodes().size - 1].performTouchInput { down(center); advanceEventTime(1_000); up() }
+        compose.waitUntil(5_000) { exists(ReplyMenu.COPY) }
+        assertTrue("think harder on a custom endpoint", !exists(ReplyMenu.THINK_HARDER))
+    }
+
     @Test fun theUserBubbleLongPressOffersCopy() { launch(); sendAndWait("hello there"); compose.onAllNodes(hasText("hello there"))[0].performTouchInput { longClick() }; compose.waitUntil(5_000) { exists("copy") } }
 
     /** MessageView's thinking disclosure: collapsed after the turn ("thought for"), a tap opens the reasoning, a tap closes it. */
@@ -101,6 +141,32 @@ class ChatControlsContractTest {
         assertTrue("the reasoning is open after the turn", !exists("Reasoning: weigh"))
         tap("thought for"); compose.waitUntil(5_000) { exists("Reasoning: weigh") }
         tap("thought for"); compose.waitUntil(5_000) { !exists("Reasoning: weigh") }
+    }
+
+    /**
+     * 1.0.6 (iOS 57/58, the maintainer via pm 2026-10-21): the thinking block is not selectable — a double tap on the open
+     * reasoning raises no selection toolbar — while the same double tap on the answer does (the control that proves the
+     * toolbar would be seen). The toolbar is a platform window, so it is looked for through accessibility.
+     */
+    @Test fun theThinkingIsNotSelectableAndTheAnswerIs() {
+        launch(thinking = true); sendAndWait("why")
+        tap("thought for"); compose.waitUntil(5_000) { exists("Reasoning: weigh") }
+        val ua = InstrumentationRegistry.getInstrumentation().uiAutomation
+        fun toolbarCopy(): Boolean {
+            ua.serviceInfo = ua.serviceInfo.apply { flags = flags or android.accessibilityservice.AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS }
+            fun find(n: android.view.accessibility.AccessibilityNodeInfo?): Boolean {
+                if (n == null) return false
+                if (n.text?.toString().equals("copy", ignoreCase = true) || n.contentDescription?.toString().equals("copy", ignoreCase = true)) return true
+                return (0 until n.childCount).any { find(n.getChild(it)) }
+            }
+            return ua.windows.any { find(it.root) }
+        }
+        compose.onAllNodes(hasText("Reasoning: weigh", substring = true))[0].performTouchInput { doubleClick(percentOffset(0.2f, 0.5f)) }
+        Thread.sleep(1_200)
+        assertTrue("a double tap selected text in the thinking block", !toolbarCopy())
+        val answer = compose.onAllNodes(SemanticsMatcher("a reply") { n -> n.config.contains(androidx.compose.ui.semantics.SemanticsActions.CustomActions) })
+        answer[answer.fetchSemanticsNodes().size - 1].performTouchInput { doubleClick(percentOffset(0.3f, 0.92f)) }
+        compose.waitUntil(5_000) { toolbarCopy() }
     }
 
     /**

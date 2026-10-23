@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- The measured app, so the test APK can see and launch it on API 30+. -->
+    <queries>
+        <package android:name="ai.teemoon.benchmark" />
+    </queries>
+</manifest>

@@ -33,6 +33,7 @@ import ai.teemoon.providers.WhereProviderPresentation
 import ai.teemoon.providers.WhereLocality
 import ai.teemoon.providers.WhereGetPolicy
 import ai.teemoon.providers.ServerKind
+import ai.teemoon.providers.FirstSendKindProbe
 import ai.teemoon.providers.OllamaAdapter
 import ai.teemoon.providers.LocalServerKind
 import ai.teemoon.providers.HomeServerProbe
@@ -66,6 +67,8 @@ import ai.teemoon.inference.LocalEngineResidency
 import ai.teemoon.inference.LocalGenerationGate
 import ai.teemoon.inference.LocalInferenceError
 import ai.teemoon.inference.OpenAiTransport
+import ai.teemoon.inference.ReasoningControl
+import ai.teemoon.inference.ReasoningEffort
 import ai.teemoon.inference.StreamCallbacks
 import ai.teemoon.ondevice.LiteRtLmEngineFactory
 import ai.teemoon.ondevice.NpuDispatch
@@ -94,6 +97,8 @@ class AppState(context: Context, dao: ChatDao? = null) {
     private val keystore = Keystore(File(context.filesDir, "keys"), AndroidKeystoreCipher())
     val credentials = ProviderCredentials(keystore, { _providers.value })
     // every key the app holds, for the debug copy path: a header carrying one is masked whatever its name
+    // each chat's provider routing id: HMAC under a per-install Keystore key, stable across relaunches (iOS ead8674)
+    init { ai.teemoon.inference.SessionAffinity.keyedMac = ai.teemoon.providers.androidKeystoreHmac() }
     init { DebugHeaderRedaction.storedSecrets = { _providers.value.map { credentials.credential(it) }.filter { it.isNotBlank() } + listOfNotNull(braveKey()) } }
 
     /**
@@ -370,6 +375,21 @@ class AppState(context: Context, dao: ChatDao? = null) {
     val network = NetworkPathObserver(context)
     val homeProbe = HomeServerProbe()
 
+    /**
+     * How hard this provider's model can be asked to think (iOS ReasoningControl.resolve(provider:store:), 7cd8c10):
+     * its stored server kind and the saved /models row's supported_parameters.
+     */
+    fun reasoningControl(p: Provider): ReasoningControl = ReasoningControl.resolve(p, firstSendKind.kind(p),
+        catalogStore.allModels(p.endpoint).firstOrNull { it.id == p.model }?.samplingParameters)
+
+    /** The first send to an unclassified self-hosted server asks once whether it is Ollama (iOS 5f015a9). */
+    val firstSendKind = FirstSendKindProbe(storedKind = ::storedKind,
+        isOllama = { base -> OllamaAdapter.isOllama(base, timeoutMs = FirstSendKindProbe.TIMEOUT_MS) },
+        recordOllama = { p -> store.recordProbe(p.id, ServerKind.OLLAMA, null); log("[kind] ${p.name}: ollama, learned on first send") })
+
+    /** Seeded launches only (UiTestSeeding.EXTRA_LOCAL_KIND): what a probe would have recorded for the seeded server. */
+    fun seedServerKind(serverID: String, kind: ServerKind) = store.recordProbe(serverID, kind, null)
+
     fun storedKind(p: Provider): LocalServerKind? = when (store.kind(p.id)) {
         ServerKind.OLLAMA -> LocalServerKind.OLLAMA
         ServerKind.LM_STUDIO -> LocalServerKind.LM_STUDIO
@@ -573,6 +593,8 @@ class AppState(context: Context, dao: ChatDao? = null) {
     private val activityManager = context.getSystemService(ActivityManager::class.java)
     /** Debug-only (UiTestSeeding.EXTRA_AVAILABLE_MB): what the get section is told is free; null reads the device. */
     @Volatile var uiTestAvailableMB: Int? = null
+    /** Seeded launches only (UiTestSeeding.EXTRA_STREAM_REPLY): every turn plays this text back through [ScriptedReplyTransport]; null always otherwise. */
+    @Volatile var uiTestScriptedReply: String? = null
     /** The get section's figure — the device's, unless a journey pinned it. The load gate always reads the device. */
     fun availableMBForUi(): Int = uiTestAvailableMB ?: availableMB()
     /** Memory this process may still allocate, in MB — availMem less the low-memory threshold. 0 when the API is silent. */
@@ -582,6 +604,9 @@ class AppState(context: Context, dao: ChatDao? = null) {
         val available = availableMB(); if (available > 0 && available < need) throw LocalInferenceError.InsufficientMemory(need, available)
     }, log = log)
     /** Releases loaded weights when the system asks for memory back (TeemoonApplication.onTrimMemory). */
+    /** Deleting a chat, or all of them, drops every kept on-device conversation (LocalEngineCache.forgetKeptConversations). */
+    fun forgetKeptConversations() = engineCache.forgetKeptConversations()
+
     fun evictEngines(trimLevel: Int? = null) { trimLevel?.let { log("[litert] trim memory level $it") }; engineCache.evictAll() }
 
     /**
@@ -623,7 +648,9 @@ class AppState(context: Context, dao: ChatDao? = null) {
         provider.localModelID?.let { localStorage.ref(it, socModel)?.contextTokens ?: LiteRTTransport.DEFAULT_CONTEXT_TOKENS }
 
     /** ChatGeneration+Stream.resolveLanguageModel: a local place runs LiteRT, anything else the HTTP transport. */
-    fun transportFor(endpoint: String, model: String, context: TeeContext?, events: StreamCallbacks): GenerationTransport {
+    fun transportFor(endpoint: String, model: String, context: TeeContext?, events: StreamCallbacks, effort: ReasoningEffort? = null, affinityID: String? = null): GenerationTransport {
+        // Seeded launches only (UiTestSeeding.EXTRA_STREAM_REPLY, set behind consumeArm): the streaming fixture, no wire.
+        uiTestScriptedReply?.let { return ScriptedReplyTransport(it) }
         val place = selected
         val localID = place?.localModelID
         if (localID != null) {
@@ -632,10 +659,14 @@ class AppState(context: Context, dao: ChatDao? = null) {
                 "${place.name} isn't downloaded on this device. Open where to download it.")
             return LiteRTTransport(ref.bundleFile, ref.sizeMB, cache = engineCache, events = events, headroomMB = LocalMemory.headroomMB, backendLabel = engineFactory.backendLabel, requireNpu = ref.requiresNpu,
                 // an NPU bundle's window is compiled in; the general bundle takes the transport's default
-                contextTokens = ref.contextTokens ?: LiteRTTransport.DEFAULT_CONTEXT_TOKENS, log = log)
+                contextTokens = ref.contextTokens ?: LiteRTTransport.DEFAULT_CONTEXT_TOKENS, log = log,
+                // Think Harder on device: LiteRT's thinking on (ReasoningControl.OnDevice, iOS 7cd8c10)
+                thinking = effort == ReasoningEffort.THINK_HARDER)
         }
         return OpenAiTransport(endpoint, model, apiKey = place?.let(::credentialFor), authHeaderName = place?.authHeaderName,
-            teeContext = context, extraParams = place?.extraParams ?: emptyMap(), providerName = place?.name ?: endpoint)
+            teeContext = context, extraParams = place?.extraParams ?: emptyMap(), providerName = place?.name ?: endpoint,
+            // ReasoningControl decides the field, if any; null is the provider's default.
+            effort = if (place != null && effort != null) ReasoningEffort.For(effort, place) else null, affinityID = affinityID)
     }
 
     /**

@@ -5,6 +5,8 @@
 package ai.teemoon.ondevice
 
 import ai.teemoon.inference.BridgedTool
+import ai.teemoon.inference.ConversationReuse
+import ai.teemoon.inference.KeptConversation
 import ai.teemoon.inference.LiteRTToolBridge
 import ai.teemoon.inference.LocalBenchmark
 import ai.teemoon.inference.LocalConversationSpec
@@ -28,6 +30,7 @@ import com.google.ai.edge.litertlm.OpenApiTool
 import com.google.ai.edge.litertlm.ThinkingConfig
 import com.google.ai.edge.litertlm.tool
 import java.io.File
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -70,6 +73,8 @@ class LiteRtLmEngineFactory(
     private val memo: BackendMemo = BackendMemo(File(cacheDir, "backend-verdict.tsv")),
     /** How long one rung gets to load AND decode its probe token before it is abandoned. */
     private val probeTimeoutMs: Long = 180_000,
+    /** Keep a turn's Conversation for the next when it already holds what that turn would seed (ConversationReuse). Off only to measure the difference. */
+    private val reuseConversations: Boolean = true,
     /**
      * The NPU-only bundle at [modelPath] could not start on this phone: told once per failure, before the throw. The
      * app records it against the file so the storage stops preferring it (LocalModelStorage.markNpuUnusable) — the
@@ -114,7 +119,7 @@ class LiteRtLmEngineFactory(
                 memo.remember(key, kind)
                 backendLabel = label(kind)
                 log("[litert] engine on ${label(kind)} (ready in ${System.currentTimeMillis() - started}ms)")
-                return@withContext Handle(engine, log, label(kind), speculative)
+                return@withContext Handle(engine, log, label(kind), speculative, reuseConversations)
             } catch (t: Throwable) {
                 lastFailure = t; runCatching { engine.close() }
                 // The reason matters more than the failure: this line is how the next device's story gets read.
@@ -176,48 +181,91 @@ class LiteRtLmEngineFactory(
     private class Handle(
         private val engine: Engine, private val log: (String) -> Unit,
         override val backend: String, override val speculative: Boolean,
+        private val reuse: Boolean,
     ) : LocalEngineHandle {
         private var conversation: Conversation? = null
+        /** What [conversation] holds, when it may serve the next turn; null = rebuild. See ConversationReuse. */
+        private var kept: KeptConversation? = null
+        /** The last turn's numbers, read before a conversation that is not kept is closed (the developer card's stats). */
+        private var lastBenchmark: LocalBenchmark? = null
+        override val holdsConversation: Boolean get() = conversation != null
+        override var lastConversation: String? = null; private set
+        /**
+         * This turn's tools, by name. A kept Conversation's ToolManager holds the shims it was built with, so the shims
+         * look the tool up here at call time — or a reused conversation would run LAST turn's bridge callbacks (its
+         * chip, its sources, its executed list) for this turn's search.
+         */
+        @Volatile private var liveTools: Map<String, BridgedTool> = emptyMap()
+        private val toolRuns = AtomicInteger(0)
 
         override suspend fun stream(spec: LocalConversationSpec, onPiece: suspend (String) -> Unit) {
-            conversation?.let { runCatching { it.close() } }
-            val config = ConversationConfig(
-                systemInstruction = spec.systemMessage?.let { Contents.of(it) },
-                initialMessages = spec.history.map { (role, text) -> liteRtMessage(role, text) },
-                tools = spec.tools.map { tool(OpenApiShim(it)) },
-                maxOutputToken = spec.maxOutputTokens,
-                thinkingConfig = ThinkingConfig(spec.enableThinking),
-            )
-            // Constrained decoding, per conversation — OFF (6222a57). On iOS's runtime it neutralised the drafter, and
-            // every on-device turn carries the search tool, so "only when tools are attached" would be every turn. Tool
-            // calls still parse with it off. Re-measure before turning it back on. The flag is global but read at
-            // createConversation, which is why it is set right before each one.
-            ExperimentalFlags.enableConversationConstrainedDecoding = false
-            log("[litert] conversation: toolsAttached=${spec.tools.isNotEmpty()} constrained=false")
-            val conv = engine.createConversation(config)
-            conversation = conv
+            liveTools = spec.tools.associateBy { it.name }
+            toolRuns.set(0)
+            val reused = reuse && conversation != null && ConversationReuse.canReuse(kept, spec)
+            kept = null
+            lastConversation = if (reused) "reused (${spec.history.size} turns)" else "rebuilt"
+            val conv = if (reused) {
+                log("[litert] conversation: reused (${spec.history.size} turns already in the cache)")
+                conversation!!
+            } else {
+                conversation?.let { runCatching { it.close() } }
+                val config = ConversationConfig(
+                    systemInstruction = spec.systemMessage?.let { Contents.of(it) },
+                    initialMessages = spec.history.map { (role, text) -> liteRtMessage(role, text) },
+                    tools = spec.tools.map { tool(OpenApiShim(it.name, it.descriptionJson, { n -> liveTools[n] }, toolRuns)) },
+                    maxOutputToken = spec.maxOutputTokens,
+                    thinkingConfig = ThinkingConfig(spec.enableThinking),
+                )
+                // Constrained decoding, per conversation — OFF (6222a57). On iOS's runtime it neutralised the drafter, and
+                // every on-device turn carries the search tool, so "only when tools are attached" would be every turn. Tool
+                // calls still parse with it off. Re-measure before turning it back on. The flag is global but read at
+                // createConversation, which is why it is set right before each one.
+                ExperimentalFlags.enableConversationConstrainedDecoding = false
+                log("[litert] conversation: toolsAttached=${spec.tools.isNotEmpty()} constrained=false")
+                engine.createConversation(config).also { conversation = it }
+            }
+            val raw = StringBuilder()
+            lastBenchmark = null
             withContext(Dispatchers.IO) {
                 try {
                     conv.sendMessageAsync(Message.user(spec.userText)).collect { message ->
                         val text = message.contents.contents.filterIsInstance<Content.Text>().joinToString("") { it.text }
-                        if (text.isNotEmpty()) onPiece(text)
+                        if (text.isNotEmpty()) { raw.append(text); onPiece(text) }
                     }
                 } catch (t: kotlinx.coroutines.CancellationException) {
                     // The user stopped the turn. Tell the runtime, or the accelerator keeps decoding a reply nobody
                     // will see until the next turn's conversation replaces this one.
                     runCatching { conv.cancelProcess() }
-                    log("[litert] stream cancelled by the caller"); throw t
+                    log("[litert] stream cancelled by the caller"); releaseUnkept(); throw t
                 } catch (t: Throwable) {
                     // The binding's own failures arrive without a stack in the error card; the log keeps it.
-                    log("[litert] stream failed: " + t.stackTraceToString().take(2000)); throw t
+                    log("[litert] stream failed: " + t.stackTraceToString().take(2000)); releaseUnkept(); throw t
                 }
             }
+            // Reached only on a completed stream: a cancelled or failed one threw above with [kept] still null.
+            if (reuse) kept = ConversationReuse.afterTurn(spec, raw.toString(), toolsRan = toolRuns.get(), completed = true)
+            if (kept == null) releaseUnkept()
         }
 
-        override fun benchmark(): LocalBenchmark? = runCatching {
+        /**
+         * A turn that is not kept frees its conversation when it ends, as iOS's does (each turn takes the kept entry at
+         * its start, so a stopped or failed turn's partial KV goes with it). It used to stay open until the next
+         * rebuild or the handle's close. Its numbers are read first, for the developer card.
+         */
+        private fun releaseUnkept() {
+            lastBenchmark = readBenchmark()
+            conversation?.let { runCatching { it.close() } }; conversation = null
+        }
+
+        private fun readBenchmark(): LocalBenchmark? = runCatching {
             val b = conversation?.getBenchmarkInfo() ?: return null
             LocalBenchmark(b.timeToFirstTokenInSecond, b.lastPrefillTokenCount, b.lastDecodeTokenCount, b.lastPrefillTokensPerSecond, b.lastDecodeTokensPerSecond)
         }.getOrNull()
+
+        override fun benchmark(): LocalBenchmark? = lastBenchmark ?: readBenchmark()
+
+        /** A deleted chat's conversation goes: the KV with its tokens and the plaintext transcript copy (iOS fc09a91). */
+        override fun dropKept() { kept = null; conversation?.let { runCatching { it.close() } }; conversation = null }
 
         override fun close() { runCatching { conversation?.close() }; conversation = null; runCatching { engine.close() } }
     }
@@ -228,11 +276,19 @@ class LiteRtLmEngineFactory(
      * arrive as a raw JSON string and go straight to teemoon's coercion —
      * never a typed decode that could fail before repair can run.
      */
-    private class OpenApiShim(private val bridged: BridgedTool) : OpenApiTool {
+    private class OpenApiShim(
+        private val name: String, private val descriptionJson: String,
+        /** The CURRENT turn's tool of this name — see Handle.liveTools. */
+        private val live: (String) -> BridgedTool?, private val runs: AtomicInteger,
+    ) : OpenApiTool {
         // The binding wants the flat function object; see LiteRTToolBridge.flatDescription for why.
-        override fun getToolDescriptionJsonString(): String = LiteRTToolBridge.flatDescription(bridged.descriptionJson)
+        override fun getToolDescriptionJsonString(): String = LiteRTToolBridge.flatDescription(descriptionJson)
         // Synchronous by LiteRT's contract, called from its loop; the tool does network, so block an IO thread, not the caller's.
-        override fun execute(paramsJsonString: String): String = runBlocking(Dispatchers.IO) { bridged.execute(paramsJsonString) }
+        override fun execute(paramsJsonString: String): String {
+            runs.incrementAndGet()
+            val tool = live(name) ?: return "[Tool '$name' not found]"
+            return runBlocking(Dispatchers.IO) { tool.execute(paramsJsonString) }
+        }
     }
 
 }

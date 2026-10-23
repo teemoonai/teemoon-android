@@ -1,7 +1,8 @@
 // ports: teemoonTests/ResponseSignatureTests.swift @ v1.0.1 (Keccak256 and the ContentBinding shape; the ecrecover suite and
 //        the production-exchange binding tests are byte-locked by crypto.json where the kit carries them — the exchange itself
 //        (nearai_signed_response.json) is not vendored, so those four run over synthetic exchanges here)
-//        teemoonTests/TEESignatureVerifierTests.swift @ v1.0.1
+//        teemoonTests/TEESignatureVerifierTests.swift @ v1.0.1, rewritten for the 1.0.6 verifier (iOS 97b2ca9: the
+//        non-ECDSA and rotation passes are gone; their negatives are SignatureVerdictTest)
 package ai.teemoon.confidential
 
 import ai.teemoon.confidential.ResponseVerification.UnverifiedReason
@@ -61,47 +62,64 @@ class TeeSignatureTest {
 
     private fun body(text: String, signature: String, address: String, algo: String = "ecdsa") =
         """{"text":"$text","signature":"$signature","signing_address":"$address","signing_algo":"$algo"}""".toByteArray()
+    private fun record(gateway: String? = null, gpu: String? = null) = SignatureVerdictTest.record(gateway = gateway, gpu = gpu)
+    private val exchange = SignedExchange(listOf("req".toByteArray()), "resp")
 
     @Test fun returnsUnavailableWhenNoTrustedAddresses() = runTest {
         for (pair in listOf(null to null, "" to "")) {
-            val r = TEESignatureVerifier.verify("test-123", pair.first, pair.second, false, null, fetchSignature = { error("must not fetch") }, sleepMs = {})
+            val r = TEESignatureVerifier.verify("test-123", record(pair.first, pair.second), exchange, fetchSignature = { _, _ -> error("must not fetch") }, sleepMs = {})
             assertEquals(ResponseVerification.Unverified(UnverifiedReason.SignatureUnavailable), r)
         }
     }
 
+    /** No captured exchange means nothing to bind: never a verdict from the signature alone (iOS 97b2ca9). */
+    @Test fun noExchangeIsAContentMismatch_beforeAnyFetch() = runTest {
+        val r = TEESignatureVerifier.verify("id", record(gpu = "0xabc"), null, fetchSignature = { _, _ -> error("must not fetch") }, sleepMs = {})
+        assertEquals("no captured exchange to bind", ((r as ResponseVerification.Unverified).reason as UnverifiedReason.ContentMismatch).detail)
+    }
+
     @Test fun a404TwiceIsUnavailable_andTheSecondAttemptWaits() = runTest {
         val sleeps = ArrayList<Long>(); var calls = 0
-        val r = TEESignatureVerifier.verify("id", "0xabc", null, false, null, fetchSignature = { calls++; 404 to ByteArray(0) }, sleepMs = { sleeps.add(it) })
+        val r = TEESignatureVerifier.verify("id", record(gpu = "0xabc"), exchange, fetchSignature = { _, _ -> calls++; 404 to ByteArray(0) }, sleepMs = { sleeps.add(it) })
         assertEquals(ResponseVerification.Unverified(UnverifiedReason.SignatureUnavailable), r); assertEquals(2, calls); assertEquals(listOf(2_000L, 4_000L), sleeps)
+    }
+
+    /** The 2xx `{error_code, message}` envelope is "not available", not a parse failure. */
+    @Test fun anErrorEnvelopeIsUnavailable_garbageIsAFetchFailure() = runTest {
+        val envelope = TEESignatureVerifier.verify("id", record(gpu = "0xabc"), exchange, fetchSignature = { _, _ -> 200 to """{"error_code":"signature_unavailable","message":"x"}""".toByteArray() }, sleepMs = {})
+        assertEquals(ResponseVerification.Unverified(UnverifiedReason.SignatureUnavailable), envelope)
+        val garbage = TEESignatureVerifier.verify("id", record(gpu = "0xabc"), exchange, fetchSignature = { _, _ -> 200 to "<html>".toByteArray() }, sleepMs = {})
+        assertTrue((garbage as ResponseVerification.Unverified).reason is UnverifiedReason.FetchFailed)
     }
 
     /** The signer is RECOVERED from the signature; a forged response quoting a trusted address does not pass. */
     @Test fun forgedSignatureQuotingATrustedAddress_isRejected() = runTest {
-        val r = TEESignatureVerifier.verify("id", "0x4a8b3f2e9d1c7a5e2b0f8d3c6e1a4b7f2e9d1c7a", null, false, null,
-            fetchSignature = { 200 to body("fake_req:fake_resp", "0x" + "11".repeat(64) + "1b", "0x4a8b3f2e9d1c7a5e2b0f8d3c6e1a4b7f2e9d1c7a") }, sleepMs = {})
-        assertTrue(r is ResponseVerification.Unverified && (r.reason as? UnverifiedReason.SignatureMismatch)?.got == "unrecoverable signature" || r is ResponseVerification.Unverified && r.reason is UnverifiedReason.SignatureMismatch)
+        val addr = "0x4a8b3f2e9d1c7a5e2b0f8d3c6e1a4b7f2e9d1c7a"
+        val r = TEESignatureVerifier.verify("id", record(gpu = addr), exchange,
+            fetchSignature = { _, _ -> 200 to body("${sha("req")}:${sha("resp")}", "0x" + "11".repeat(64) + "1b", addr).let { String(it).replace("\"signing_algo\"", "\"signature_kind\":\"gateway\",\"signing_algo\"").toByteArray() } }, sleepMs = {})
+        assertTrue(r is ResponseVerification.Unverified && r.reason is UnverifiedReason.SignatureMismatch)
     }
 
     @Test fun contentMismatch_isDecisiveBeforeAnySigner() = runTest {
-        val r = TEESignatureVerifier.verify("id", "0xabc", null, true, SignedExchange(listOf("req".toByteArray()), "resp"),
-            fetchSignature = { 200 to body("${sha("other")}:${sha("resp")}", "0x00", "0xabc") }, sleepMs = {})
+        val r = TEESignatureVerifier.verify("id", record(gateway = "0xabc"), exchange,
+            fetchSignature = { _, _ -> 200 to body("${sha("other")}:${sha("resp")}", "0x00", "0xabc").let { String(it).replace("\"signing_algo\"", "\"signature_kind\":\"gateway\",\"signing_algo\"").toByteArray() } }, sleepMs = {})
         assertEquals("signed request hash does not match observed content", ((r as ResponseVerification.Unverified).reason as UnverifiedReason.ContentMismatch).detail)
     }
 
-    /** A non-ECDSA algo falls back to the asserted address; an unattested signer through a verified gateway is gateway-trust-only, never verified. */
-    @Test fun nonEcdsaAssertedAddress_andGatewayTrustOnly() = runTest {
-        val ok = TEESignatureVerifier.verify("id", "0xABC", null, false, null, fetchSignature = { 200 to body("a:b", "0x", "0xabc", algo = "other") }, sleepMs = {})
-        assertEquals(ResponseVerification.Verified("0xabc"), ok)
-        val gw = TEESignatureVerifier.verify("id", "0xabc", null, true, null, fetchSignature = { 200 to body("a:b", "0x", "0xdef", algo = "other") }, sleepMs = {})
-        assertEquals(ResponseVerification.Unverified(UnverifiedReason.GatewayTrustOnly("0xdef")), gw)
-        val rotated = TEESignatureVerifier.verify("id", "0xabc", null, false, null, fetchSignature = { 200 to body("a:b", "0x", "0xdef", algo = "other") }, refetchSigningAddress = { listOf(null, "0xDEF") }, sleepMs = {})
-        assertEquals(ResponseVerification.Verified("0xdef"), rotated)
-        val mismatch = TEESignatureVerifier.verify("id", "0xabc", null, false, null, fetchSignature = { 200 to body("a:b", "0x", "0xdef", algo = "other") }, sleepMs = {})
-        assertEquals(ResponseVerification.Unverified(UnverifiedReason.SignatureMismatch("0xabc", "0xdef")), mismatch)
+    /** iOS 441cecf: ed25519 first when the model key is attested, ecdsa otherwise; a gateway-kind ed25519 answer is refetched as ecdsa. */
+    @Test fun ed25519IsAskedFirst_andAGatewayAnswerIsRefetchedAsEcdsa() = runTest {
+        val asked = ArrayList<String>()
+        val gatewayEd = """{"text":"t","signature":"00","signing_address":"k","signing_algo":"ed25519","signature_kind":"gateway"}""".toByteArray()
+        TEESignatureVerifier.verify("id", SignatureVerdictTest.record(gateway = "0xabc", modelKey = ByteArray(32) { 1 }), exchange,
+            fetchSignature = { _, algo -> asked += algo; if (algo == "ed25519") 200 to gatewayEd else 200 to body("t", "0x00", "0xabc").let { String(it).replace("\"signing_algo\"", "\"signature_kind\":\"gateway\",\"signing_algo\"").toByteArray() } }, sleepMs = {})
+        assertEquals(listOf("ed25519", "ecdsa"), asked)
+        asked.clear()
+        TEESignatureVerifier.verify("id", record(gpu = "0xabc"), exchange, fetchSignature = { _, algo -> asked += algo; 200 to body("t", "0x00", "0xabc") }, sleepMs = {})
+        assertEquals("no attested model key: ecdsa only", listOf("ecdsa"), asked)
     }
 
     @Test fun fetchFailure_isReported() = runTest {
-        val r = TEESignatureVerifier.verify("id", "0xabc", null, false, null, fetchSignature = { throw IOException("down") }, sleepMs = {})
+        val r = TEESignatureVerifier.verify("id", record(gpu = "0xabc"), exchange, fetchSignature = { _, _ -> throw IOException("down") }, sleepMs = {})
         assertTrue((r as ResponseVerification.Unverified).reason is UnverifiedReason.FetchFailed)
     }
 }

@@ -1,4 +1,4 @@
-// ports: teemoon/Providers/ModelDefaultRule.swift @ v1.0.4
+// ports: teemoon/Providers/ModelDefaultRule.swift @ v1.0.5
 package ai.teemoon.providers
 
 /**

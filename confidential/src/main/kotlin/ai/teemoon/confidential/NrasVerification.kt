@@ -1,4 +1,4 @@
-// ports: teemoon/Confidential/NRASService.swift @ v1.0.1 (the NRASVerification value type only)
+// ports: teemoon/Confidential/NRASService.swift @ d382a55 (the NRASVerification value type only)
 package ai.teemoon.confidential
 
 /** NVIDIA NRAS outcome for a record's GPU evidence. */

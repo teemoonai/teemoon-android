@@ -61,6 +61,8 @@ class SseStreamParser(private val now: () -> Instant = Instant::now) {
     /** `usage.completion_tokens` / `usage.prompt_tokens`, when the server reports them. */
     var completionTokens: Int? = null
     var promptTokens: Int? = null
+    /** `usage.prompt_tokens_details.cached_tokens`: how much of the prompt the provider served from its cache (1.0.6 phases). */
+    var cachedPromptTokens: Int? = null
     /**
      * `firstDeltaAt` is the honest time-to-first-token; `firstVisibleAt` is when the user could first see
      * anything, and the gap between them is the model thinking. Both read the raw delta, before decryption.
@@ -133,6 +135,9 @@ class SseStreamParser(private val now: () -> Instant = Instant::now) {
         runCatching { obj["usage"]?.jsonObject }.getOrNull()?.let { usage ->
             runCatching { usage["completion_tokens"]?.jsonPrimitive?.content?.toInt() }.getOrNull()?.let { completionTokens = it }
             runCatching { usage["prompt_tokens"]?.jsonPrimitive?.content?.toInt() }.getOrNull()?.let { promptTokens = it }
+            // OpenAI-style prompt_tokens_details.cached_tokens, or DeepSeek's prompt_cache_hit_tokens (iOS c76f3bd).
+            (runCatching { usage["prompt_tokens_details"]?.jsonObject?.get("cached_tokens")?.jsonPrimitive?.content?.toInt() }.getOrNull()
+                ?: runCatching { usage["prompt_cache_hit_tokens"]?.jsonPrimitive?.content?.toInt() }.getOrNull())?.let { cachedPromptTokens = it }
         }
         val delta = runCatching {
             obj["choices"]?.jsonArray?.firstOrNull()?.jsonObject?.get("delta")?.jsonObject

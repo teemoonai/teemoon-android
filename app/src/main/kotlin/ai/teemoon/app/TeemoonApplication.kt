@@ -14,6 +14,7 @@ class TeemoonApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        DebugDiagnostics.install(this)   // StrictMode + JankStats, debug builds only (returns at once otherwise)
         // a copied key whose clear was pending when the process died without its alarm (a force-stop cancels both)
         Clipboard.onProcessStart(this)
     }

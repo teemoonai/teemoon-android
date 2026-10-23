@@ -15,7 +15,7 @@ import java.io.File
  * certifying itself.
  */
 class KitStampTest {
-    private val classes = listOf("crypto", "quotes", "collateral", "sigstore", "nras", "tls", "streams", "catalogs", "brave")
+    private val classes = listOf("crypto", "quotes", "collateral", "sigstore", "nras", "tls", "streams", "catalogs", "brave", "signatures", "requests")
 
     private fun portsKitVersion(): String? {
         var dir: File? = File(".").absoluteFile

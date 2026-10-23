@@ -12,6 +12,7 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.core.updateTransition
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.slideInHorizontally
@@ -212,7 +213,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         if (savedInstanceState == null) intent?.getStringExtra(TurnService.EXTRA_OPEN_THREAD)?.let { openThread.value = it }
         val opened = ChatDatabase.open(this)
-        val dao = when (opened) { is ChatDatabase.Open.Ready -> opened.db; is ChatDatabase.Open.Failed -> opened.db }.chatDao()
+        val chatDb = when (opened) { is ChatDatabase.Open.Ready -> opened.db; is ChatDatabase.Open.Failed -> opened.db }
+        val dao = chatDb.chatDao()
         // ONE AppState per process, as iOS has one for the app's life: it owns the on-device engine. A second MainActivity
         // (the system recreating the screen, a launch into a fresh task) used to build a second AppState — a second
         // engine cache — and the next on-device turn refused with "not enough free memory (needs 3482 MB, 2506 MB
@@ -251,11 +253,13 @@ class MainActivity : ComponentActivity() {
                         installedLocal = { app.localCatalog.firstOrNull(app.localStorage::isInstalled) }) +
                         // seed_download: the general bundle through the app's own downloader (onInstalled then equips it)
                         (if (plan.download) { val m = app.localCatalog.first(); if (app.localStorage.isInstalled(m)) listOf("download: ${m.id} already installed") else { app.localDownloads.start(m); listOf("download started: ${m.id}") } } else emptyList()) + listOfNotNull(plan.attestation?.let { "attestation $it" })
-                    Log.w("teemoon", "[uitest] seeded: " + log.joinToString("; "))
+                    if (plan.localKind == "ollama" && plan.localEndpoint != null) app.seedServerKind("uitest-local", ai.teemoon.providers.ServerKind.OLLAMA)
+                    Log.w("teemoon", "[uitest] seeded: " + log.joinToString("; ") + (plan.localKind?.let { "; local kind $it" } ?: ""))
                 }
             }
         }
-        val repo = ChatRepository(dao, app.search)
+        // after a delete the store scrubs its files (ChatDatabase.maintenance): deleted text must not stay readable there
+        val repo = ChatRepository(dao, app.search, maintenance = ChatDatabase.maintenance(chatDb, CoroutineScope(Dispatchers.IO)))
         // The long-thread seed needs the repository, so it runs here rather than in the block above.
         if (seedingArmed && savedInstanceState == null) {
             val extras = intent?.extras?.let { b -> b.keySet().associateWith { k -> @Suppress("DEPRECATION") b.get(k) } }.orEmpty()
@@ -280,6 +284,8 @@ class MainActivity : ComponentActivity() {
             // the phone's free memory, pinned for the get section: the first-run journeys failed on the user's own phone
             // whenever its other apps left under ~4 GB free (the start-here card offers only a model that fits)
             if (extras[UiTestSeeding.EXTRA_FLAG] == true) app.uiTestAvailableMB = (extras[UiTestSeeding.EXTRA_AVAILABLE_MB] as? Int)
+            // set either way, as above: one seeded launch's scripted reply must not answer the next launch's turns
+            if (extras[UiTestSeeding.EXTRA_FLAG] == true) app.uiTestScriptedReply = StreamingReplyFixture.MARKDOWN.takeIf { extras[UiTestSeeding.EXTRA_STREAM_REPLY] == true }
             // Behind the uitesting flag like every other seed: it was read on the debuggable check alone, so any app could
             // point a debug build's Brave key and the model's queries at its own host (the local audit, 2026-10-13).
             // The flag is consistency, not a barrier — a caller can set it too. Debug builds live on test devices and
@@ -294,6 +300,8 @@ class MainActivity : ComponentActivity() {
             } else if (seedPlan?.threads == true) {
                 CoroutineScope(Dispatchers.IO).launch { Log.w("teemoon", "[uitest] " + UiTestSeeding.seedFixtureThreads(repo)) }
             }
+            // beside either: the macrobenchmark's list fixture (UiTestSeeding.seedManyThreads), older than the long thread
+            seedPlan?.manyThreads?.let { n -> CoroutineScope(Dispatchers.IO).launch { Log.w("teemoon", "[uitest] " + UiTestSeeding.seedManyThreads(repo, n)) } }
         }
         // A saved near.ai setup can outlive its model: move it to what near.ai serves (iOS ContentView's .task,
         // guarded the same way — a UI test's world is seeded and must not be rewritten by a live list). Outside the
@@ -355,6 +363,7 @@ private fun Root(app: AppState, repo: ChatRepository, storeFailure: String? = nu
     // (the B10 journey, 2026-10-04), and "new chat" from an empty chat keeps its thread id, so the id alone is not enough.
     var newChatCount by rememberSaveable { mutableStateOf(0) }
     var route by rememberSaveable(stateSaver = RouteCodec.saver) { mutableStateOf<Route?>(startRoute) }
+    JankScreenState(route?.let { RouteCodec.encode(it).substringBefore(':') } ?: "launch")   // debug builds only: names the screen in JankStats lines
     var focusEpoch by remember { mutableStateOf(0) }   // bumped each time the chat comes back in front (ChatScreen.focusEpoch)
     // A tapped "reply ready" notification: open its chat, over whatever was showing.
     val tappedThread by openThread.collectAsState()
@@ -464,7 +473,7 @@ private fun Root(app: AppState, repo: ChatRepository, storeFailure: String? = nu
     // the flag belongs to one visit of the form: anywhere else, the next form is where's again
     LaunchedEffect(route) { if (route !is Route.AddPlace && route !is Route.EditPlace) formOverTrust = false }
     val sheetB: Route? = when (val r = route) { is Route.AddPlace, is Route.EditPlace, is Route.Browse, is Route.Download -> r; else -> null }
-    val screen: @Composable (Route?) -> Unit = { r -> when (r) {
+    val screen: @Composable (Route?) -> Unit = { r -> NavTrace.section("screen:" + NavTrace.name(r)) { when (r) {
         null -> Unit   // the store has not answered yet
         Route.Threads -> ThreadsScreen(
             threads = visibleThreads,
@@ -478,6 +487,7 @@ private fun Root(app: AppState, repo: ChatRepository, storeFailure: String? = nu
             // transcript never sits on a thread the store no longer has.
             onDelete = { id ->
                 runBlocking { repo.delete(id) }
+                app.forgetKeptConversations()   // its text must not outlive it in a kept on-device conversation (iOS fc09a91)
                 if (id == currentThreadId) { currentThreadId = null; route = Route.Chat(newChat()) }
             },
             previews = previews.associate { it.threadId to it.content },
@@ -495,7 +505,8 @@ private fun Root(app: AppState, repo: ChatRepository, storeFailure: String? = nu
                 // The place is read at SEND time from the store, never captured: this lambda outlives the composition that
                 // created the view model, and a captured `place` sent a turn to the previous provider after a switch.
                 ChatViewModel(repo = repo, threadId = r.threadId, provider = { app.providers.value.firstOrNull { it.id == app.selectedId.value } }, credential = app::credentialFor, groundingKey = app::groundingKey, localContextTokens = app::localContextTokens, session = app.session, onFirstToken = app::recordUse,
-                    systemPrompt = { app.settings.systemPrompt }, onBraveKey = { app.setBraveKey(it) }, makeTransport = app::transportFor)
+                    systemPrompt = { app.settings.systemPrompt }, onBraveKey = { app.setBraveKey(it) }, makeTransport = app::transportFor,
+                    reasoningControl = app::reasoningControl, beforeSend = app.firstSendKind::beforeSend)
             }
             // A turn outlives the foreground: the service holds the process up while it runs, and says so when it
             // lands. TurnNotificationPolicy decides what is said; this only supplies the facts.
@@ -661,7 +672,7 @@ private fun Root(app: AppState, repo: ChatRepository, storeFailure: String? = nu
         Route.Appearance -> AppearanceSettingsScreen(app.settings, onBack = { route = Route.Settings })
         // ChatsSettingsView.deleteAll: `currentThread = nil` — the chat under the sheet starts fresh, never left showing a
         // transcript the store no longer has (the delete-all journey caught it still drawn behind "no chats yet", 2026-10-04).
-        Route.ChatsSettings -> ChatsSettingsScreen(app.settings, onDeleteAllChats = { runBlocking { repo.deleteAll() }; currentThreadId = null; newChat() }, onBack = { route = Route.Settings })
+        Route.ChatsSettings -> ChatsSettingsScreen(app.settings, onDeleteAllChats = { runBlocking { repo.deleteAll() }; app.forgetKeptConversations(); currentThreadId = null; newChat() }, onBack = { route = Route.Settings })
         Route.Search -> SearchSettingsScreen(
             activeProviderHasBuiltInGrounding = place?.let { ProviderCapability.BUILT_IN_GROUNDING in it.capabilities } == true,
             storedKey = app.braveKey(), groundingEnabled = groundingEnabled, onSaveKey = { app.setBraveKey(it) }, onSetEnabled = app::setGroundingEnabled,
@@ -716,7 +727,7 @@ private fun Root(app: AppState, repo: ChatRepository, storeFailure: String? = nu
             // equipArriving: an arriving pull goes on the list immediately and is selected, as tapping a phone model in `get` does
             else OllamaDownloadScreen(provider = p, center = app.downloads, onBack = { route = Route.Where }, onStarted = { ref -> app.activate(ref, p) }, onCompleted = { ref -> app.activate(ref, p) })
         }
-    } }
+    } } }
 
     // The sheet is its own window and does not see the activity's navigation-bar inset: read it here and pad inside.
     val bottomInset = WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding()
@@ -756,11 +767,13 @@ private fun Root(app: AppState, repo: ChatRepository, storeFailure: String? = nu
                 top == Route.Where && whereFirstRun -> listOf(SheetDetents.FIRST_RUN, SheetDetents.LARGE)
                 else -> listOf(SheetDetents.MEDIUM, SheetDetents.LARGE)
             }
-            IosSheet(visible = top != null, tops = tops, onDismiss = { toChat() }, grabber = top == Route.Threads || top == Route.Where, containerColor = TeemoonColors.groupedBackground, lift = sheetLift) {
+            IosSheet(visible = top != null, tops = tops, onDismiss = { toChat() }, grabber = top == Route.Threads || top == Route.Where, containerColor = TeemoonColors.groupedBackground, lift = sheetLift, traceLabel = "sheet:" + NavTrace.name(top ?: sheetAShown)) {
                 // under the child sheet (the add form over the where sheet) this sheet is scenery too
                 Box(Modifier.semantics { if (sheetB != null) hideFromAccessibility() }) {
                 (top ?: sheetAShown)?.let { page0 ->
-                    AnimatedContent(targetState = page0, label = "sheetPage", transitionSpec = {
+                    val pages = updateTransition(page0, label = "sheetPage")
+                    TraceWhile("page:" + NavTrace.name(pages.targetState), pages.isRunning)
+                    pages.AnimatedContent(transitionSpec = {
                         val spec = spring<IntOffset>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = 380f)
                         if (routeLevel(targetState) > routeLevel(initialState)) slideInHorizontally(spec) { it } togetherWith slideOutHorizontally(spec) { -it / 3 }
                         else slideInHorizontally(spec) { -it / 3 } togetherWith slideOutHorizontally(spec) { it }
@@ -769,10 +782,10 @@ private fun Root(app: AppState, repo: ChatRepository, storeFailure: String? = nu
                 }
             }
             val child = sheetB
-            IosSheet(visible = child != null, tops = listOf(SheetDetents.LARGE), onDismiss = { route = formParent() }, grabber = false, scrimAlpha = 0.3f, containerColor = TeemoonColors.groupedBackground) {
+            IosSheet(visible = child != null, tops = listOf(SheetDetents.LARGE), onDismiss = { route = formParent() }, grabber = false, scrimAlpha = 0.3f, containerColor = TeemoonColors.groupedBackground, traceLabel = "sheet:" + NavTrace.name(child ?: sheetBShown)) {
                 (child ?: sheetBShown)?.let { screen(it) }
             }
-            IosSheet(visible = activeModelCard != null, tops = listOf(SheetDetents.LARGE), onDismiss = { activeModelCard = null }, grabber = false, containerColor = TeemoonColors.groupedBackground) {
+            IosSheet(visible = activeModelCard != null, tops = listOf(SheetDetents.LARGE), onDismiss = { activeModelCard = null }, grabber = false, containerColor = TeemoonColors.groupedBackground, traceLabel = "sheet:modelcard") {
                 activeModelShown?.let { (model, door) ->
                     ModelDetailScreen(model, confidentiality = model.confidentialityNote, onCopyID = { Clipboard.copy(hostContext, it) }, onBack = { activeModelCard = null },
                         liveLoader = door.liveLoader?.let { load -> suspend { load()?.firstOrNull { it.id == model.id } } },
@@ -780,7 +793,7 @@ private fun Root(app: AppState, repo: ChatRepository, storeFailure: String? = nu
                 }
             }
             // presentationDragIndicator(.visible); detents by count (sourcesSheetTops)
-            IosSheet(visible = sourcesSheet != null, tops = sourcesSheetTops(sourcesShown.size, screenHeightDp), onDismiss = { sourcesSheet = null }, grabber = true, containerColor = TeemoonColors.groupedBackground) {
+            IosSheet(visible = sourcesSheet != null, tops = sourcesSheetTops(sourcesShown.size, screenHeightDp), onDismiss = { sourcesSheet = null }, grabber = true, containerColor = TeemoonColors.groupedBackground, traceLabel = "sheet:sources") {
                 GroundingSourcesView(sourcesShown, onClose = { sourcesSheet = null })
             }
         }

@@ -327,7 +327,11 @@ class OnDeviceThinkingJourneyTest {
         val dir = ctx.getExternalFilesDir(null)!!
         prompts!!.forEachIndexed { i, prompt ->
             val t0 = System.currentTimeMillis()
-            while (System.currentTimeMillis() - t0 < coolS * 1000L && tenths() > start) Thread.sleep(5_000)
+            // `-e devcard_cool_to 310`: an ABSOLUTE target in tenths of a degree. Cooling back to the start temperature does
+            // nothing on a phone that started warm (the S26 ran three takes at 36–38 °C that way, 2026-10-15).
+            val target = InstrumentationRegistry.getArguments().getString("devcard_cool_to")?.toInt() ?: start
+            while (System.currentTimeMillis() - t0 < coolS * 1000L && tenths() > target) Thread.sleep(5_000)
+            android.util.Log.w("teemoon", "[devcard] $i cooled to ${tenths() / 10.0}C in ${(System.currentTimeMillis() - t0) / 1000}s")
             scenario?.close()
             launchOnDevice(UiTestSeeding.EXTRA_DEVELOPER to true)
             // A video of the round, beside the screenshot: screenrecord runs from just before the send until the card has
@@ -336,7 +340,11 @@ class OnDeviceThinkingJourneyTest {
             val video = File(dir, "devcard-$i.mp4")
             // `-e devcard_video false`: the encoder shares the chip and cost ~10% of decode on the S26 Ultra (86 vs 95).
             val record = InstrumentationRegistry.getArguments().getString("devcard_video") != "false"
-            if (record) { ui.executeShellCommand("screenrecord --time-limit 180 --bit-rate 8000000 ${video.path}").close(); Thread.sleep(800) }
+            // `-e devcard_video_size 720x1560 -e devcard_video_bitrate 6000000`: a lighter encode, because at full size the
+            // encoder starved under GPU load and dropped 2–7 s of frames mid-stream (S26 Ultra, 2026-10-15).
+            val vsize = InstrumentationRegistry.getArguments().getString("devcard_video_size")?.let { " --size $it" }.orEmpty()
+            val vrate = InstrumentationRegistry.getArguments().getString("devcard_video_bitrate") ?: "8000000"
+            if (record) { ui.executeShellCommand("screenrecord --time-limit 180 --bit-rate $vrate$vsize ${video.path}").close(); Thread.sleep(800) }
             // `-e devcard_hold_ms 2000`: the typed prompt stays on screen that long before the send, so an outside recording
             // (the Mac capturing the lab's stream) opens on it. `devcard_tail_ms`: how long to stay on the finished card.
             val holdMs = (InstrumentationRegistry.getArguments().getString("devcard_hold_ms") ?: "0").toLong()

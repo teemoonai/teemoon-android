@@ -46,6 +46,8 @@ class AppSettingsScreensTest {
             override suspend fun deleteAllThreads() { swept++ }
             override suspend fun deleteAllMessages() { swept++ }
             override suspend fun deleteMessagesSince(threadId: String, sinceMs: Long) {}
+            override suspend fun deleteMessages(ids: List<String>) {}
+            override suspend fun setTimestamp(id: String, timestamp: Long) {}
             override suspend fun indexableMessageIds() = emptyList<String>()
             override suspend fun messagesByIds(ids: List<String>) = emptyList<MessageEntity>()
             override fun observePreviews() = flowOf(emptyList<ThreadPreview>())

@@ -6,6 +6,7 @@
 // ports: teemoon/Providers/ProviderStore+Healing.swift @ v1.0.4 (healRetiredNearAIModels(served:), 4b9d154's step in main's shape)
 // ports: teemoon/Providers/ProviderStore+Healing.swift @ v1.0.4 (nearAIProvider: the active near.ai setup first)
 // ports: teemoon/Providers/ProviderStore.swift @ v1.0.4 (addProvider: the fold, the on-device exemption, the union)
+// ports: teemoon/Providers/ProviderStore+Healing.swift @ ffcfc00 (fireworksRetirements: kimi k2.6 → k3 and nemotron 3 super → 3.5 lightning, healRetiredFireworksModels)
 // ports: teemoon/Providers/ProviderStore+Healing.swift @ 5d2fb66 (FireworksRetirement, fireworksRetirements, healRetiredFireworksModels)
 package ai.teemoon.providers
 
@@ -233,24 +234,32 @@ object ProviderHealing {
         val successor: String,
         val retiredName: String,
         val successorName: String,
-        /** The retired id's last shipped price, said in the notice so a dearer successor is never a silent change. */
+        /** The retired id's last shipped price, said in the notice so a dearer successor is never a silent change. Empty where no price is shown. */
         val retiredPrice: String,
+        /** Whose setups move (iOS ffcfc00: the table names its provider, so NVIDIA's retirement rides the same heal). */
+        val source: EndpointModelCatalog.Source = EndpointModelCatalog.Source.FIREWORKS,
+        val place: String = "fireworks",
     ) {
         val notice: String
-            get() = "$retiredName is no longer on fireworks, so your fireworks setup now uses $successorName " +
-                "(${FireworksAdapter.fireworksPrices[successor].orEmpty()} per 1M tokens, was $retiredPrice)."
+            get() = if (retiredPrice.isEmpty()) "$retiredName is no longer on $place, so your $place setup now uses $successorName."
+                else "$retiredName is no longer on $place, so your $place setup now uses $successorName " +
+                    "(${FireworksAdapter.fireworksPrices[successor].orEmpty()} per 1M tokens, was $retiredPrice)."
     }
 
     /** kimi-k2p6 left serverless 2026-10-15 while it was the shipped default (iOS 5d2fb66; the user chose "switch and tell"). */
     val fireworksRetirements: List<FireworksRetirement> = listOf(
         FireworksRetirement(retired = "accounts/fireworks/models/kimi-k2p6", successor = "accounts/fireworks/models/kimi-k3",
             retiredName = "kimi k2.6", successorName = "kimi k3", retiredPrice = "$0.95/$4.00"),
+        // 404 on NVIDIA since 2026-10 (the maintainer picked lightning, 2026-10-22; iOS ffcfc00).
+        FireworksRetirement(retired = "nvidia/nemotron-3-super-120b-a12b", successor = "nvidia/nemotron-3.5-lightning-30b-a3b",
+            retiredName = "nemotron 3 super", successorName = "nemotron 3.5 lightning", retiredPrice = "",
+            source = EndpointModelCatalog.Source.NVIDIA, place = "nvidia"),
     )
 
     data class FireworksHeal(val providers: List<Provider>, val moved: List<Provider>, val notices: List<String>)
 
     /**
-     * Moves Fireworks setups (model and equipped list, replaced in place and de-duplicated) off retired ids, with one
+     * Moves Fireworks and NVIDIA setups (model and equipped list, replaced in place and de-duplicated) off retired ids, with one
      * notice per retirement that moved anything. Every saved setup on kimi-k2p6 otherwise failed its next send until the
      * user picked another model: the 1.0.5 preset change moved only NEW setups.
      */
@@ -261,7 +270,7 @@ object ProviderHealing {
             var touched = false
             list = list.map { p ->
                 val host = p.openAIBaseUrl?.let { runCatching { URI(it).host }.getOrNull() }
-                if (EndpointModelCatalog.Source.resolve(host) != EndpointModelCatalog.Source.FIREWORKS) return@map p
+                if (EndpointModelCatalog.Source.resolve(host) != r.source) return@map p
                 val equipped = p.equippedModels?.map { if (it == r.retired) r.successor else it }?.distinct()
                 val healed = (if (p.model == r.retired) p.withModel(r.successor) else p).copy(equippedModels = equipped)
                 if (healed == p) p else { moved += healed; touched = true; healed }

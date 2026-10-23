@@ -37,7 +37,7 @@ AVD (1080x2400, API 35) on 2026-09-03 unless a line says otherwise.
 | Delete a row iOS lets you swipe (a `ready now` model, a place in places & keys, an Ollama model on the form) | trailing swipe, or the context menu where there is one; the same one action | trailing swipe (`TrailingSwipe`, a `SwipeToDismissBox` that springs back) AND a long-press menu item, the same one action; no leading swipe | `DesignKit`, `SettingsScreen`, `PlacesKeysScreens`, `AddEditProviderScreen`; `WhereSheetContractTest`, `PlacesKeysContractTest` |
 | Wide markdown tables | horizontal scroll inside the transcript | the table scrolls horizontally in its own container (the renderer's default), the page never does | `MarkdownBody` |
 | Delete a chat | swipe action | swipe from the trailing edge (`SwipeToDismissBox`) or long-press; both confirm | `ThreadsScreen` |
-| Text selection | `.textSelection(.enabled)` | replies are a `SelectionContainer`: long-press selects, with Android's handles and copy | `ChatScreen` |
+| Text selection | `.textSelection(.enabled)`; a reply's long press is its context menu (Think Harder, Copy) and a double tap selects a word (8c19327) | the same: a reply's long press opens the menu — "think harder" (newest finished reply), "copy" — and a double tap selects the word under the finger in a `SelectionContainer`, with Android's handles and copy toolbar. The container's own long press is moved out of reach with a `LocalViewConfiguration` whose long-press timeout is an hour, so the menu is the only long press. The thinking block is not selectable. Until 1.0.6 the long press WAS the selection; the maintainer chose the menu on 2026-10-19 so Think Harder has a home, and the double tap (iOS build 57) on 2026-10-21 | `MessageViews.AssistantMessageView`, `ReplySelection`, `ReplyContextMenu` |
 | Haptics | impact / selection generators | Compose haptics gated by the chats setting: confirm on send, long-press feedback on the list | `ChatScreen`, `ThreadsScreen` |
 | On-device accelerator | one Apple GPU stack; LiteRT is given no backend choice at runtime | a chip-compiled NPU bundle when one is installed (`LocalModelCatalog.npuBundles` → `requireNpu`, one rung); otherwise a ladder, gpu then cpu (4 threads), where a rung is accepted ONLY after it decodes a real token and the verdict is cached. The Tensor dispatcher ships in `jniLibs` and is found by the runtime LISTING `nativeLibraryDir`, which needs `useLegacyPackaging = true`; `<uses-native-library>` names the vendor libraries API 31+ would otherwise refuse. On a Snapdragon 8 Elite the Qualcomm dispatcher (shipped renamed) and the QNN v79 runtime are linked in by `NpuDispatch`; on Android 17 the manifest's `android.hardware.npu` declaration is what lets the NPU Manager schedule the work | `BackendLadder`, `LiteRtLmEngineFactory`, `ondevice/src/main/jniLibs/README.md`, `app/build.gradle.kts`, `AndroidManifest.xml` |
 | Launcher icon | the moon on black, light/dark/tinted variants | the same moon as an adaptive icon (foreground disc in the safe zone, black background) with a **monochrome** layer for Android 13+ themed icons; legacy 48dp PNGs for API < 26 | `res/mipmap-*` |
@@ -187,3 +187,11 @@ before the load (Pixel 10 Pro, 2026-10-05). `BackgroundWarmUp` skips the warm-up
 foreground (MainActivity.onStart warms up on every return), and evicts an engine whose build finished after the
 app left, unless a turn is using it.
 
+
+## Debug builds run StrictMode and JankStats
+
+iOS has no StrictMode, and its frame-drop tooling lives in Instruments rather than the app. A DEBUG build of this one
+installs both at launch (`DebugDiagnostics`, from `TeemoonApplication.onCreate`): a thread policy for disk reads and
+writes, network and custom slow calls, a VM policy for leaked closeables, and JankStats on every activity window, with
+the current route as its `screen` state. penaltyLog only (`adb logcat -s StrictMode JankStats`). Everything is behind
+`BuildConfig.DEBUG`, so release and benchmark builds carry none of it.

@@ -1,5 +1,9 @@
 package ai.teemoon.app
 
+import ai.teemoon.inference.ReasoningEffort
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
+
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -22,6 +26,7 @@ import androidx.compose.runtime.derivedStateOf
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import kotlinx.coroutines.launch
@@ -63,6 +68,15 @@ import ai.teemoon.inference.LlmError
 import ai.teemoon.providers.WhereLocality
 import androidx.compose.animation.core.LinearEasing
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.EaseInOut
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.interaction.DragInteraction
 import androidx.compose.foundation.lazy.LazyListLayoutInfo
@@ -122,13 +136,18 @@ fun ChatScreen(
     // collector resumed there recomposes off the main thread. The app's own frame clock always dispatched to main; the
     // v1 Compose test rule's unconfined dispatcher did not, and crashed the app twice a suite on the Pixel
     // ("performMeasureAndLayout called during measure layout", 2026-10-05).
-    val state by vm.state.collectAsStateWithLifecycle(context = Dispatchers.Main)
+    val uiState by vm.state.collectAsStateWithLifecycle(context = Dispatchers.Main)
+    // The transcript's rows (ChatView: `llm.superseding.visible(...)`): Think Harder's old reply until the new one shows
+    // text, then not. Everything below reads the visible rows, so the follow and the reserve see what is on screen.
+    val state = remember(uiState) { uiState.superseding.takeIf { it.swapped }?.let { s -> uiState.copy(messages = s.visible(uiState.messages)) } ?: uiState }
     // The draft survives leaving the chat for the trust screen or a sheet (iOS keeps it in the view's state; a
     // Compose route change would otherwise recreate this screen and drop it).
     var prompt by rememberSaveable { mutableStateOf("") }
     var gate by remember { mutableStateOf<SendPrep?>(null) }
     /** The gate above was raised by the RETRY glyph, not the composer: its bypass re-asks the question. */
     var gatedRetry by remember { mutableStateOf(false) }
+    /** The gated retry is a Think Harder: the effort survives the confirm (iOS ChatView.pendingRetryEffort). */
+    var gatedThinkHarder by remember { mutableStateOf(false) }
     // a retry from the error card or the search offer found no place: the same alert the composer shows
     LaunchedEffect(state.needsPlace) { if (state.needsPlace) { gatedRetry = true; gate = SendPrep.BLOCKED_NO_PROVIDER; vm.placeRequestShown() } }
     val focus = LocalFocusManager.current
@@ -163,7 +182,15 @@ fun ChatScreen(
      */
     fun attemptRetry() {
         val prep = SendPrep.prepare("", hasProvider = hasProvider, isDownloading = arrival != null, trust = sendPolicy, requirePrompt = false, hasKey = hasKey)
+        gatedThinkHarder = false   // a retry the no-place gate catches (needsPlace) re-runs as a plain one
         if (prep == SendPrep.READY) vm.retryLastTurn() else { gatedRetry = true; gate = prep }
+    }
+    /** Think Harder is a retry, gated identically (ChatView.thinkHarder → retry(from:effort:)). */
+    fun attemptThinkHarder(replyId: String) {
+        if (!vm.canThinkHarder(replyId)) return
+        val prep = SendPrep.prepare("", hasProvider = hasProvider, isDownloading = arrival != null, trust = sendPolicy, requirePrompt = false, hasKey = hasKey)
+        gatedThinkHarder = true
+        if (prep == SendPrep.READY) vm.thinkHarder(replyId) else { gatedRetry = true; gate = prep }
     }
     val listState = rememberLazyListState()
 
@@ -246,10 +273,13 @@ fun ChatScreen(
     // from the list after a turn elsewhere landed nine replies short (UserJourneysTest, 2026-10-05). So for a second the
     // last row's bottom is re-pinned to the viewport's end on every layout, as iOS's settle window does; the reader's
     // first drag ends it.
+    TraceWhile("chat:loading", !state.loaded)
     LaunchedEffect(state.loaded) {
         if (!state.loaded || state.messages.isEmpty()) return@LaunchedEffect
         listState.scrollToItem(state.messages.lastIndex)
         if (scrollToMessageId != null) return@LaunchedEffect   // a search hit lands on its match (the pin effect), not the end
+        // NavTrace: the window, and how many times it moved the transcript (each move is one a reader can see)
+        val landing = NavTrace.begin("chat:landing"); var moves = 1L
         var dragged = false
         val watch = launch { listState.interactionSource.interactions.collect { if (it is DragInteraction.Start) dragged = true } }
         val until = System.nanoTime() + 1_000_000_000L
@@ -257,14 +287,15 @@ fun ChatScreen(
             val info = listState.layoutInfo
             val endIndex = state.messages.lastIndex   // the last message row, never the slack spacer after it
             val last = info.visibleItemsInfo.firstOrNull { it.index == endIndex }
-            if (last == null) listState.scrollToItem(endIndex)
+            if (last == null) { listState.scrollToItem(endIndex); moves++ }
             else {
                 val delta = (last.offset + last.size + info.afterContentPadding - info.viewportEndOffset).toFloat()
-                if (delta > 0.5f) listState.scrollBy(delta)
+                if (delta > 0.5f) { listState.scrollBy(delta); moves++ }
             }
             delay(50)
         }
         watch.cancel()
+        NavTrace.count("chat.landing.moves", moves); NavTrace.end("chat:landing", landing)
     }
     // iOS re-reads anchorGeometry() on every layout pass. The keyed effect below sees the reply's text change, not the
     // layout under it: the developer card that appears after the hand-off, a row inside it opening, the sources chip
@@ -373,7 +404,7 @@ fun ChatScreen(
         else
         LazyColumn(
             state = listState,
-            modifier = Modifier.fillMaxSize().testTag("chat.transcript"),   // XCUIApplication.transcript
+            modifier = Modifier.fillMaxSize().semantics { testTagsAsResourceId = true }.testTag("chat.transcript"),   // XCUIApplication.transcript
             // ChatChrome: the canvas is full-bleed; the title block and the composer inset are measured and become the
             // list's content padding, so the transcript runs BEHIND both and the glass edges dissolve it there.
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = with(density) { topChromePx.toDp() } + 8.dp, bottom = with(density) { insetPx.toDp() } + 8.dp),
@@ -401,17 +432,35 @@ fun ChatScreen(
                         // The stall watch (StreamingMessageView.restartStallTimer): every change of the text re-arms it; a
                         // running tool holds it off, since the chip already shows for that.
                         var stalled by remember(m.id) { mutableStateOf(false) }
+                        // reveal lag, screen side (StreamLagMetric): this text is in the frame being built
+                        if (m.streaming) SideEffect { NavTrace.count("stream.shown", m.text.length.toLong()) }
                         if (m.streaming) LaunchedEffect(m.id, m.text, state.isExecutingTools) {
                             stalled = false
                             if (!state.isExecutingTools) { delay(TrailingActivityChip.STALL_MS); stalled = true }
                         }
-                        val chip: @Composable () -> Unit = { ActivityChip(ActivityState.of(state.isExecutingTools, state.sources.size), state.turnStartedAtMs?.let { (chipClockMs - it) / 1000.0 }) }
-                        AssistantMessageView(messageId = m.id, content = m.text, generatingTimeMs = m.generatingTimeMs, isLLMRunning = m.streaming, streaming = m.streaming, sources = m.sources,
+                        val chip: @Composable () -> Unit = { ActivityChip(ActivityState.of(state.isExecutingTools, state.sources.size, state.providerWait, chipClockMs, thinkingHarder = state.superseding.isActive), state.turnStartedAtMs?.let { (chipClockMs - it) / 1000.0 }) }
+                        // Think Harder's swap (TranscriptCollectionView): at the new reply's first text the old one leaves
+                        // and the new one takes its row, so this slot's message changes — a 150 ms crossfade, top edge
+                        // anchored, nothing below moving. Any other change of a slot's message snaps, as it always has.
+                        // With animations off (the system's duration scale, Android's Reduce Motion) both snap.
+                        AnimatedContent(targetState = m, contentKey = { it.id }, contentAlignment = Alignment.TopStart, label = "reply-swap",
+                            transitionSpec = {
+                                if (state.superseding.isActive) (fadeIn(tween(150)) togetherWith fadeOut(tween(150))).using(null)
+                                else (EnterTransition.None togetherWith ExitTransition.None).using(null)
+                            }) { m ->
+                        // SupersededReplyDimming: the old reply at 45% while the new one has no text, 200 ms each way —
+                        // opacity only, so the row keeps its size and nothing below it moves.
+                        val dim by animateFloatAsState(if (state.superseding.isDimmed(m.id)) 0.45f else 1f, tween(200, easing = EaseInOut), label = "superseded-dim")
+                        Box(Modifier.graphicsLayer { alpha = dim }) { AssistantMessageView(messageId = m.id, content = m.text, generatingTimeMs = m.generatingTimeMs, isLLMRunning = m.streaming, streaming = m.streaming, sources = m.sources,
                             // The activity chip stands in for a reply that has no text yet (StreamingMessageView).
                             placeholder = chip,
                             trailing = chip,
                             showTrailing = TrailingActivityChip.visible(hasText = m.text.isNotEmpty(), stalled = stalled,
-                                executingTools = state.isExecutingTools, awaitingModel = state.awaitingModel))
+                                executingTools = state.isExecutingTools, awaitingModel = state.awaitingModel),
+                            onCopy = onCopy,
+                            onThinkHarder = if (index == state.messages.lastIndex && !state.isStreaming && !m.streaming) ({ attemptThinkHarder(m.id) }) else null,
+                            thinkHarderOffered = { vm.canThinkHarder(m.id) }) }
+                        }
                     }
                 }
                 // The developer card is earned by the LAST reply only, never while an error stands (ConversationView.showsDebugCard).
@@ -537,7 +586,7 @@ fun ChatScreen(
                         // question (iOS generateBypassing's pendingRetryMessage) — sending the empty composer did nothing.
                         if (prep == SendPrep.CONFIRM_E2EE) trust.bypassLabel?.let { label -> label to {
                             gate = null
-                            if (gatedRetry) vm.retryLastTurn(acceptedDegrade = true) else { vm.send(prompt, acceptedDegrade = true); prompt = ""; focus.clearFocus() }
+                            if (gatedRetry) vm.retryLastTurn(acceptedDegrade = true, effort = if (gatedThinkHarder) ReasoningEffort.THINK_HARDER else ReasoningEffort.CHAT_DEFAULT) else { vm.send(prompt, acceptedDegrade = true); prompt = ""; focus.clearFocus() }
                         } } else null,
                         "cancel" to { gate = null },
                     ),

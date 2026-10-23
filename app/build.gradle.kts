@@ -5,6 +5,8 @@ plugins {
     alias(libs.plugins.kotlin.compose)
     // JVM snapshots of the screens with layout risk (test-only; allowlisted in CONTRIBUTING.md). Needs JDK 21+.
     alias(libs.plugins.paparazzi)
+    // Consumes the Baseline Profile :macrobenchmark generates (androidx.benchmark; AndroidX, allowlisted).
+    alias(libs.plugins.androidx.baselineprofile)
 }
 
 android {
@@ -39,8 +41,8 @@ android {
         // teemoon-ios a411f18; drift 0 since 2026-10-02, kit 0.5.0) — and versionCode is that release's iOS build
         // number × 100 + the beta number, 99 for the release itself. 1.0.4 is iOS build 38: 1.0.4-beta.1 → 3801, beta.2 → 3802,
         // 1.0.4 → 3899, and iOS's next build starts above both, so Play's codes only ever rise.
-        versionCode = 3916   // 1.0.5: saved Fireworks setups on kimi-k2p6 move to kimi-k3 with a notice (3916, iOS 5d2fb66); the developer card shows decode and prefill for on-device turns, no drafter asked of the 8 Elite NPU (3914); 1.0.4 on LiteRT-LM 0.18.0 / LiteRT 2.3.0 (3913); 1.0.4 with the 2026-10-13/14 audit fixes: key hygiene, notification channels, clipboard expiry, seeding gate (3912); 3911 1.0.4 pinned dark and running LiteRT as iOS does (thinking off, 4800 cap), search payload sized to the bundle's window (3911); 3910 the first verified rebuild; 3908 the Play review build; 3899 the first 1.0.4
-        versionName = "1.0.5"
+        versionCode = 3917   // 1.0.6 beta (internal track): the near.ai signature verifier (ed25519 against the quote-bound key, gateway at most GatewayTrustOnly, NRAS JWT checked, TCB allow-list) and the 1.0.6 performance work — kept on-device conversation, shared connection pool, late reply-signature check, day-resolved {{datetime}} with the minute on the turn, Fireworks session affinity, streamed markdown recomposing only the typed block, Think Harder on the newest reply (high effort, 8192 out), low effort by default, per-turn "[Sent at …]" notes and {{date}}, a 600 s header wait (iOS 1.0.6 build 45) (3917); 1.0.5: saved Fireworks setups on kimi-k2p6 move to kimi-k3 with a notice (3916, iOS 5d2fb66); the developer card shows decode and prefill for on-device turns, no drafter asked of the 8 Elite NPU (3914); 1.0.4 on LiteRT-LM 0.18.0 / LiteRT 2.3.0 (3913); 1.0.4 with the 2026-10-13/14 audit fixes: key hygiene, notification channels, clipboard expiry, seeding gate (3912); 3911 1.0.4 pinned dark and running LiteRT as iOS does (thinking off, 4800 cap), search payload sized to the bundle's window (3911); 3910 the first verified rebuild; 3908 the Play review build; 3899 the first 1.0.4
+        versionName = "1.0.6"
         testInstrumentationRunner = "ai.teemoon.app.TeemoonTestRunner"   // arms UiTestSeeding (UiTestSeeding.armed)
     }
     // The one emulator job (CONTRIBUTING.md): `./gradlew pixelDebugAndroidTest` runs the device suites on a
@@ -109,14 +111,57 @@ android {
             // 33 MB nobody with a phone can use.
             ndk { abiFilters += if (project.findProperty("teemoon.abi") == "arm64") setOf("arm64-v8a") else setOf("arm64-v8a", "x86_64") }
         }
+        // `benchmark`: what :macrobenchmark measures. A release build (a debuggable one measures the interpreter, not the
+        // app), profileable so the shell can trace it, signed with the debug key so any machine can build and install it,
+        // and installed as ai.teemoon.benchmark — beside the AVD's ai.teemoon and its pushed weights, never over a store
+        // build. Its seeding arm is the build type itself (BENCHMARK_SEEDING below, UiTestSeeding.consumeArm). Never shipped.
+        create("benchmark") {
+            initWith(getByName("release"))
+            signingConfig = signingConfigs.getByName("debug")
+            matchingFallbacks += "release"
+            isDebuggable = false
+            isProfileable = true
+            applicationIdSuffix = ".benchmark"
+        }
     }
-    buildFeatures { compose = true }
+    // buildConfig: BuildConfig.DEBUG gates DebugDiagnostics (StrictMode, JankStats) to debug builds.
+    buildFeatures { compose = true; buildConfig = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
     // AGP 9 removed kotlinOptions; the bytecode target stays 17 (Android), the build JDK is whatever runs Gradle.
 }
+
+// BuildConfig.BENCHMARK_SEEDING: true only for the measured build types, where seeding cannot be armed the debuggable
+// way (UiTestSeeding.consumeArm). Set per variant rather than per build type so the Baseline Profile plugin's own
+// build types, which it creates from `release`, get it too. Every shipped variant reads false.
+val benchmarkBuildTypes = setOf("benchmark", "nonMinifiedRelease", "benchmarkRelease")
+androidComponents {
+    // The Baseline Profile plugin's own build types (copies of `release`, which the plugin creates in ITS finalizeDsl, so a
+    // buildTypes block never sees them): the same id and key as `benchmark`. Without this, generating a profile on the
+    // AVD tried to install a release-keyed ai.teemoon over its debug-keyed one — refused, here; an uninstall would wipe it.
+    finalizeDsl { ext ->
+        ext.buildTypes.matching { it.name == "nonMinifiedRelease" || it.name == "benchmarkRelease" }.configureEach {
+            signingConfig = ext.signingConfigs.getByName("debug")
+            applicationIdSuffix = ".benchmark"
+        }
+    }
+    onVariants { variant ->
+        val on = variant.buildType in benchmarkBuildTypes
+        variant.buildConfigFields?.put("BENCHMARK_SEEDING", com.android.build.api.variant.BuildConfigField("boolean", on.toString(), "measured build: the build type arms seeding"))
+    }
+}
+
+// The generated profile lives in src/main (merged, committed), so every variant — release and `benchmark` — ships it.
+baselineProfile {
+    mergeIntoMain = true
+    saveInSrc = true
+    automaticGenerationDuringBuild = false   // a release build never needs a device
+}
+// The plugin wires that directory into `release` only; `benchmark` must carry the same profile or StartupBenchmark's
+// Partial run measures a build users never get. (nonMinifiedRelease stays without it: generation starts from nothing.)
+android.sourceSets.getByName("benchmark").baselineProfiles.directories.add("src/main/generated/baselineProfiles")
 
 dependencies {
     implementation(project(":chat"))
@@ -138,6 +183,9 @@ dependencies {
     implementation(libs.compose.ui)
     implementation(libs.compose.material3)
     implementation(libs.compose.material.icons.core)
+    implementation(libs.androidx.profileinstaller)   // installs the Baseline Profile where Play does not
+    "baselineProfile"(project(":macrobenchmark"))
+    implementation(libs.androidx.metrics.performance)   // JankStats; debug builds only at runtime (DebugDiagnostics)
     implementation(libs.markdown.renderer.m3)   // the markdown renderer (CONTRIBUTING.md allowlist): lists, tables, code, quotes — Textual's role on iOS   // list.bullet / gear / plus / xmark / lock / search / check
 
     testImplementation(libs.junit)

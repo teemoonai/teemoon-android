@@ -1,7 +1,7 @@
 // ports: teemoon/Inference/ChatGeneration.swift @ v1.0.4 (the per-turn state; generate()'s prologue and epilogue),
 //        teemoon/Inference/ChatGeneration+SearchOffer.swift @ v1.0.1,
 //        teemoon/Inference/ChatGeneration+Stream.swift @ v1.0.1 (the callback folds; the model factory is GenerationEngine's transport seam),
-//        teemoon/Inference/ChatGeneration+Transcript.swift @ v1.0.1,
+//        teemoon/Inference/ChatGeneration+Transcript.swift @ 224ec87,
 //        teemoon/Inference/LastRequestDebugInfo.swift @ v1.0.1 (LastRequestDebugInfo; ToolCallRecord is in :inference)
 //        teemoon/Inference/GenerationTransport.swift @ v1.0.1 — PromptBudget lives in :inference (GenerationReport.kt)
 //
@@ -11,8 +11,10 @@
 // the methods below. Nothing here touches the network or the UI.
 package ai.teemoon.app
 
+import ai.teemoon.inference.ProviderWait
 import ai.teemoon.confidential.ResponseVerification
 import ai.teemoon.inference.BraveWebSearchTool
+import ai.teemoon.inference.ConversationReuse
 import ai.teemoon.inference.GroundingBudget
 import ai.teemoon.inference.GroundingSource
 import ai.teemoon.inference.LlmError
@@ -20,10 +22,12 @@ import ai.teemoon.inference.PromptBudget
 import ai.teemoon.inference.RequestResult
 import ai.teemoon.inference.Tool
 import ai.teemoon.inference.ToolCallRecord
+import ai.teemoon.inference.TurnPhase
 import ai.teemoon.inference.WireMessage
 import ai.teemoon.providers.Provider
 import ai.teemoon.providers.ProviderCapability
 import java.time.Duration
+import java.time.Instant
 import java.time.ZonedDateTime
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -48,6 +52,10 @@ data class LastRequestDebugInfo(
     val teeVerification: ResponseVerification?,
     /** On-device turns only: the engine's own account (backend, drafter, load, prefill). See [localStatsLine]. */
     val localStats: ai.teemoon.inference.LocalTurnStats? = null,
+    /** Where the send's time went, offsets from the send: gate, headers, first token, first answer, each tool, done. See [TurnPhase.line]. */
+    val phasesLine: String? = null,
+    /** The card's cache figure (TurnPhase.cacheLine); the phases line itself stays in the copied text only (iOS ef5c272). */
+    val cacheLine: String? = null,
 ) {
     val generationTime: Double?
         get() { val total = totalDuration ?: return null; val ttft = timeToFirstToken ?: return null; return maxOf(0.0, total - ttft) }
@@ -71,6 +79,21 @@ data class LastRequestDebugInfo(
 
     /** The first line's tok/s, unless the second line carries it (on-device). */
     val firstLineTokensPerSecond: Double? get() = if (localStats != null) null else tokensPerSecond
+
+    /** The timing chain, card and copied text alike: `6.9s · ttft 1.4s · gen 5.5s · 412tok · 75tok/s`. */
+    val timingLine: String?
+        get() = listOfNotNull(totalDuration?.let { secs(it) }, timeToFirstToken?.let { "ttft ${secs(it)}" }, thinkingTime?.let { "think ${secs(it)}" },
+            generationTime?.let { "gen ${secs(it)}" }, outputTokens?.let { "${it}tok" }, firstLineTokensPerSecond?.let { String.format(Locale.US, "%.0ftok/s", it) })
+            .takeIf { it.isNotEmpty() }?.joinToString(" · ")
+
+    /** The turn's reasoning level, "effort high" or "thinking on": the body that went out, or on device its header (iOS 7cd8c10). */
+    val effortLevel: String? get() = ai.teemoon.inference.ReasoningEffort.sentLevel(requestBodyJson) ?: requestHeaders?.get("thinking")?.let { "thinking $it" }
+
+    /** The card's row (the maintainer): the timing chain, then `effort low · cache 92%`. The copied text keeps its own lines. */
+    val cardTimingLine: String?
+        get() = listOfNotNull(timingLine, effortLevel, cacheLine).takeIf { it.isNotEmpty() }?.joinToString(" · ")
+
+    private fun secs(d: Double) = String.format(Locale.US, "%.1fs", d)
 }
 
 class ChatGeneration {
@@ -86,6 +109,13 @@ class ChatGeneration {
     /** The turn currently waiting on the model, or null. Monotonic: a late "awaiting" for an older turn cannot resurrect the spinner. */
     @Volatile var awaitingTurn: Int? = null
     val isAwaitingModel: Boolean get() = awaitingTurn != null
+    /** The request in flight with no response headers yet, or null. */
+    @Volatile var providerWait: ProviderWait? = null
+    /**
+     * Think Harder's old reply while the new one has no text (ReplySupersession). Set and cleared by ChatViewModel,
+     * which also leaves it out of the request and notes the swap — the loop is GenerationEngine's, not this class's.
+     */
+    @Volatile var superseding = ReplySupersession()
 
     /** The query the model asked for while keyless, until it attaches to the reply's message. */
     var unconfiguredSearchQuery: String? = null
@@ -100,6 +130,10 @@ class ChatGeneration {
 
     var startTimeMs: Long? = null
     var firstTokenTimeMs: Long? = null
+    /** When the attestation gate let the send go (seedDebugInfo runs right after prepareTurn): the card's "gate". */
+    var gateAtMs: Long? = null
+    /** This turn is the chat's first message: nothing of it can be in a provider's cache yet (the card says so). */
+    var turnIsFirstMessage = false
     fun elapsedSeconds(nowMs: Long): Double? = startTimeMs?.let { (nowMs - it) / 1000.0 }
 
     fun stop() { cancelled = true }
@@ -108,14 +142,14 @@ class ChatGeneration {
     @Synchronized fun beginTurn(nowMs: Long): Boolean {
         if (running) return false
         running = true; cancelled = false; output = ""
-        groundingSources.clear(); searchQueries.clear(); isExecutingTools = false; awaitingTurn = null
+        groundingSources.clear(); searchQueries.clear(); isExecutingTools = false; awaitingTurn = null; providerWait = null
         unconfiguredSearchQuery = null; unconfiguredSearchThreadID = null
         lastError = null; lastErrorThreadID = null; lastRequestDebugInfo = null
-        startTimeMs = nowMs; firstTokenTimeMs = null
+        startTimeMs = nowMs; firstTokenTimeMs = null; gateAtMs = null; lastPhases = emptyList()
         return true
     }
 
-    @Synchronized fun endTurn() { running = false; awaitingTurn = null }
+    @Synchronized fun endTurn() { running = false; awaitingTurn = null; providerWait = null }
 
     /** True the first time a turn produces output — the "recently used" moment. */
     @Synchronized fun markFirstToken(nowMs: Long): Boolean {
@@ -126,6 +160,11 @@ class ChatGeneration {
     @Synchronized fun noteAwaiting(turn: Int, awaiting: Boolean) {
         if (awaiting) { if ((awaitingTurn ?: Int.MIN_VALUE) < turn) awaitingTurn = turn }
         else if (awaitingTurn == turn) awaitingTurn = null
+    }
+    /** ChatGeneration+Stream's onAwaitingResponse fold: a newer request's wait replaces an older one; only its own headers clear it. */
+    @Synchronized fun noteResponseWait(turn: Int, sentAtMs: Long?, providerName: String) {
+        if (sentAtMs != null) { if ((providerWait?.turn ?: Int.MIN_VALUE) < turn) providerWait = ProviderWait(turn, sentAtMs, providerName) }
+        else if (providerWait?.turn == turn) providerWait = null
     }
     @Synchronized fun noteSources(sources: List<GroundingSource>) { groundingSources.addAll(sources) }
     @Synchronized fun noteQueries(queries: List<String>) { searchQueries.addAll(queries); isExecutingTools = true }
@@ -168,7 +207,8 @@ class ChatGeneration {
 
     // MARK: - Debug info (ChatGeneration+Stream)
 
-    @Synchronized fun seedDebugInfo(providerName: String, modelID: String, url: String?, threadID: String, expectingE2EE: Boolean) {
+    @Synchronized fun seedDebugInfo(providerName: String, modelID: String, url: String?, threadID: String, expectingE2EE: Boolean, nowMs: Long = System.currentTimeMillis()) {
+        gateAtMs = nowMs
         lastRequestDebugInfo = LastRequestDebugInfo(providerName = providerName, modelID = modelID, url = url, requestHeaders = null, requestBodyJson = null,
             responseBody = null, toolCalls = emptyList(), threadID = threadID, totalDuration = null, timeToFirstToken = null, outputTokens = null,
             isE2EEActive = expectingE2EE, teeVerification = null)
@@ -191,7 +231,33 @@ class ChatGeneration {
             thinkingTime = thought ?: existing?.thinkingTime, outputTokens = result.outputTokens ?: existing?.outputTokens,
             promptBudget = result.promptBudget ?: existing?.promptBudget,
             isE2EEActive = result.isE2eeActive, teeVerification = result.teeVerification ?: existing?.teeVerification,
-            localStats = result.localStats ?: existing?.localStats)
+            localStats = result.localStats ?: existing?.localStats,
+            phasesLine = phasesLine(result.phases) ?: existing?.phasesLine,
+            cacheLine = TurnPhase.cacheLine(result.phases, turnIsFirstMessage, TurnPhase.cacheReporting(
+                host = result.url?.let { runCatching { java.net.URI(it).host }.getOrNull() }, onDevice = result.localStats != null,
+                isE2EE = result.isE2eeActive)) ?: existing?.cacheLine)
+        if (result.phases.isNotEmpty()) lastPhases = result.phases
+    }
+
+    /** The phases the card's line was built from, so a late verdict can add its mark. */
+    private var lastPhases: List<TurnPhase> = emptyList()
+
+    /**
+     * The reply-signature verdict, after the turn closed (iOS cef6ad8). Only the card of the same send takes it — the
+     * same thread, and the same turn ([turnStartMs]); a verdict for an older send must not relabel a newer card.
+     */
+    @Synchronized fun applyLateVerification(verification: ResponseVerification, threadID: String, turnStartMs: Long?, nowMs: Long = System.currentTimeMillis()) {
+        val info = lastRequestDebugInfo ?: return
+        if (info.threadID != threadID || startTimeMs != turnStartMs) return
+        lastPhases = lastPhases + TurnPhase(TurnPhase.Kind.VERIFIED, Instant.ofEpochMilli(nowMs))
+        lastRequestDebugInfo = info.copy(teeVerification = verification, phasesLine = phasesLine(lastPhases) ?: info.phasesLine)
+    }
+
+    private fun phasesLine(phases: List<TurnPhase>): String? {
+        val start = startTimeMs ?: return null
+        if (phases.isEmpty()) return null
+        val gate = gateAtMs?.let { TurnPhase(TurnPhase.Kind.GATE, Instant.ofEpochMilli(it)) }
+        return TurnPhase.line(Instant.ofEpochMilli(start), listOfNotNull(gate) + phases)
     }
 
     /**
@@ -237,9 +303,30 @@ class ChatGeneration {
             return wire
         }
 
-        private val DATETIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy 'at' h:mm a", Locale.getDefault())
+        private val DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy", Locale.getDefault())
+        private val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("h:mm a", Locale.getDefault())
 
-        fun resolvePromptTemplates(prompt: String, now: ZonedDateTime = ZonedDateTime.now()): String =
-            prompt.replace("{{datetime}}", DATETIME_FORMAT.format(now))
+        /**
+         * `{{date}}` (and the older `{{datetime}}`, same meaning) resolves to the DAY, never the minute: the system prompt
+         * opens every request, and a prefix that changes each minute misses every provider's prompt cache (pm,
+         * 2026-10-19: Fireworks cached 0 → 3718 of 3847 tokens on a repeat, and 0 again when only the minute changed).
+         * The minute rides on each user turn instead ([timeNote]). On device it is also what lets a kept Conversation
+         * serve the next turn (ConversationReuse).
+         */
+        fun resolvePromptTemplates(prompt: String, now: ZonedDateTime = ZonedDateTime.now()): String {
+            val day = DATE_FORMAT.format(now)
+            return prompt.replace("{{datetime}}", day).replace("{{date}}", day)
+        }
+
+        /** Whether the persona asked for the date, and so each user turn gets its time. */
+        fun wantsTimeNotes(systemPrompt: String, omitSystemPrompt: Boolean): Boolean =
+            !omitSystemPrompt && ("{{date}}" in systemPrompt || "{{datetime}}" in systemPrompt)
+
+        /**
+         * Appended to a user turn on the wire, never stored: the message's OWN timestamp is the source, so the same turn
+         * renders the same bytes on every request (a cached prefix and a kept on-device conversation both depend on it).
+         */
+        fun timeNote(sentAtMs: Long, zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): String =
+            "\n\n[Sent at ${TIME_FORMAT.format(java.time.Instant.ofEpochMilli(sentAtMs).atZone(zone))}]"
     }
 }

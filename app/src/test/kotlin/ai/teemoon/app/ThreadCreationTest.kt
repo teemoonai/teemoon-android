@@ -26,6 +26,8 @@ class ThreadCreationTest {
         override suspend fun deleteAllThreads() { threads.clear() }
         override suspend fun deleteAllMessages() { messages.clear() }
         override suspend fun deleteMessagesSince(threadId: String, sinceMs: Long) { messages.removeAll { it.threadId == threadId && it.timestamp >= sinceMs } }
+        override suspend fun deleteMessages(ids: List<String>) { messages.removeAll { it.id in ids } }
+        override suspend fun setTimestamp(id: String, timestamp: Long) { messages.replaceAll { if (it.id == id) it.copy(timestamp = timestamp) else it } }
         override fun observePreviews() = flowOf(emptyList<ThreadPreview>())
         override suspend fun threadIdsWithContent(needle: String) = emptyList<String>()
         override suspend fun indexableMessageIds() = emptyList<String>()

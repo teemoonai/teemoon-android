@@ -135,3 +135,18 @@ class Keystore(
         try { Files.delete(file.toPath()) } catch (e: Exception) { throw KeystoreException.DeleteFailed(e) }
     }
 }
+
+/**
+ * A per-install HMAC-SHA256 key in the Android Keystore, non-exportable: the secret behind each chat's provider routing
+ * id (SessionAffinity, iOS ead8674 keeps its 32-byte secret in the Keychain). Generated on first use; gone with the app,
+ * so a reinstall gets fresh ids. Null on any Keystore failure — the caller falls back to a random id for the launch.
+ */
+fun androidKeystoreHmac(alias: String = "ai.teemoon.sessionAffinity"): (ByteArray) -> ByteArray? = { message ->
+    runCatching {
+        val ks = KeyStore.getInstance("AndroidKeyStore").apply { load(null) }
+        val key = (ks.getKey(alias, null) as? SecretKey) ?: KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_HMAC_SHA256, "AndroidKeyStore").run {
+            init(KeyGenParameterSpec.Builder(alias, KeyProperties.PURPOSE_SIGN).setUserAuthenticationRequired(false).build()); generateKey()
+        }
+        javax.crypto.Mac.getInstance("HmacSHA256").apply { init(key) }.doFinal(message)
+    }.getOrNull()
+}

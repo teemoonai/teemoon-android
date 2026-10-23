@@ -1,7 +1,11 @@
-// ports: teemoon/Views/Chat/MessageView.swift @ v1.0.4 — the assistant row (the thinking disclosure, the answer, the
+// ports: teemoon/Views/Chat/MessageView.swift @ 8c19327 — the assistant row (the thinking disclosure, the answer, the
 //        sources rule, copy), the user bubble's geometry and retry, TimeInterval.formatted, DisclosureState
 package ai.teemoon.app
 
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.ui.semantics.customActions
 import androidx.compose.foundation.layout.PaddingValues
 import ai.teemoon.inference.GroundingSource
 import ai.teemoon.inference.ThinkingContentParser
@@ -37,6 +41,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalViewConfiguration
+import androidx.compose.ui.platform.ViewConfiguration
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
@@ -81,6 +87,17 @@ fun AssistantMessageView(
     /** The trailing chip, drawn under text already on screen while [showTrailing] (TrailingActivityChip.visible). */
     trailing: (@Composable () -> Unit)? = null,
     showTrailing: Boolean = false,
+    /** The long-press menu's "copy" (iOS MessageView's context menu); null: no menu (a streaming reply). */
+    onCopy: ((String) -> Unit)? = null,
+    /** "think harder", only on the newest finished reply (ConversationView.thinkHarderAction); null elsewhere. */
+    onThinkHarder: (() -> Unit)? = null,
+    /**
+     * Whether the provider can be asked for more (ReasoningControl, iOS 7cd8c10), asked when the menu OPENS: what it
+     * depends on — the server kind a probe records, the saved /models row — is not Compose state, so a value read at
+     * composition went stale (the AVD gate, 2026-10-22: an Ollama box learned on the Where sheet offered nothing until
+     * a relaunch).
+     */
+    thinkHarderOffered: () -> Boolean = { true },
 ) {
     // ONCE PER MESSAGE: the parse is remembered by id and content, never redone per appearance.
     val parse = remember(messageId, content) { ThinkingContentParser.parse(content) }
@@ -94,7 +111,24 @@ fun AssistantMessageView(
     fun toggle() { collapsed = !collapsed; DisclosureState.setExpanded(messageId, !collapsed) }
     val time = generatingTimeMs?.let { formattedDuration(it / 1000.0) } ?: "0s"
 
-    Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+    // THE LONG PRESS IS A MENU, as on iOS (the maintainer, 2026-10-19, for Think Harder): "think harder" on the newest finished
+    // reply and "copy". A DOUBLE TAP selects the word under the finger, with Android's handles and copy toolbar (iOS
+    // 8c19327, build 57: 56's "select text" item is gone on both). Until 1.0.6 a long press WAS the selection
+    // (docs/ANDROID_NATIVE.md). A gesture, not clickable(): clickable merges the reply into one semantics node; the
+    // actions ride as custom accessibility actions instead.
+    var menu by remember(messageId) { mutableStateOf(false) }
+    var offered by remember(messageId) { mutableStateOf(false) }
+    val menuOn = onCopy != null && !streaming
+    val gestures = if (!menuOn) Modifier else Modifier
+        .pointerInput(messageId, onThinkHarder != null) { detectTapGestures(onLongPress = { offered = onThinkHarder != null && thinkHarderOffered(); menu = true }) }
+        .semantics {
+            customActions = listOfNotNull(
+                onThinkHarder?.takeIf { thinkHarderOffered() }?.let { CustomAccessibilityAction(ReplyMenu.THINK_HARDER) { if (thinkHarderOffered()) { it(); true } else false } },
+                CustomAccessibilityAction(ReplyMenu.COPY) { onCopy(answer ?: content); true },
+            )
+        }
+    Box {
+    Column(Modifier.fillMaxWidth().then(gestures), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         if (thinking != null) Column(Modifier.clickable(onClick = ::toggle), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 Chevron(down = !collapsed, TeemoonColors.secondaryLabel)
@@ -111,12 +145,34 @@ fun AssistantMessageView(
             // iOS: `.padding(.bottom, hasSources ? 12 : 0)` under a Text whose box ends at its last line. Compose's text box
             // carries the line-height slack (bodyLarge 24/16: 4dp under the descender) and the renderer its block
             // padding, so the same 12 measured 39dp to the chip against iOS's 28 (Pixel, 2026-09-17): 2 here lands at 28.
-            else SelectionContainer { Box(Modifier.padding(bottom = if (hasSources) 2.dp else 0.dp)) { MarkdownBody(answer, streaming = streaming) } }
+            else ReplySelection(longPressSelects = !menuOn) { Box(Modifier.padding(bottom = if (hasSources) 2.dp else 0.dp)) { MarkdownBody(answer, streaming = streaming) } }
         } else if (streaming && placeholder != null) placeholder()
         if (streaming && showTrailing && trailing != null) Box(Modifier.padding(top = 8.dp)) { trailing() }
         if (hasSources && !streaming) SourcesChip(sources)
     }
+    if (menuOn) ReplyContextMenu(expanded = menu, onDismiss = { menu = false }, onThinkHarder = onThinkHarder?.takeIf { offered },
+        onCopy = { onCopy(answer ?: content) })
+    }
 }
+
+/**
+ * The answer's text selection (iOS `.textSelection(.enabled)` with the reply's long press waiting on the menu's,
+ * 8c19327). SelectionContainer selects a word on a double tap and on a long press; under the menu ([longPressSelects]
+ * false) its long press is moved out of reach by giving the container a long-press timeout no finger holds, so the
+ * reply's own detector, outside it at the platform timeout, is the only long press. The double tap, the handles and
+ * the toolbar are untouched, and links still open on a tap. The thinking block stays outside: not selectable.
+ */
+@Composable
+private fun ReplySelection(longPressSelects: Boolean, content: @Composable () -> Unit) {
+    val base = LocalViewConfiguration.current
+    val config = remember(base, longPressSelects) {
+        if (longPressSelects) base else object : ViewConfiguration by base { override val longPressTimeoutMillis = NO_LONG_PRESS_MS }
+    }
+    CompositionLocalProvider(LocalViewConfiguration provides config) { SelectionContainer { content() } }
+}
+
+/** An hour: past any press, short of withTimeout's overflow. */
+private const val NO_LONG_PRESS_MS = 3_600_000L
 
 /** SF chevron.right / chevron.down, 12pt medium. */
 @Composable
@@ -161,6 +217,31 @@ fun CopyContextMenu(expanded: Boolean, onDismiss: () -> Unit, onCopy: () -> Unit
     DropdownMenu(expanded = expanded, onDismissRequest = onDismiss, shape = RoundedCornerShape(14.dp), containerColor = TeemoonColors.secondaryBackground,
         modifier = Modifier.width(250.dp).testTag("chat.copyMenu")) {
         DropdownMenuItem(text = { Text("copy", style = MaterialTheme.typography.bodyLarge, color = TeemoonColors.label) },
+            trailingIcon = { CopyGlyph(TeemoonColors.label) }, onClick = { onDismiss(); onCopy() },
+            contentPadding = PaddingValues(horizontal = 16.dp))
+    }
+}
+
+object ReplyMenu {
+    const val THINK_HARDER = "think harder"
+    const val COPY = "copy"
+}
+
+/**
+ * A reply's long-press menu (iOS MessageView's context menu): `Label("Think Harder", systemImage: "brain")` above
+ * `Label("Copy", systemImage: "square.on.square")`; a double tap selects (iOS 8c19327 removed "select text" on both).
+ * Lowercase, as every menu here. Same shape as [CopyContextMenu].
+ */
+@Composable
+fun ReplyContextMenu(expanded: Boolean, onDismiss: () -> Unit, onThinkHarder: (() -> Unit)?, onCopy: () -> Unit) {
+    DropdownMenu(expanded = expanded, onDismissRequest = onDismiss, shape = RoundedCornerShape(14.dp), containerColor = TeemoonColors.secondaryBackground,
+        modifier = Modifier.width(250.dp).testTag("chat.replyMenu")) {
+        onThinkHarder?.let { act ->
+            DropdownMenuItem(text = { Text(ReplyMenu.THINK_HARDER, style = MaterialTheme.typography.bodyLarge, color = TeemoonColors.label) },
+                trailingIcon = { BrainGlyph(TeemoonColors.label) }, onClick = { onDismiss(); act() },
+                contentPadding = PaddingValues(horizontal = 16.dp), modifier = Modifier.testTag("chat.thinkHarder"))
+        }
+        DropdownMenuItem(text = { Text(ReplyMenu.COPY, style = MaterialTheme.typography.bodyLarge, color = TeemoonColors.label) },
             trailingIcon = { CopyGlyph(TeemoonColors.label) }, onClick = { onDismiss(); onCopy() },
             contentPadding = PaddingValues(horizontal = 16.dp))
     }

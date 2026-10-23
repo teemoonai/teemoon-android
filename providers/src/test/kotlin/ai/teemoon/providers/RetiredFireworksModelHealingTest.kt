@@ -1,8 +1,9 @@
-// ports: teemoonTests/ProviderTests.swift @ 5d2fb66 (RetiredFireworksModelHealingTests)
+// ports: teemoonTests/ProviderTests.swift @ ffcfc00 (RetiredFireworksModelHealingTests)
 package ai.teemoon.providers
 
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.UUID
@@ -51,12 +52,32 @@ class RetiredFireworksModelHealingTest {
         assertEquals(k2p6, heal.providers.single().model)
     }
 
-    /**
-     * iOS also asserts the retired id is gone from the price table. Android keeps the seven retired rows until the
-     * conformance kit's next sync (its Fireworks vectors still carry them; they never render, the list being Fireworks'
-     * live one), so only the successor half is pinned here.
-     */
-    @Test fun everySuccessorIsPriced() {
-        for (r in ProviderHealing.fireworksRetirements) assertNotNull("${r.successor} has no price", FireworksAdapter.fireworksPrices[r.successor])
+    /** nemotron-3-super 404s on NVIDIA (2026-10-22); the maintainer picked lightning as the default (iOS ffcfc00). */
+    @Test fun anNvidiaSetupOnSuperMovesToLightningAndSaysSo() {
+        val superId = "nvidia/nemotron-3-super-120b-a12b"; val lightning = "nvidia/nemotron-3.5-lightning-30b-a3b"
+        val p = setup(Provider.nvidia, superId, listOf(superId, "nvidia/nemotron-3-ultra-550b-a55b"))
+        val heal = ProviderHealing.healRetiredFireworksModels(listOf(p))
+        assertEquals(listOf(p.id), heal.moved.map { it.id })
+        val healed = heal.providers.single()
+        assertEquals(lightning, healed.model)
+        assertEquals(listOf(lightning, "nvidia/nemotron-3-ultra-550b-a55b"), healed.equippedModels)
+        assertEquals(listOf("nemotron 3 super is no longer on nvidia, so your nvidia setup now uses nemotron 3.5 lightning."), heal.notices)
+        assertEquals("the preset's default is the successor", lightning, Provider.nvidia.model)
+    }
+
+    @Test fun theNvidiaIdOnAnotherProviderIsUntouched() {
+        val superId = "nvidia/nemotron-3-super-120b-a12b"
+        val p = setup(Provider.openRouter, superId, listOf(superId))
+        val heal = ProviderHealing.healRetiredFireworksModels(listOf(p))
+        assertTrue(heal.moved.isEmpty())
+        assertEquals(superId, heal.providers.single().model)
+    }
+
+    /** The successor is priced and served today; the retired id is gone from the table (since 3917.8's catalog sync). */
+    @Test fun everySuccessorIsPricedAndServedTodayInTheTable() {
+        for (r in ProviderHealing.fireworksRetirements.filter { it.source == EndpointModelCatalog.Source.FIREWORKS }) {
+            assertNotNull("${r.successor} has no price", FireworksAdapter.fireworksPrices[r.successor])
+            assertNull("${r.retired} is still in the table", FireworksAdapter.fireworksPrices[r.retired])
+        }
     }
 }

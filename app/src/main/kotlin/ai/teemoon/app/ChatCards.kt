@@ -1,6 +1,6 @@
 // ports: teemoon/Views/Chat/ErrorMessageView.swift @ v1.0.4, teemoon/Views/Chat/RequestDebugView.swift @ v1.0.1 (the card),
 //        teemoon/Views/Chat/DebugComponents.swift @ v1.0.1, teemoon/Views/Chat/GroundingSourcesView.swift @ v1.0.1,
-//        teemoon/Views/Chat/GenerationActivityChipView.swift @ v1.0.1, teemoon/Views/Chat/WebSearchChip.swift @ v1.0.1,
+//        teemoon/Views/Chat/GenerationActivityChipView.swift @ 4510788 (+ the provider wait of 9e090f8), teemoon/Views/Chat/WebSearchChip.swift @ v1.0.1,
 //        teemoon/Views/Chat/ChatView.swift @ v1.0.4 (webSearchState), teemoon/Views/Chat/StreamingMessageView.swift @ v1.0.1 (chipState)
 //
 // The cards and chips that sit in the transcript. Every string they show is
@@ -8,6 +8,7 @@
 // pure function here with a test; the composables only lay it out.
 package ai.teemoon.app
 
+import ai.teemoon.inference.ProviderWait
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.foundation.layout.BoxWithConstraints
 import ai.teemoon.inference.GroundingSource
@@ -54,7 +55,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.border
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.Icons
-import java.util.Locale
 import ai.teemoon.providers.ModelCatalog
 import androidx.compose.animation.core.EaseInOut
 import androidx.compose.animation.core.RepeatMode
@@ -156,14 +156,20 @@ object TrailingActivityChip {
 
 sealed interface ActivityState {
     data object Thinking : ActivityState
+    /** Think Harder, while the old reply waits dimmed above. */
+    data object ThinkingHarder : ActivityState
     data object Searching : ActivityState
     data class SourcesFound(val count: Int) : ActivityState
+    /** Shown once one request has had no response headers for [ProviderWait.THRESHOLD_MS]. */
+    data class WaitingForProvider(val providerName: String) : ActivityState
 
     companion object {
-        /** StreamingMessageView.chipState. */
-        fun of(isExecutingTools: Boolean, sourceCount: Int): ActivityState = when {
+        /** StreamingMessageView.chipState: a running tool wins, then a request past the wait threshold, then thinking. */
+        fun of(isExecutingTools: Boolean, sourceCount: Int, wait: ProviderWait? = null, nowMs: Long = 0, thinkingHarder: Boolean = false): ActivityState = when {
             isExecutingTools && sourceCount > 0 -> SourcesFound(sourceCount)
             isExecutingTools -> Searching
+            wait?.shownSeconds(nowMs) != null -> WaitingForProvider(wait.providerName)
+            thinkingHarder -> ThinkingHarder
             else -> Thinking
         }
     }
@@ -171,8 +177,11 @@ sealed interface ActivityState {
 
 fun activityLabel(state: ActivityState, elapsedSeconds: Double?): String = when (state) {
     ActivityState.Thinking -> if (elapsedSeconds != null && elapsedSeconds >= 1) "thinking... ${elapsedSeconds.toInt()}s" else "thinking..."
+    ActivityState.ThinkingHarder -> if (elapsedSeconds != null && elapsedSeconds >= 1) "thinking harder... ${elapsedSeconds.toInt()}s" else "thinking harder..."
     ActivityState.Searching -> "searching..."
     is ActivityState.SourcesFound -> "${state.count} source${if (state.count == 1) "" else "s"}"
+    // The counter is the whole turn's (the maintainer), in every state.
+    is ActivityState.WaitingForProvider -> ProviderWait.label(state.providerName, (elapsedSeconds ?: 0.0).toInt())
 }
 
 fun sourcesChipLabel(count: Int) = "$count source${if (count == 1) "" else "s"}"
@@ -263,7 +272,6 @@ private fun ToolCallRow(label: String, subtitle: String?, rawJson: String?, proc
     }
 }
 
-private fun Double.debugFormatted() = String.format(Locale.US, "%.1fs", this)
 
 /** RequestDebugView: the developer card under a reply. Long-press copies the redacted form. */
 @Composable
@@ -278,33 +286,29 @@ fun RequestDebugCard(info: LastRequestDebugInfo, onCopy: (String) -> Unit, modif
                 Text("  copy", style = MaterialTheme.typography.labelSmall, color = TeemoonColors.tint, modifier = Modifier.clickable { onCopy(RequestDebugText.debugText(info)) })
             }
             info.url?.let { InlineRow("url", it) }
-            if (info.totalDuration != null || info.timeToFirstToken != null) {
-                val parts = listOfNotNull(info.totalDuration?.debugFormatted(), info.timeToFirstToken?.let { "ttft ${it.debugFormatted()}" }, info.thinkingTime?.let { "think ${it.debugFormatted()}" },
-                    info.generationTime?.let { "gen ${it.debugFormatted()}" }, info.outputTokens?.let { "${it}tok" }, info.firstLineTokensPerSecond?.let { String.format(Locale.US, "%.0ftok/s", it) })
+            info.cardTimingLine?.let { timing ->
                 HorizontalDivider(Modifier.padding(start = 12.dp))
-                // ONE LINE, always (RequestDebugView): the chain is a shape as much as a set of numbers — six values in a row
-                // read as one measurement of one request, wrapped they read as two of something. So the line SCALES DOWN
-                // to fit, floored at 0.75 of its size, as iOS's `.minimumScaleFactor(0.75)`. This port kept the one line
-                // and dropped the scale, so a long chain was CLIPPED: near.ai's "… · 11282tok · " lost its tok/s off the
-                // right edge while Fireworks' shorter chain kept it (user-reported, 2026-09-23).
+                // Timing chain, then effort and cache (the maintainer, card-one-line; iOS 6fdcb43). It WRAPS to a second line
+                // rather than truncating; only when two lines are not enough does it scale down, floored at 0.75 of its
+                // size, as iOS's `.lineLimit(2)` with `.minimumScaleFactor(0.75)`. (Before: one line that scaled to fit —
+                // a long chain was once clipped, near.ai's "… · 11282tok · " losing its tok/s, user-reported 2026-09-23.)
                 val statsStyle = MaterialTheme.typography.labelSmall.copy(fontFamily = mono, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 // On-device turns lead with the speed line (decode · prefill · backend), the timings under it — no divider
-                // between: one measurement in two rows. ONE size for both, the largest at which the longer line fits (down to
-                // the same 0.75 floor as iOS's minimumScaleFactor), so the rows never render at two sizes.
-                val lines = listOfNotNull(info.localStatsLine, parts.joinToString(" · "))
+                // between: one measurement in two rows, at ONE size, so the rows never render at two sizes.
+                val lines = listOfNotNull(info.localStatsLine?.let { it to 1 }, timing to 2)
                 BoxWithConstraints(Modifier.padding(horizontal = 12.dp, vertical = 6.dp)) {
                     val measurer = rememberTextMeasurer()
                     val maxPx = constraints.maxWidth
                     val size = remember(lines, maxPx) {
                         var sp = statsStyle.fontSize.value
                         val floor = sp * 0.75f
-                        while (sp > floor && lines.any { measurer.measure(it, statsStyle.copy(fontSize = sp.sp), maxLines = 1, softWrap = false).size.width > maxPx }) sp -= 0.25f
+                        while (sp > floor && lines.any { (line, max) -> measurer.measure(line, statsStyle.copy(fontSize = sp.sp), maxLines = max, constraints = androidx.compose.ui.unit.Constraints(maxWidth = maxPx)).hasVisualOverflow }) sp -= 0.25f
                         sp.coerceAtLeast(floor).sp
                     }
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                        lines.forEachIndexed { n, line ->
-                            BasicText(line, style = statsStyle.copy(fontSize = size), maxLines = 1, softWrap = false,
-                                modifier = if (n == 0 && info.localStatsLine != null) Modifier.testTag("chat.debug.localStats") else Modifier)
+                        lines.forEachIndexed { n, (line, max) ->
+                            BasicText(line, style = statsStyle.copy(fontSize = size), maxLines = max, softWrap = max > 1,
+                                modifier = if (n == 0 && info.localStatsLine != null) Modifier.testTag("chat.debug.localStats") else Modifier.testTag("chat.debugCard.timing"))
                         }
                     }
                 }
@@ -376,10 +380,16 @@ fun ActivityChip(state: ActivityState, elapsedSeconds: Double?, modifier: Modifi
     val breath = rememberInfiniteTransition(label = "chip-breath")
     val alpha by breath.animateFloat(initialValue = 1f, targetValue = 0.4f, label = "chip-alpha",
         animationSpec = infiniteRepeatable(tween(850, easing = EaseInOut), RepeatMode.Reverse))
-    // GenerationActivityChipView: `sparkles` while thinking, `globe` for the search, on the `.fill` capsule.
+    // GenerationActivityChipView: `sparkles` while thinking, `brain` while thinking harder, `hourglass` while waiting, `globe`
+    // for the search, on the `.fill` capsule.
     val fg = TeemoonColors.secondaryLabel
     TranscriptChip(activityLabel(state, elapsedSeconds), foreground = fg, background = TeemoonColors.fill, modifier = modifier.graphicsLayer { this.alpha = alpha }.testTag("chat.activityChip")) {
-        if (state is ActivityState.Thinking) SparklesGlyph(fg) else GlobeGlyph(fg)
+        when (state) {
+            ActivityState.Thinking -> SparklesGlyph(fg)
+            ActivityState.ThinkingHarder -> BrainGlyph(fg, 12.dp)
+            is ActivityState.WaitingForProvider -> HourglassGlyph(fg)
+            else -> GlobeGlyph(fg)
+        }
     }
 }
 

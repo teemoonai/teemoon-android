@@ -51,7 +51,7 @@ class ChatSearchReconciler(private val index: ChatSearchIndexing, private val lo
         val indexedIDs = index.indexedMessageIDs()
         val missing = liveIDs - indexedIDs
         val stale = indexedIDs - liveIDs
-        if (stale.isNotEmpty()) index.remove(stale.toList())
+        if (stale.isNotEmpty()) index.removeDeleted(stale.toList())
         if (missing.isNotEmpty()) index.index(source.records(missing))
         val stats = ChatSearchReconcileStats(inserted = missing.size, removed = stale.size, unchanged = liveIDs.size - missing.size)
         if (!stats.isConverged) log("chat index reconciled: +${stats.inserted} -${stats.removed}")

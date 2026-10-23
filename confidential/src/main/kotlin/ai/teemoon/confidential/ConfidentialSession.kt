@@ -1,13 +1,13 @@
-// ports: teemoon/Confidential/ConfidentialSession.swift @ v1.0.1
+// ports: teemoon/Confidential/ConfidentialSession.swift @ ebc9bdb (e2eeKey and attestationOutcome poll to their deadline)
 //        teemoon/Confidential/ConfidentialSession+Verdict.swift @ v1.0.4
-//        teemoon/Confidential/ConfidentialSession+Refresh.swift @ v1.0.1
+//        teemoon/Confidential/ConfidentialSession+Refresh.swift @ ebc9bdb (adopt: the record and its verifiers in one step)
 //        teemoon/Confidential/ConfidentialSession+Verifiers.swift @ v1.0.4
 //        teemoon/Confidential/ConfidentialSession+Verdict.swift @ v1.0.4 (a sealed session reads VERIFYING until provenance settles)
 //        teemoon/Confidential/ConfidentialSession+Verifiers.swift @ v1.0.4 (provenanceSettled, with a run token)
-//        teemoon/Confidential/ConfidentialSession.swift @ v1.0.4 (verdictsPending / settleVerifiers / abandonTurn; prepareTurn settles)
-//        teemoon/Confidential/ConfidentialSession.swift @ v1.0.4 (verdictsPending is attested-only)
-//        teemoon/Confidential/ConfidentialSession+Refresh.swift @ v1.0.4 (clearDerivedState drops the verifier handles)
-//        teemoon/Confidential/ConfidentialSession+Refresh.swift @ v1.0.4 (directHostMissing; a failed fetch retried once a minute)
+//        teemoon/Confidential/ConfidentialSession.swift @ ebc9bdb (verdictsPending / settleVerifiers / abandonTurn; prepareTurn settles)
+//        teemoon/Confidential/ConfidentialSession.swift @ ebc9bdb (verdictsPending is attested-only)
+//        teemoon/Confidential/ConfidentialSession+Refresh.swift @ ebc9bdb (clearDerivedState drops the verifier handles)
+//        teemoon/Confidential/ConfidentialSession+Refresh.swift @ ebc9bdb (directHostMissing; a failed fetch retried once a minute)
 //        teemoon/Confidential/ConfidentialSession+Verdict.swift @ v1.0.4 (e2eeDegradedReason names the directory)
 //        teemoon/Confidential/ConfidentialSession+Verifiers.swift @ v1.0.4 (an inconclusive pass keeps the last verdict)
 //        TEEContext / prepareTurn / finishTurn / canSeal are here since the E2EE row landed; NOT here:
@@ -429,8 +429,8 @@ class ConfidentialSession(
      */
     suspend fun e2eeKey(waitingUpToMs: Long): ByteArray? {
         attestation?.modelEd25519PubKey?.let { return it }
+        // Poll, never `attestationJob?.join()`: a hung fetch would outlast the deadline (iOS ebc9bdb; found here).
         val deadline = services.now().toEpochMilli() + waitingUpToMs
-        attestationJob?.join()
         while (services.now().toEpochMilli() < deadline) {
             attestation?.modelEd25519PubKey?.let { return it }
             delay(250)
@@ -444,7 +444,6 @@ class ConfidentialSession(
      */
     suspend fun attestationOutcome(waitingUpToMs: Long) {
         val deadline = services.now().toEpochMilli() + waitingUpToMs
-        attestationJob?.join()
         while (services.now().toEpochMilli() < deadline) {
             if (attestation != null || attestationFetchFailed) return
             delay(250)
@@ -550,11 +549,7 @@ class ConfidentialSession(
                     return@launch
                 }
                 warn("[refresh] adopting record model=${record.model ?: "nil"} composePath=${record.modelComposePath ?: "nil"}")
-                attestation = record
-                verifyImageProvenance(record)
-                verifyDcap(record)
-                verifyGpu(record)
-                verifyTls(provider)
+                adopt(record, provider)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -718,6 +713,18 @@ class ConfidentialSession(
             if (provenanceRun === run) provenanceSettled = true
           }
         }
+    }
+
+    /**
+     * Never split this with a suspension: [verdictsPending] only sees a launched job, so a record without its
+     * verifiers would let a send through (iOS ebc9bdb).
+     */
+    fun adopt(record: AttestationRecord, provider: Provider) {
+        attestation = record
+        verifyImageProvenance(record)
+        verifyDcap(record)
+        verifyGpu(record)
+        verifyTls(provider)
     }
 
     /** Runs real DCAP verification over the record's quotes. Fail-closed: a hard failure degrades via [attestationState]. */

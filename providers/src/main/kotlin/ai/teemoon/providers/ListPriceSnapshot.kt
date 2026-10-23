@@ -1,4 +1,4 @@
-// ports: teemoon/Providers/ListPriceSnapshot.swift @ 54617ce
+// ports: teemoon/Providers/ListPriceSnapshot.swift @ 4e74360
 //
 // GENERATED, and NOT BY HAND. Regenerate by re-reading the Swift table:
 //   git -C ../teemoon-ios show <sha>:teemoon/Providers/ListPriceSnapshot.swift
@@ -26,7 +26,7 @@ package ai.teemoon.providers
  */
 object ListPriceSnapshot {
 
-    const val SNAPSHOT_DATE = "2026-10-15"
+    const val SNAPSHOT_DATE = "2026-10-22"
 
     /** Vendor host → the namespace its ids live under below. */
     val hosts: Map<String, String> = mapOf(
@@ -54,20 +54,20 @@ object ListPriceSnapshot {
         "anthropic/claude-sonnet-4.6" to (3.0 to 15.0),
         "anthropic/claude-sonnet-5" to (2.0 to 10.0),
         "anthropic/claude-sonnet-5.5" to (2.0 to 10.0),
-        "deepseek/deepseek-chat" to (0.32 to 0.89),
+        "deepseek/deepseek-chat" to (0.26 to 1.03),
         "deepseek/deepseek-chat-v3-0324" to (0.29 to 1.14),
         "deepseek/deepseek-chat-v3.1" to (0.25 to 0.95),
-        "deepseek/deepseek-r1" to (0.7 to 2.5),
         "deepseek/deepseek-r1-0528" to (0.5 to 2.15),
         "deepseek/deepseek-v3.1-terminus" to (0.27 to 1.0),
-        "deepseek/deepseek-v3.2" to (0.26 to 0.8),
+        "deepseek/deepseek-v3.2" to (0.28 to 0.42),
         "deepseek/deepseek-v3.2-exp" to (0.27 to 0.41),
         "deepseek/deepseek-v4-flash" to (0.09 to 0.18),
-        "deepseek/deepseek-v4-flash-0731" to (0.02 to 0.64),
+        "deepseek/deepseek-v4-flash-0731" to (0.44 to 1.32),
         "deepseek/deepseek-v4-flash-vision-exp" to (0.22 to 0.65),
-        "deepseek/deepseek-v4-pro" to (0.41 to 0.81),
-        "deepseek/deepseek-v4-pro-0813" to (0.66 to 1.98),
-        "deepseek/deepseek-v4.1-flash" to (0.02 to 0.72),
+        "deepseek/deepseek-v4-pro" to (0.96 to 1.91),
+        "deepseek/deepseek-v4-pro-0813" to (1.32 to 3.96),
+        "deepseek/deepseek-v4.1-flash" to (0.3 to 1.2),
+        "deepseek/deepseek-v4.1-flash-1017" to (0.3 to 1.2),
         "google/gemini-2.5-flash" to (0.3 to 2.5),
         "google/gemini-2.5-flash-image" to (0.3 to 2.5),
         "google/gemini-2.5-flash-lite" to (0.1 to 0.4),
@@ -87,13 +87,13 @@ object ListPriceSnapshot {
         "google/gemini-3.5-flash-lite" to (0.3 to 2.5),
         "google/gemini-3.6-flash" to (0.75 to 3.75),
         "google/gemini-3.7-flash" to (0.75 to 3.75),
-        "google/gemini-3.8-flash" to (0.75 to 3.75),
+        "google/gemini-3.8-flash" to (0.83 to 4.13),
         "google/gemini-4-argon" to (2.0 to 10.0),
         "google/gemini-nano-banana-2.1" to (1.5 to 7.5),
         "google/gemma-2-27b-it" to (0.65 to 0.65),
         "google/gemma-3-12b-it" to (0.05 to 0.15),
-        "google/gemma-3-27b-it" to (0.08 to 0.45),
-        "google/gemma-3-4b-it" to (0.05 to 0.1),
+        "google/gemma-3-27b-it" to (0.08 to 0.35),
+        "google/gemma-3-4b-it" to (0.04 to 0.05),
         "google/gemma-4-26b-a4b-it" to (0.09 to 0.3),
         "google/gemma-4-31b-it" to (0.2 to 0.4),
         "mistralai/codestral-2508" to (0.3 to 0.9),
@@ -104,7 +104,7 @@ object ListPriceSnapshot {
         "mistralai/mistral-large" to (2.0 to 6.0),
         "mistralai/mistral-large-2407" to (2.0 to 6.0),
         "mistralai/mistral-large-2512" to (0.5 to 1.5),
-        "mistralai/mistral-large-4-0" to (0.68 to 2.09),
+        "mistralai/mistral-large-4-0" to (1.36 to 4.18),
         "mistralai/mistral-medium-3" to (0.4 to 2.0),
         "mistralai/mistral-medium-3-5" to (1.5 to 7.5),
         "mistralai/mistral-medium-3.1" to (0.4 to 2.0),

@@ -1,4 +1,4 @@
-// ports: teemoon/Confidential/AuditIndex.swift @ v1.0.4 (VerdictClass stays the top-level AuditVerdictClass; refresh()
+// ports: teemoon/Confidential/AuditIndex.swift @ v1.0.5 (VerdictClass stays the top-level AuditVerdictClass; refresh()
 //        revalidates with the saved ETag, and a snapshot younger than the TTL answers a cold launch)
 package ai.teemoon.confidential
 

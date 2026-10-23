@@ -177,12 +177,6 @@ class AttestationServiceTest {
         assertEquals("config deployed 2026-07-16 · previous 2026-07-12 · per the signed action log", record.deploymentCaption)
     }
 
-    @Test fun fetchSigningAddress_readsTheFieldOrReportData() = runTest {
-        assertEquals("0xabc", AttestationService.fetchSigningAddress("https://n/v1", "k", http = { _, _ -> 200 to """{"signing_address":"0xabc"}""".toByteArray() }))
-        assertNull(AttestationService.fetchSigningAddress("https://n/v1", "k", http = { _, _ -> 200 to """{"intel_quote":"zz"}""".toByteArray() }))
-        assertNull(AttestationService.fetchSigningAddress("https://n/v1", "k", http = { _, _ -> throw IOException("down") }))
-    }
-
     @Test fun teeContext_derivesThePeerOnlyFromAUsableKey() {
         val provider = Provider.nearAI
         val model = E2EETestSupport.Model()

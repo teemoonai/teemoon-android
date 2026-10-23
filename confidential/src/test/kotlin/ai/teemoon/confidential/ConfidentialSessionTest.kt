@@ -1,14 +1,14 @@
-// ports: teemoonTests/AppStateTests.swift @ v1.0.4 (the "ConfidentialSession" suite)
+// ports: teemoonTests/AppStateTests.swift @ ebc9bdb (the "ConfidentialSession" suite)
 //        teemoonTests/E2EESecurityExploitTests.swift @ v1.0.1 (the "Send-policy choke-point" suite)
 //        teemoonTests/LocalProviderTests.swift @ v1.0.1 (registeringAndActivatingALocalProviderIsSafe)
-//        teemoonTests/AppStateTests.swift @ v1.0.4 (prepareTurnWaitsForAnInFlightVerdictBeforeTheGateIsRead,
+//        teemoonTests/AppStateTests.swift @ ebc9bdb (prepareTurnWaitsForAnInFlightVerdictBeforeTheGateIsRead,
 //        prepareTurnReportsAVerdictStillPendingAtTheDeadline, aRefusalBeforeTheWireDoesNotReadAsAnUnsealedRequest —
 //        their ChatViewModel.postPrepareRefusal halves are ChatViewModelTest's, the function lives in app/)
-//        teemoonTests/AppStateTests.swift @ v1.0.4 (aPlainTLSProviderNeverWaitsOnAnotherSessionsVerifiers,
+//        teemoonTests/AppStateTests.swift @ ebc9bdb (aPlainTLSProviderNeverWaitsOnAnotherSessionsVerifiers,
 //        aSwitchDropsCancelledVerifierHandles)
-//        teemoonTests/AppStateTests.swift @ v1.0.4 (MissingDirectHostReasonTests: theReasonNamesTheDirectoryNotTheServer,
+//        teemoonTests/AppStateTests.swift @ ebc9bdb (MissingDirectHostReasonTests: theReasonNamesTheDirectoryNotTheServer,
 //        aFailedFetchIsRetriedAfterTheInterval)
-//        ConfidentialSession+Verifiers.swift @ v1.0.4 has no iOS test for the kept verdict; aSealedSessionIsVerifyingUntilProvenanceSettles pins it
+//        ConfidentialSession+Verifiers.swift @ v1.0.5 has no iOS test for the kept verdict; aSealedSessionIsVerifyingUntilProvenanceSettles pins it
 //        NOT ported: liveFetchSkipsPreviewAndDesignTourNotOrdinaryLaunches (Xcode process flags),
 //        canSeal_tracksTheDerivedPeer (TEEContext / E2EEPeer — the E2EE row), chatViewModelDelegatesToTheSession
 //        (the app's ViewModel is a human row).
@@ -37,6 +37,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.yield
+import kotlinx.coroutines.test.runCurrent
 
 /*
  * Sessions are given the test scope itself: refresh jobs then run under
@@ -175,6 +176,78 @@ class ConfidentialSessionTest {
         assertTrue("bounded by the settle timeout, not the verifier", testScheduler.currentTime - started < 5_000)
         assertTrue(s.verdictsPending)
         s.clearDerivedState(resetCounts = true)   // the 30 s verifier would otherwise hold runTest open
+    }
+
+    // MARK: - Regression guards for the near.ai SDK comparison's refuted findings (1.0.6, audit). Negative claims,
+    // re-confirmed: a send never rides an unsettled DCAP verdict, and a Revoked TCB blocks.
+
+    /** DCAP in flight holds the send; when it lands Revoked, the gate the caller re-reads is BLOCK. */
+    @Test fun aDcapVerdictInFlightHoldsTheSend_andRevokedBlocks() = runTest {
+        val store = storeMatchingPreviewRecord()
+        val revoked = RecordDcapVerification(gateway = DcapVerification.Verified(DcapTcbStatus.REVOKED, "01", ""))
+        val s = session(this, store, services = ConfidentialSession.Services(skipLiveAttestation = true, verifyDcap = { delay(300); revoked }))
+        s.attestation = AttestationRecord.preview
+        s.lastRequestUsedE2EE = true
+        s.verifyDcap(AttestationRecord.preview)
+        assertTrue("a launched DCAP check is pending", s.verdictsPending)
+        s.prepareTurn()
+        assertFalse(s.verdictsPending)
+        assertEquals(true, s.dcapVerification?.hasHardFailure)
+        assertEquals(TrustSendPolicy.BLOCK, s.sendPolicy)
+    }
+
+    /**
+     * The pre-launch window: a record is adopted and its verifiers launched in ONE continuation (refreshAttestation:
+     * `attestation = record` then verifyDcap/verifyGpu/verifyTls, no suspension between), so no observer sees the
+     * record without its pending verdicts. Before the record lands there is nothing to seal with: prepareTurn's
+     * context has no peer, which ChatViewModel's mustRefuseUnsealedSend refuses (TrustPresentationTest) — and the
+     * wait for it is bounded (below).
+     */
+    @Test fun noObserverSeesARecordBeforeItsVerifiersAreInFlight() = runTest {
+        val store = Store(nearProvider())
+        val release = CompletableDeferred<Unit>()
+        val services = ConfidentialSession.Services(
+            directBase = { "https://glm-5-1.completions.near.ai/v1" },
+            fetchRecord = { _, _, model, providerID, _ -> release.await(); AttestationRecord.preview.copy(providerID = providerID, model = model, nvidiaPayload = "{}") },
+            verifyDcap = { awaitCancellation() }, verifyNras = { _, _ -> awaitCancellation() }, verifyTls = { awaitCancellation() },
+        )
+        val s = session(this, store, services)
+        runCurrent()
+        assertNull("the fetch is in flight", s.attestation)
+        assertFalse("nothing launched yet, so nothing pending — the no-record state the view model refuses", s.verdictsPending)
+        s.verifierSettleTimeoutMs = 100
+        assertNull("no record, no peer", s.prepareTurn()?.e2eePeer)
+        release.complete(Unit)
+        runCurrent()
+        assertNotNull(s.attestation)
+        assertTrue("the record arrived with its verdicts already pending", s.verdictsPending)
+        s.clearDerivedState(resetCounts = true)   // the never-landing verifiers would otherwise hold runTest open
+    }
+
+    /** A hung attestation fetch used to hold the send past the 15 s wait: the wait joined the fetch before its deadline loop (iOS ebc9bdb). */
+    @Test fun aHungAttestationFetchDoesNotOutlastTheKeyWait() = runTest {
+        val store = Store(nearProvider())
+        // backgroundScope: the fetch never answers, and runTest cancels it there when the body ends.
+        val s = session(backgroundScope, store, ConfidentialSession.Services(directBase = { "https://glm-5-1.completions.near.ai/v1" },
+            fetchRecord = { _, _, _, _, _ -> awaitCancellation() }))
+        runCurrent()
+        // The deadline runs on services.now() — the wall clock — so the bound is measured on it, as iOS does.
+        val started = System.nanoTime()
+        assertNull(s.e2eeKey(waitingUpToMs = 300))
+        s.attestationOutcome(waitingUpToMs = 300)
+        assertTrue("the wait followed the hung fetch, not its deadline", System.nanoTime() - started < 3_000_000_000L)
+    }
+
+    /** iOS adoptingARecordLeavesNoUnlaunchedCheck: adopt() sets the record and launches its verifiers in one step. */
+    @Test fun adoptingARecordLeavesNoUnlaunchedCheck() = runTest {
+        val store = storeMatchingPreviewRecord()
+        val s = session(this, store, ConfidentialSession.Services(skipLiveAttestation = true, directBase = { "https://model.example" },
+            verifyDcap = { awaitCancellation() }, verifyTls = { awaitCancellation() }))
+        assertFalse("precondition: nothing launched, nothing adopted", s.verdictsPending)
+        s.adopt(AttestationRecord.preview, store.active!!)
+        assertNotNull(s.attestation)
+        assertTrue("an adopted record must hold the send until its checks answer", s.verdictsPending)
+        s.clearDerivedState(resetCounts = true)
     }
 
     /**

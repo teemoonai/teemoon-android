@@ -1,5 +1,5 @@
 // ports: teemoon/Providers/Provider.swift @ v1.0.4
-// ports: teemoon/Providers/Provider+Presets.swift @ 54617ce (the four presets + presets array; Fireworks leads with kimi-k3)
+// ports: teemoon/Providers/Provider+Presets.swift @ v1.0.5 (the four presets + presets array; Fireworks leads with kimi-k3)
 // ports: teemoon/Providers/WhereLocality.swift @ v1.0.4 (isFixedAnswerService; prefersSearchFirstBrowse is gone, df74f65)
 // ports: teemoon/Providers/Provider+Presets.swift @ v1.0.4 (inferenceBaseUrl only: the host from EndpointDirectory, c93914c)
 // ports: teemoon/Providers/Provider+Presets.swift @ v1.0.4 (the grok and openrouter fallback models; matchingPreset by match key)
@@ -351,7 +351,9 @@ data class Provider(
             id = "A0000000-0000-0000-0000-000000000006",
             name = "NVIDIA",
             endpoint = "https://integrate.api.nvidia.com/v1/chat/completions",
-            model = "nvidia/nemotron-3-super-120b-a12b",
+            // nemotron-3-super 404s on NVIDIA; the maintainer picked lightning (iOS ffcfc00). Saved setups move at launch
+            // (ProviderHealing.fireworksRetirements).
+            model = "nvidia/nemotron-3.5-lightning-30b-a3b",
             supportsModelBrowsing = true,
         )
 

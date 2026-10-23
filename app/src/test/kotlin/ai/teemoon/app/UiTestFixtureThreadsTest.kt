@@ -1,4 +1,4 @@
-// ports: teemoon/App/UITestStoreSeeding.swift @ v1.0.4 (seedFixtureThreadsIfRequested; seedLongThread is UiTestSeedingTest's
+// ports: teemoon/App/UITestStoreSeeding.swift @ v1.0.5 (seedFixtureThreadsIfRequested; seedLongThread is UiTestSeedingTest's
 //        neighbour in UiTestSeeding.kt, seedShapedThreads is not ported — see ports.json)
 package ai.teemoon.app
 
@@ -32,6 +32,8 @@ class UiTestFixtureThreadsTest {
         override suspend fun deleteAllThreads() { threads.clear() }
         override suspend fun deleteAllMessages() { messages.clear() }
         override suspend fun deleteMessagesSince(threadId: String, sinceMs: Long) { messages.removeAll { it.threadId == threadId && it.timestamp >= sinceMs } }
+        override suspend fun deleteMessages(ids: List<String>) { messages.removeAll { it.id in ids } }
+        override suspend fun setTimestamp(id: String, timestamp: Long) { messages.replaceAll { if (it.id == id) it.copy(timestamp = timestamp) else it } }
         override fun observePreviews() = flowOf(emptyList<ThreadPreview>())
         override suspend fun threadIdsWithContent(needle: String) = emptyList<String>()
         override suspend fun indexableMessageIds() = emptyList<String>()
@@ -96,5 +98,24 @@ class UiTestFixtureThreadsTest {
         val again = UiTestSeeding.seedFixtureThreads(repo)
         assertEquals(4, dao.threads.size)
         assertTrue(again.contains("present"))
+    }
+
+    /** The macrobenchmark's list fixture: n threads, every one older than the long thread so a launch opens that one, and idempotent. */
+    @Test fun manyThreadsAreOlderThanTheLongThreadAndSeedOnce() = runTest {
+        val dao = Dao(); val repo = ChatRepository(dao)
+        UiTestSeeding.seedLongThread(repo, 200)
+        UiTestSeeding.seedManyThreads(repo, 50)
+        val again = UiTestSeeding.seedManyThreads(repo, 50)
+        val many = dao.threads.filter { it.id.startsWith("uitest-many-") }
+        assertEquals(50, many.size)
+        assertTrue(again.contains("present"))
+        assertEquals("uitest-long", dao.threads.maxBy { it.timestamp }.id)
+        assertEquals(200, dao.messages.count { it.threadId == "uitest-long" })
+        assertTrue(dao.messages.filter { it.threadId.startsWith("uitest-many-") && it.role == "assistant" }.all { "**" in it.content && "`" in it.content })
+    }
+
+    @Test fun manyThreadsIsReadFromTheLaunchExtras() {
+        assertEquals(50, UiTestSeeding.plan(mapOf(UiTestSeeding.EXTRA_FLAG to true, UiTestSeeding.EXTRA_MANY_THREADS to 50))?.manyThreads)
+        assertEquals(null, UiTestSeeding.plan(mapOf(UiTestSeeding.EXTRA_FLAG to true, UiTestSeeding.EXTRA_MANY_THREADS to 0))?.manyThreads)
     }
 }

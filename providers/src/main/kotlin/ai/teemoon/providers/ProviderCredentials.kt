@@ -1,4 +1,4 @@
-// ports: teemoon/Providers/ProviderStore+Credentials.swift @ v1.0.4 (adds presetsWithoutKey)
+// ports: teemoon/Providers/ProviderStore+Credentials.swift @ v1.0.5 (adds presetsWithoutKey)
 //        teemoon/Providers/ProviderStore.swift @ v1.0.4 (endpointKey, and the key halves of connectProvider/removeProvider)
 //
 // Where a provider key lives in the Keystore, and how it is read and written.

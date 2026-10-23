@@ -158,6 +158,56 @@ class WireTranscriptTest {
     }
 }
 
+/**
+ * ports: teemoonTests/PromptPrefixStabilityTests.swift @ 224ec87. Prompt caching needs the request prefix byte-identical
+ * from one turn to the next; `{{datetime}}` resolved to the minute, so most chats never hit the cache.
+ */
+class PromptPrefixStabilityTest {
+    private val morning = ZonedDateTime.of(2026, 10, 20, 9, 2, 0, 0, ZoneId.of("UTC"))
+    private val laterThatDay = morning.plusHours(3).plusMinutes(17)
+
+    @Test fun theSystemPromptIsTheSameAllDay() {
+        val a = ChatGeneration.resolvePromptTemplates(AppSettings.DEFAULT_SYSTEM_PROMPT, morning)
+        assertEquals(a, ChatGeneration.resolvePromptTemplates(AppSettings.DEFAULT_SYSTEM_PROMPT, laterThatDay))
+        assertFalse(a.contains("{{datetime}}"))
+        assertFalse("no clock time in the system prompt", a.contains(":"))
+    }
+
+    /** iOS dateAndTheOlderDatetimeMeanTheSameDay: both templates resolve to the day. */
+    @Test fun dateAndTheOlderDatetimeMeanTheSameDay() {
+        assertEquals(ChatGeneration.resolvePromptTemplates("{{datetime}}", morning), ChatGeneration.resolvePromptTemplates("{{date}}", morning))
+        assertFalse(ChatGeneration.resolvePromptTemplates(AppSettings.DEFAULT_SYSTEM_PROMPT, morning).contains("{{date}}"))
+        assertTrue("the default prompt carries {{date}} (iOS 6ca792f)", AppSettings.DEFAULT_SYSTEM_PROMPT.startsWith("Today's date is {{date}}."))
+    }
+
+    /** iOS aPersonaWithADateGetsTimeNotes: only a prompt that asks for the date, and only when a system prompt is sent. */
+    @Test fun aPersonaWithADateGetsTimeNotes() {
+        assertTrue(ChatGeneration.wantsTimeNotes(AppSettings.DEFAULT_SYSTEM_PROMPT, omitSystemPrompt = false))
+        assertTrue(ChatGeneration.wantsTimeNotes("it is {{datetime}}", omitSystemPrompt = false))
+        assertFalse(ChatGeneration.wantsTimeNotes("no template here", omitSystemPrompt = false))
+        assertFalse(ChatGeneration.wantsTimeNotes(AppSettings.DEFAULT_SYSTEM_PROMPT, omitSystemPrompt = true))
+    }
+
+    /** iOS's exact bytes, "\n\n[Sent at h:mm a]", from the message's own timestamp: the same turn, the same note, every request. */
+    @Test fun theNoteIsTheMessagesOwnTime() {
+        val at = morning.toInstant().toEpochMilli()
+        val note = ChatGeneration.timeNote(at, ZoneId.of("UTC"))
+        assertEquals("\n\n[Sent at 9:02 AM]", note)
+        assertEquals(note, ChatGeneration.timeNote(at, ZoneId.of("UTC")))
+    }
+
+    /** The history the second turn sends starts with exactly the bytes the first turn sent. */
+    @Test fun historyIsAPrefixOfTheNextTurn() {
+        val sys1 = ChatGeneration.resolvePromptTemplates(AppSettings.DEFAULT_SYSTEM_PROMPT, morning)
+        val sys2 = ChatGeneration.resolvePromptTemplates(AppSettings.DEFAULT_SYSTEM_PROMPT, laterThatDay)
+        val turn1 = ChatGeneration.buildWireMessages(listOf(WireMessage("user", "first question")), sys1, maxMessages = null)
+        val turn2 = ChatGeneration.buildWireMessages(listOf(WireMessage("user", "first question"), WireMessage("assistant", "first answer"),
+            WireMessage("user", "follow-up")), sys2, maxMessages = null)
+        assertEquals(turn1.map { it.content }, turn2.take(turn1.size).map { it.content })
+        assertEquals(listOf("system", "user", "assistant"), turn2.map { it.role })
+    }
+}
+
 class RequestDebugTextTest {
     @Test fun copiedCardRedactsAndListsEveryRound() {
         val info = LastRequestDebugInfo(providerName = "grok", modelID = "grok-4", url = "https://api.x.ai/v1/chat/completions?key=secret12345",

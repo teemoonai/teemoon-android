@@ -1,5 +1,5 @@
 // ports: teemoon/Inference/LLMError.swift @ v1.0.4 (the error, its fields, providerMessage, groundingMessage),
-//        teemoon/Inference/StreamDebugHelpers.swift @ v1.0.4 (apiErrorMessage + ProblemDetails; the pretty-printers are ToolCallDebugFormat)
+//        teemoon/Inference/StreamDebugHelpers.swift @ v1.0.5 (apiErrorMessage + ProblemDetails; the pretty-printers are ToolCallDebugFormat)
 package ai.teemoon.inference
 
 import kotlinx.serialization.json.Json

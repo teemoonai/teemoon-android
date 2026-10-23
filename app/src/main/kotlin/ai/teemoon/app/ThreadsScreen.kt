@@ -2,6 +2,10 @@
 //        remembered query, the index-unavailable fallback, the delete confirmation, swipe-to-delete, the deep link on open; no store review prompt)
 package ai.teemoon.app
 
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.testTagsAsResourceId
+
 import ai.teemoon.chat.ThreadEntity
 import ai.teemoon.chat.search.ChatSearchHighlight
 import ai.teemoon.chat.search.ChatSearchResult
@@ -102,7 +106,7 @@ fun ThreadsScreen(
         if (threads.isEmpty()) EmptyChatsState(Modifier.padding(top = 120.dp))
         else if (query.isNotBlank() && shown.isEmpty()) Text("no results", style = MaterialTheme.typography.bodyMedium, color = TeemoonColors.secondaryLabel, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth().padding(top = 48.dp))
 
-        LazyColumn(Modifier.weight(1f).fillMaxWidth(), contentPadding = PaddingValues(bottom = 16.dp)) {
+        LazyColumn(Modifier.weight(1f).fillMaxWidth().semantics { testTagsAsResourceId = true }.testTag("threads.list"), contentPadding = PaddingValues(bottom = 16.dp)) {
             sections.forEach { section ->
                 item(key = "h-" + section.title) { SectionLabel(section.title, uppercase = true) }
                 itemsIndexed(section.threads, key = { _, t -> t.id }) { i, t ->

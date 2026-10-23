@@ -1,10 +1,15 @@
 // ports: teemoon/Inference/GenerationEngine.swift @ v1.0.4
+//        + the provider wait of 9e090f8 (onAwaitingResponse, the headers-aware runTurn)
 package ai.teemoon.inference
 
 import ai.teemoon.confidential.ResponseVerification
 
+import java.time.Duration
+import java.time.Instant
 import kotlin.math.truncate
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -54,6 +59,21 @@ interface GenerationTransport {
         tools: List<Tool>,
         onPartial: (String) -> Unit,
     ): TurnResult
+
+    /**
+     * The same turn, plus [onResponse] once the provider's response headers arrive. A transport with no network wait
+     * (on-device) keeps this default, which calls it before any work — so it never shows "waiting for".
+     */
+    suspend fun runTurn(
+        messages: List<Map<String, Any>>,
+        includeTools: Boolean,
+        tools: List<Tool>,
+        onResponse: () -> Unit,
+        onPartial: (String) -> Unit,
+    ): TurnResult {
+        onResponse()
+        return runTurn(messages, includeTools, tools, onPartial)
+    }
 }
 
 /**
@@ -64,6 +84,8 @@ interface StreamCallbacks {
     fun onText(text: String)
     /** "Working, nothing to show yet" — true from request to this turn's first visible char. */
     fun onAwaitingModel(turn: Int, awaiting: Boolean) {}
+    /** A request went out at [sentAt] and has no response headers yet; null when they arrive or the turn ends. Same turn-index rule as above. */
+    fun onAwaitingResponse(turn: Int, sentAt: Instant?) {}
     /** Android-only: one executed call for the transcript's tool-round list. */
     fun onToolRound(call: ToolCallState, result: String) {}
     /** Where iOS writes a warning/error log line. Never a silent drop. */
@@ -81,6 +103,12 @@ interface StreamCallbacks {
     /** The `query` argument of each tool call about to run, in call order. */
     fun onQueriesFound(queries: List<String>) {}
     fun onToolExecutionEnded() {}
+    /**
+     * True when the owner takes the reply-signature verdict AFTER the turn (iOS cef6ad8): the check then runs on the
+     * engine's lateScope and lands at [onVerified], and the turn's RequestResult carries no verification.
+     */
+    val verifiesAfterTurn: Boolean get() = false
+    fun onVerified(verification: ResponseVerification) {}
     /**
      * The developer-panel payload. Delivered once per tool round (so the panel
      * shows the round even if a later one fails) and once at the end with the
@@ -139,7 +167,14 @@ class GenerationEngine(
      * month and no grounded reply on Android ever showed a source (found by GroundedTurnTest, 2026-09-08).
      */
     private val sourcesInToolResult: (String) -> List<GroundingSource> = BraveWebSearchTool::parseSources,
+    /** The phase clock (TurnPhase). Injected for tests. */
+    private val now: () -> Instant = Instant::now,
+    /** Where a late reply-signature check runs when [StreamCallbacks.verifiesAfterTurn]: it outlives the turn. */
+    private val lateScope: CoroutineScope? = null,
 ) {
+
+    /** Every step of this run, for the developer card. One engine runs one send. */
+    private val phases = ArrayList<TurnPhase>()
 
     /**
      * Answer text as the user should see it: provider markup removed. Identity
@@ -192,9 +227,12 @@ class GenerationEngine(
             val thisTurn = turnIndex
             var producedText = false
             events.onAwaitingModel(thisTurn, true)
+            // Every request starts its own wait clock: a search turn's follow-up can sit in a queue like the first.
+            events.onAwaitingResponse(thisTurn, now())
+            phases += TurnPhase(TurnPhase.Kind.SENT, now(), request = thisTurn)
 
             val turn = try {
-                transport.runTurn(messages, includeTools, tools) { partial ->
+                transport.runTurn(messages, includeTools, tools, onResponse = { events.onAwaitingResponse(thisTurn, null) }) { partial ->
                     if (partial.isNotEmpty() && !producedText) {
                         producedText = true
                         events.onAwaitingModel(thisTurn, false)
@@ -203,7 +241,12 @@ class GenerationEngine(
                 }
             } finally {
                 events.onAwaitingModel(thisTurn, false)
+                events.onAwaitingResponse(thisTurn, null)
             }
+            turn.report.responseAt?.let { phases += TurnPhase(TurnPhase.Kind.RESPONSE, it, request = thisTurn, tokens = turn.report.promptTokens, cachedTokens = turn.report.cachedPromptTokens) }
+            turn.report.firstTokenAt?.let { phases += TurnPhase(TurnPhase.Kind.FIRST_TOKEN, it, request = thisTurn) }
+            turn.report.firstVisibleTokenAt?.let { phases += TurnPhase(TurnPhase.Kind.FIRST_ANSWER, it, request = thisTurn) }
+            turn.report.phases.forEach { phases += it.copy(request = thisTurn) }
 
             // Tool round: execute, append follow-up messages, loop.
             //
@@ -216,6 +259,7 @@ class GenerationEngine(
             // models are likeliest to do it: no server-side template decides
             // when tool syntax is even legal.
             if (turn.toolCalls.isNotEmpty() && rounds.consume()) {
+                val toolStart = now()
                 val round = executeToolRound(
                     toolCalls = turn.toolCalls,
                     completionTokens = turn.completionTokens,
@@ -223,6 +267,11 @@ class GenerationEngine(
                     priorRecords = allToolRecords,
                 )
                 allToolRecords += round.records
+                // One TOOL per round, as iOS: its wall time and the bytes handed back to the model.
+                val toolBytes = round.results.sumOf { it.second.toByteArray(Charsets.UTF_8).size }
+                val toolEnd = now()
+                phases += TurnPhase(TurnPhase.Kind.TOOL, toolEnd, request = thisTurn, ms = Duration.between(toolStart, toolEnd).toMillis(),
+                    bytes = toolBytes, tokens = TurnPhase.tokenEstimate(toolBytes))
                 appendFollowUpMessages(
                     messages, turn.content, turn.toolCalls, round.results, turn.isTextBasedToolCall)
                 textSoFar += turn.content
@@ -311,27 +360,16 @@ class GenerationEngine(
             events.onText(finalText)
             events.onTurnText(finalText)
             val report = turn.report
-            // Await the check here so the turn's result includes it. A
-            // detached task forced the view model to poll the debug info for
-            // 8s after generate returned.
-            val verification = report.verify?.invoke()
-            when (verification) {
-                null, is ResponseVerification.Verified -> Unit
-                is ResponseVerification.Unverified -> when (val reason = verification.reason) {
-                    is ResponseVerification.UnverifiedReason.GatewayTrustOnly -> events.onWarning(
-                        "[TEE] Accepted via gateway trust only — signer ${reason.signingAddress} " +
-                            "not individually attested")
-                    is ResponseVerification.UnverifiedReason.SignatureMismatch -> events.onWarning(
-                        "[TEE] Signature MISMATCH — expected ${reason.expected}, got ${reason.got}")
-                    is ResponseVerification.UnverifiedReason.ContentMismatch -> events.onWarning(
-                        "[TEE] Content binding MISMATCH — ${reason.detail}")
-                    // "not yet available" is an info-level line on iOS; it is
-                    // carried by the result, not raised as a warning.
-                    ResponseVerification.UnverifiedReason.SignatureUnavailable -> Unit
-                    is ResponseVerification.UnverifiedReason.FetchFailed -> events.onWarning(
-                        "[TEE] Signature fetch failed: ${reason.error}")
-                }
-            }
+            // The last token is in. The reply-signature check sleeps 2 s before it even fetches (the TEE stores
+            // signatures asynchronously), so it must not hold the turn: when the owner takes late verdicts
+            // ([StreamCallbacks.verifiesAfterTurn], iOS cef6ad8) it runs after the turn on [lateScope] and lands at
+            // onVerified. Otherwise it is awaited here, as before: no poll of the debug info after generate returns.
+            val doneAt = now()
+            val verify = report.verify
+            val verification: ResponseVerification? = if (events.verifiesAfterTurn && lateScope != null && verify != null) {
+                lateScope.launch { verify()?.let { logVerification(it); events.onVerified(it) } }
+                null
+            } else verify?.invoke()?.also { logVerification(it) }
             // iOS LOGS this (HTTPTransport.swift); here the warning rides the callback so the owner sees it without
             // a log — an Android divergence, and a deliberate one: see docs/ANDROID_NATIVE.md. The provider is named
             // as iOS names it, because a user with several places configured cannot act on "the server".
@@ -347,6 +385,7 @@ class GenerationEngine(
                 // Plus anything the transport ran on its own behalf — see
                 // TurnReport.executedToolCalls.
                 toolCalls = allToolRecords + report.executedToolCalls,
+                phases = synchronized(phases) { phases + listOfNotNull(TurnPhase(TurnPhase.Kind.DONE, doneAt), verification?.let { TurnPhase(TurnPhase.Kind.VERIFIED, now()) }) },
                 outputTokens = turn.completionTokens,
                 firstTokenAt = report.firstTokenAt,
                 firstVisibleTokenAt = report.firstVisibleTokenAt,
@@ -366,6 +405,28 @@ class GenerationEngine(
         /** (tool_call_id, result content), in call order. */
         val results: List<Pair<String, String>>,
     )
+
+    private fun logVerification(verification: ResponseVerification) {
+        when (verification) {
+            is ResponseVerification.Verified -> Unit
+            is ResponseVerification.Unverified -> when (val reason = verification.reason) {
+                is ResponseVerification.UnverifiedReason.GatewayTrustOnly -> events.onWarning(
+                    "[TEE] Accepted via gateway trust only — signer ${reason.signingAddress} " +
+                        "not individually attested")
+                is ResponseVerification.UnverifiedReason.SignerUnattested -> events.onWarning(
+                    "[TEE] Signer ${reason.signingAddress} is not bound to a model quote")
+                is ResponseVerification.UnverifiedReason.SignatureMismatch -> events.onWarning(
+                    "[TEE] Signature MISMATCH — expected ${reason.expected}, got ${reason.got}")
+                is ResponseVerification.UnverifiedReason.ContentMismatch -> events.onWarning(
+                    "[TEE] Content binding MISMATCH — ${reason.detail}")
+                // "not yet available" is an info-level line on iOS; it is
+                // carried by the result, not raised as a warning.
+                ResponseVerification.UnverifiedReason.SignatureUnavailable -> Unit
+                is ResponseVerification.UnverifiedReason.FetchFailed -> events.onWarning(
+                    "[TEE] Signature fetch failed: ${reason.error}")
+            }
+        }
+    }
 
     private suspend fun executeToolRound(
         toolCalls: Map<Int, ToolCallState>,
@@ -411,6 +472,7 @@ class GenerationEngine(
                 requestBodyJson = report.requestBodyJson,
                 sealedBodyJson = report.sealedBodyJson, responseBody = null,
                 toolCalls = allRecords, outputTokens = completionTokens, promptBudget = report.promptBudget,
+                phases = synchronized(phases) { phases.toList() },
                 teeVerification = null, isE2eeActive = report.isE2eeActive,
             ))
         }

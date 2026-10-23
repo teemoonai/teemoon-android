@@ -43,6 +43,14 @@ class ChatCardsSnapshotTest {
         paparazzi.snapshot { TeemoonTheme { Surface { Column(Modifier.padding(12.dp)) { RequestDebugCard(info, onCopy = {}) } } } }
     }
 
+    /** card-one-line (the maintainer, iOS 6fdcb43): the timing chain ends with the effort and the cache figure; no rows of their own. */
+    @Test fun debugCard_timingRowEndsWithEffortAndCache() {
+        val info = LastRequestDebugInfo(providerName = "fireworks", modelID = "glm-5p3", url = "https://api.fireworks.ai/inference/v1/chat/completions",
+            requestHeaders = mapOf("Content-Type" to "application/json"), requestBodyJson = "{\"reasoning_effort\":\"low\"}", responseBody = "…", toolCalls = emptyList(),
+            threadID = "t", totalDuration = 6.9, timeToFirstToken = 1.4, outputTokens = 412, isE2EEActive = false, teeVerification = null, cacheLine = "cache 92%")
+        paparazzi.snapshot { TeemoonTheme { Surface { Column(Modifier.padding(12.dp)) { RequestDebugCard(info, onCopy = {}) } } } }
+    }
+
     /**
      * An on-device turn's two lines: the turn's timing as for any provider, then the engine's — backend, drafter, and
      * prefill beside decode. The S26 Ultra code edit of 2026-10-15 (Samsung RTL): 899 tokens in 9.3 s on the GPU with speculative
@@ -78,6 +86,8 @@ class ChatCardsSnapshotTest {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 ActivityChip(ActivityState.Thinking, 45.0); ActivityChip(ActivityState.SourcesFound(5), null)
             }
+            ActivityChip(ActivityState.WaitingForProvider("fireworks"), 12.0)
+            ActivityChip(ActivityState.ThinkingHarder, 9.0)
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                 SourcesChip(listOf(GroundingSource("https://redact.dev", "redact.dev", "Redact")))
                 WebSearchChip(WebSearchChipState.ON, onClick = {}); WebSearchChip(WebSearchChipState.DISABLED, onClick = {})

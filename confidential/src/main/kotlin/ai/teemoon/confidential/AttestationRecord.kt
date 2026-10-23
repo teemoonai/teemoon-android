@@ -1,4 +1,4 @@
-// ports: teemoon/Confidential/AttestationRecord.swift @ v1.0.1 (the data model, its bindings, and the
+// ports: teemoon/Confidential/AttestationRecord.swift @ 97b2ca9 (the data model, its bindings, and the
 //        two preview records; the fetcher is AttestationService.kt)
 package ai.teemoon.confidential
 
@@ -107,6 +107,20 @@ data class AttestationRecord(
         get() {
             val qv = quoteVerification ?: return null
             val addr = signingAddress?.takeIf { it.isNotEmpty() } ?: return null
+            val reportData = qv.measurements.reportData
+            val addrBytes = addr.removePrefix("0x").hexToBytesOrNull()
+            if (addrBytes == null || addrBytes.size != 20 || reportData.size < 20) return false
+            return reportData.copyOfRange(0, 20).contentEquals(addrBytes)
+        }
+
+    /**
+     * Same binding for the model node's ECDSA address against the GPU-leg quote (iOS 97b2ca9).
+     * The report's `signing_address` JSON field alone proves nothing.
+     */
+    val gpuSigningKeyBoundToHardware: Boolean?
+        get() {
+            val qv = gpuQuoteVerification ?: return null
+            val addr = gpuSigningAddress?.takeIf { it.isNotEmpty() } ?: return null
             val reportData = qv.measurements.reportData
             val addrBytes = addr.removePrefix("0x").hexToBytesOrNull()
             if (addrBytes == null || addrBytes.size != 20 || reportData.size < 20) return false

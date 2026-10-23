@@ -1,4 +1,4 @@
-// ports: teemoonTests/ModelArtifactTests.swift @ v1.0.4 (+ hfCachePathNamesTheRepoNotTheSnapshot d1ac2be, realGLM53FlashComposeNamesTheModel 3936c43)
+// ports: teemoonTests/ModelArtifactTests.swift @ v1.0.5 (+ hfCachePathNamesTheRepoNotTheSnapshot d1ac2be, realGLM53FlashComposeNamesTheModel 3936c43)
 package ai.teemoon.confidential
 
 import org.junit.Assert.assertEquals

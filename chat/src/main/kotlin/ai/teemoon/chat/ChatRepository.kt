@@ -10,7 +10,10 @@ import kotlinx.coroutines.flow.Flow
  * data here; the launch reconcile is what guarantees correctness, so a missed
  * hook is a stale index until next launch, never lost data.
  */
-class ChatRepository(private val dao: ChatDao, private val search: ChatSearchService? = null) {
+/** What the store does after a delete so the deleted text does not stay readable in its files (ChatDatabase.maintenance). */
+fun interface StoreMaintenance { suspend fun afterDelete(all: Boolean) }
+
+class ChatRepository(private val dao: ChatDao, private val search: ChatSearchService? = null, private val maintenance: StoreMaintenance? = null) {
 
     fun threads(): Flow<List<ThreadEntity>> = dao.observeThreads()
 
@@ -63,14 +66,29 @@ class ChatRepository(private val dao: ChatDao, private val search: ChatSearchSer
         return dropped
     }
 
+    /**
+     * Think Harder's new reply in place of the old (iOS ChatViewModel, ReplySupersession .replace, 14b2974): the old
+     * reply is deleted, the question restamped to when it was asked again, and the new reply saved, in one
+     * transaction — a kill between them must leave the chat with an answer, the old one or the new.
+     */
+    suspend fun supersede(oldIds: List<String>, question: MessageEntity, askedAt: Long, reply: MessageEntity) {
+        dao.supersede(oldIds, question.id, askedAt, reply)
+        search?.didDelete(oldIds)
+        search?.didWrite(ChatMessageRecord(question.id, question.threadId, question.role, askedAt, question.content))
+        search?.didWrite(ChatMessageRecord(reply.id, reply.threadId, reply.role, reply.timestamp, reply.content))
+        maintenance?.afterDelete(all = false)
+    }
+
     /** "delete all chats": the store and the search index together (iOS ChatsSettingsView.deleteChats). */
     suspend fun deleteAll() {
         dao.deleteAllThreads(); dao.deleteAllMessages()
         search?.didDeleteAllChats()
+        maintenance?.afterDelete(all = true)
     }
 
     suspend fun delete(threadId: String) {
         dao.deleteThread(threadId)
         search?.didDeleteThread(threadId)
+        maintenance?.afterDelete(all = false)
     }
 }

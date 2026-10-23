@@ -1,4 +1,9 @@
 // ports: teemoon/Inference/HTTPTransport.swift @ v1.0.1 — REBUILD (§5.3) over OkHttp
+//        + the reasoning-effort fields of 3d561c4 (sha not bumped: c238886 and c76f3bd sit between and are not audited here)
+//        + the 600 s header wait / 240 s stream idle of 8780c32 (StreamTimeouts)
+//        + onResponse at the response headers, for the provider wait of 9e090f8
+//        + ad960c7: a model that 400s on the effort field is asked once more without it; a key the person set in
+//          the provider's extra parameters wins over the effort fields
 //
 // The remote transport: one OpenAI-compatible chat/completions round-trip.
 //
@@ -19,7 +24,6 @@ package ai.teemoon.inference
 import ai.teemoon.providers.CredentialHeaders
 import ai.teemoon.providers.TeemoonHttp
 
-import ai.teemoon.confidential.AttestationService
 import ai.teemoon.confidential.E2EEError
 import ai.teemoon.confidential.E2EEStreamCodec
 import ai.teemoon.confidential.ResponseVerification
@@ -28,6 +32,8 @@ import ai.teemoon.confidential.TEESignatureVerifier
 import ai.teemoon.confidential.TeeContext
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -40,6 +46,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
+import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.util.concurrent.TimeUnit
@@ -60,7 +67,12 @@ import kotlinx.coroutines.delay
  * round: `readTimeout(0)` + `callTimeout(240)` bounds the WHOLE call, so a long
  * answer still streaming at four minutes died here and finished on iOS, while a
  * server that accepted and then went silent hung here forever and errored on iOS
- * (2026-09 port review, B5). readTimeout carries the 240; callTimeout is off.
+ * (2026-09 port review, B5). readTimeout carries the idle bound; callTimeout is off.
+ *
+ * TWO IDLE BOUNDS SINCE iOS 8780c32. The client's readTimeout is the wait for HEADERS, 600 s: NVIDIA's free
+ * endpoint holds a queued model's request 253–282 s before the first byte, and the old 240 failed requests that were
+ * only queued. Once headers are in, the body source is narrowed to [streamIdleMs] (240 s) — a stream that stops is
+ * still dead after four minutes (StreamTimeouts).
  */
 class OpenAiTransport(
     private val endpoint: String,
@@ -68,11 +80,7 @@ class OpenAiTransport(
     private val apiKey: String? = null,
     /** null → "Authorization: Bearer <key>"; set → the key is sent as-is under this header (e.g. "X-Subscription-Token"). */
     private val authHeaderName: String? = null,
-    private val client: OkHttpClient = TeemoonHttp.builder()
-        .connectTimeout(15, TimeUnit.SECONDS)
-        .readTimeout(240, TimeUnit.SECONDS)      // the gap between packets, as URLRequest.timeoutInterval
-        .callTimeout(0, TimeUnit.MILLISECONDS)   // no total bound: a long stream must be allowed to finish
-        .build(),
+    private val client: OkHttpClient = chatClient(),
     /** The attested context, when this turn promised sealing. null for every non-attested provider. */
     private val teeContext: TeeContext? = null,
     /** Provider extras, auto-coerced: "true"/"false" → Boolean, numbers → Double, else String. */
@@ -81,12 +89,36 @@ class OpenAiTransport(
     private val providerName: String = endpoint,
     /** Sleep seam for the signature verifier's waits. */
     private val sleepMs: suspend (Long) -> Unit = { delay(it) },
+    /** null sends the provider's default. See [ReasoningEffort]. */
+    private val effort: ReasoningEffort.For? = null,
+    /** Per-thread routing hint for a provider's prompt cache. See [SessionAffinity]. */
+    private val affinityID: String? = null,
+    /** The longest gap between bytes once headers are in (StreamTimeouts; tests shorten it). */
+    private val streamIdleMs: Long = StreamTimeouts.STREAM_IDLE_MS,
 ) : GenerationTransport {
     // the header this key goes out under, registered before any turn, so a card copied before the first request masks it
     init { if (!apiKey.isNullOrBlank()) authHeaderName?.let(CredentialHeaders::register) }
 
 
     private val json = Json { ignoreUnknownKeys = true }
+
+    companion object {
+        /** The chat client: connect 15 s, the wait for headers, and no total bound. */
+        fun chatClient(): OkHttpClient = TeemoonHttp.builder()
+            .connectTimeout(15, TimeUnit.SECONDS)
+            .readTimeout(StreamTimeouts.HEADER_WAIT_MS, TimeUnit.MILLISECONDS)   // the wait for headers; the stream's own bound is set on its source
+            .callTimeout(0, TimeUnit.MILLISECONDS)   // no total bound: a long stream must be allowed to finish
+            .build()
+
+        /**
+         * The `tools` array as it goes on the wire (iOS HTTPTransport.wireTools, ca3d155). The on-device card shows the
+         * same JSON (LiteRTTransport.prettyRequest).
+         */
+        fun wireTools(tools: List<Tool>): JsonArray = JsonArray(tools.map { t ->
+            JsonObject(mapOf("type" to JsonPrimitive("function"), "function" to JsonObject(mapOf(
+                "name" to JsonPrimitive(t.name), "description" to JsonPrimitive(t.description), "parameters" to GenerationEngine.flattenedToolSchema(t)))))
+        })
+    }
 
     /** The raw response text of the last turn, exactly as received, for signature binding. */
     var lastRawTranscript: String = ""
@@ -100,6 +132,14 @@ class OpenAiTransport(
         includeTools: Boolean,
         tools: List<Tool>,
         onPartial: (String) -> Unit,
+    ): TurnResult = runTurn(messages, includeTools, tools, onResponse = {}, onPartial)
+
+    override suspend fun runTurn(
+        messages: List<Map<String, Any>>,
+        includeTools: Boolean,
+        tools: List<Tool>,
+        onResponse: () -> Unit,
+        onPartial: (String) -> Unit,
     ): TurnResult = withContext(Dispatchers.IO) {
         val codec = teeContext?.e2eePeer?.let { E2EEStreamCodec(it) }
 
@@ -109,6 +149,7 @@ class OpenAiTransport(
         // 2. Auth.
         val headers = LinkedHashMap<String, String>()
         headers["Content-Type"] = "application/json"
+        affinityID?.let { id -> SessionAffinity.header(endpoint)?.let { headers[it] = id } }
         CredentialHeaders.attach(headers, apiKey.orEmpty(), authHeaderName)
 
         // 3. E2EE sealing. `codec != null` means THIS turn promised sealing
@@ -130,13 +171,26 @@ class OpenAiTransport(
         val request = Request.Builder().url(endpoint).post(bodyToSend.toRequestBody("application/json".toMediaType()))
             .apply { headers.forEach { (k, v) -> header(k, v) } }.build()
 
-        client.newCall(request).execute().use { response ->
+        val sentEffort = effort?.bodyFields() != null
+        // A stop cancels the call itself. `execute()` and the stream read block this thread, so the coroutine's
+        // cancellation never reached them: a request stopped while the provider held it kept going, and its reply
+        // arrived after the stop (and was billed). The watcher is a sibling suspended on another IO thread; its
+        // finally runs the moment the turn is cancelled, and OkHttp's cancel fails the blocked read with an IOException.
+        val call = client.newCall(request)
+        val finished = java.util.concurrent.atomic.AtomicBoolean(false)
+        val watcher = launch { try { awaitCancellation() } finally { if (!finished.get()) call.cancel() } }
+        try { call.execute().use { response ->
+            // Headers in: DNS, TLS and the server's queue are behind us; what follows is the model.
+            val responseAt = java.time.Instant.now()
+            onResponse()
             if (response.code >= 400) {
                 val errorBody = runCatching { response.body.string() }.getOrNull()
+                if (sentEffort && ReasoningEffort.isRefusal(response.code, errorBody)) throw EffortRefused()
                 throw LlmError(LlmError.Source.Provider(providerName), LlmError.apiErrorMessage(errorBody ?: "", response.code, providerName), httpStatus = response.code,
                     url = endpoint, requestHeaders = headers, requestBodyJson = prettyBody, responseBody = errorBody)
             }
             val source = response.body.source()
+            StreamTimeouts.startStream(source, streamIdleMs)   // from here, a gap of streamIdleMs ends the stream
             val parser = SseStreamParser()
             // The decrypt hook is non-throwing; failure is recorded on the parser and thrown by the loop.
             val decrypt: ((String) -> String?)? = if (isE2EEActive) codec?.let { c -> { ciphertext: String -> c.decryptField(ciphertext) } } else null
@@ -207,11 +261,8 @@ class OpenAiTransport(
             val chatID = parser.chatCompletionId
             lastChatCompletionId = chatID
             val verify: (suspend () -> ResponseVerification?)? = if (ctx == null || chatID == null) null else {
-                { TEESignatureVerifier.verify(chatID, ctx.attestation.signingAddress, ctx.attestation.gpuSigningAddress,
-                    gatewayQuoteVerified = ctx.attestation.quoteVerification?.isVerified == true, exchange = exchange,
-                    fetchSignature = { id -> fetchSignature(ctx, id) },
-                    refetchSigningAddress = { listOf(ctx.gpuNodeUrl?.let { AttestationService.fetchSigningAddress(it, ctx.apiKey) }) },
-                    sleepMs = sleepMs) }
+                { TEESignatureVerifier.verify(chatID, ctx.attestation, exchange = exchange,
+                    fetchSignature = { id, algo -> fetchSignature(ctx, id, algo) }, sleepMs = sleepMs) }
             }
 
             TurnResult(
@@ -223,17 +274,38 @@ class OpenAiTransport(
                 completionTokens = parser.completionTokens,
                 report = TurnReport(url = endpoint, requestHeaders = headers, requestBodyJson = prettyBody, sealedBodyJson = sealedBody,
                     isE2eeActive = isE2EEActive, verify = verify,
-                    firstTokenAt = parser.firstDeltaAt, firstVisibleTokenAt = parser.firstVisibleAt,
+                    firstTokenAt = parser.firstDeltaAt, firstVisibleTokenAt = parser.firstVisibleAt, responseAt = responseAt,
+                    promptTokens = parser.promptTokens, cachedPromptTokens = parser.cachedPromptTokens,
                     // Input-token accounting. Skipped under E2EE, where the sent-size estimate would be measuring ciphertext.
                     promptBudget = if (isE2EEActive) null else parser.promptTokens?.let { PromptBudget(PromptBudget.estimateSentTokens(messages), it) },
                     providerName = providerName),
             )
+        } } catch (e: java.io.IOException) {
+            if (call.isCanceled()) throw kotlinx.coroutines.CancellationException("stopped").apply { initCause(e) }
+            throw e
+        } catch (_: EffortRefused) {
+            // Sent again without it: bodyFields now returns null for this model. The whole turn is rebuilt from the
+            // plaintext messages, so a sealed request is sealed afresh by a new codec, never the first one's bytes.
+            effort?.let { ReasoningEffort.noteRefused(it.provider) }
+            runTurn(messages, includeTools, tools, onResponse, onPartial)
+        } finally {
+            finished.set(true); watcher.cancel()
         }
     }
 
-    /** `GET <gateway>/signature/{id}` — the gateway stores the GPU node's signature; direct nodes do not reliably sign. */
-    private suspend fun fetchSignature(ctx: TeeContext, chatID: String): Pair<Int, ByteArray> = withContext(Dispatchers.IO) {
-        val b = Request.Builder().url(ctx.baseUrl.trimEnd('/') + "/signature/$chatID").get()
+    /** The effort field was refused; caught one level up, never surfaced. */
+    private class EffortRefused : Exception()
+
+
+    /**
+     * `GET <gateway>/signature/{id}?model=&signing_algo=` — the gateway stores the GPU node's signature; direct nodes do
+     * not reliably sign. The algo is always explicit, the server default may change (the SDK calls ECDSA "legacy"); which
+     * one is asked first is TEESignatureVerifier's call (iOS 441cecf).
+     */
+    private suspend fun fetchSignature(ctx: TeeContext, chatID: String, algo: String): Pair<Int, ByteArray> = withContext(Dispatchers.IO) {
+        val url = (ctx.baseUrl.trimEnd('/') + "/signature/$chatID").toHttpUrl().newBuilder()
+            .addQueryParameter("model", ctx.model).addQueryParameter("signing_algo", algo).build()
+        val b = Request.Builder().url(url).get()
         if (ctx.apiKey.isNotEmpty()) b.header("Authorization", "Bearer ${ctx.apiKey}")
         client.newCall(b.build()).execute().use { it.code to it.body.bytes() }
     }
@@ -249,10 +321,7 @@ class OpenAiTransport(
         if (includeTools && tools.isNotEmpty()) {
             // FLATTENED, as HTTPTransport does on iOS: a `$ref`/`$defs` schema rendered into a small model's prompt
             // makes it hallucinate the argument shape. See GenerationEngine.flattenedToolSchema.
-            body["tools"] = JsonArray(tools.map { t ->
-                JsonObject(mapOf("type" to JsonPrimitive("function"), "function" to JsonObject(mapOf(
-                    "name" to JsonPrimitive(t.name), "description" to JsonPrimitive(t.description), "parameters" to GenerationEngine.flattenedToolSchema(t)))))
-            })
+            body["tools"] = wireTools(tools)
             body["tool_choice"] = JsonPrimitive("auto")
         }
         // A whole number must serialize as an integer: JSONSerialization writes Double(512) as `512`, but a Kotlin
@@ -261,7 +330,23 @@ class OpenAiTransport(
             "true" -> JsonPrimitive(true); "false" -> JsonPrimitive(false)
             else -> value.toLongOrNull()?.let { JsonPrimitive(it) } ?: value.toDoubleOrNull()?.let { JsonPrimitive(it) } ?: JsonPrimitive(value)
         }
-        return json.encodeToString(JsonObject.serializer(), JsonObject(body)).toByteArray(Charsets.UTF_8)
+        // A key the person set in the provider's extra parameters wins.
+        effort?.bodyFields()?.forEach { (k, v) -> if (k !in body) body[k] = v }
+        return json.encodeToString(JsonObject.serializer(), sortedKeys(JsonObject(body)) as JsonObject).toByteArray(Charsets.UTF_8)
+    }
+
+    /**
+     * SORTED KEYS, at every depth (iOS bbfeb0f, `.sortedKeys`; the conformance rule pm approved 2026-10-22): a chat
+     * request's body is a pure function of the turn, so two sends of the same history are the same bytes and send N+1's
+     * messages extend send N's byte for byte — the prefix a provider's prompt cache matches. iOS 57 serialized Swift
+     * dictionaries, whose order is seeded per process: 52 different tool orders in 60 requests, and Fireworks GLM never
+     * cached a chat's next send while tools were offered. Android's maps kept insertion order and were stable already;
+     * sorting makes the order a rule instead of an accident of how each object was built.
+     */
+    private fun sortedKeys(e: JsonElement): JsonElement = when (e) {
+        is JsonObject -> JsonObject(e.entries.sortedBy { it.key }.associate { (k, v) -> k to sortedKeys(v) })
+        is JsonArray -> JsonArray(e.map { sortedKeys(it) })
+        else -> e
     }
 
     // MARK: - Non-streaming responses

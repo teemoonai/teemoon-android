@@ -54,7 +54,7 @@ license in its published artifact.
 
 | dependency | license |
 |---|---|
-| AndroidX (core, lifecycle, activity, navigation, Room, sqlite-bundled, test) and Jetpack Compose | Apache-2.0 |
+| AndroidX (core, lifecycle, activity, navigation, Room, sqlite-bundled, profileinstaller, metrics-performance, test, benchmark) and Jetpack Compose | Apache-2.0 |
 | OkHttp (com.squareup.okhttp3) | Apache-2.0 |
 | kotlinx.serialization, kotlinx.coroutines | Apache-2.0 |
 | LiteRT-LM (com.google.ai.edge.litertlm:litertlm-android) | Apache-2.0 |

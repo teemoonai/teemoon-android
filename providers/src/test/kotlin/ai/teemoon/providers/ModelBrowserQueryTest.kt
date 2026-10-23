@@ -1,4 +1,4 @@
-// ports: teemoonTests/ModelBrowserQueryTests.swift @ v1.0.4 (all 13)
+// ports: teemoonTests/ModelBrowserQueryTests.swift @ v1.0.5 (all 13)
 package ai.teemoon.providers
 
 import org.junit.Assert.assertEquals

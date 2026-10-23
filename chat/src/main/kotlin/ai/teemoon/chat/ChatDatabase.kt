@@ -1,5 +1,7 @@
 package ai.teemoon.chat
 
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.launch
 import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
@@ -61,11 +63,48 @@ abstract class ChatDatabase : RoomDatabase() {
         }
 
         fun get(context: Context): ChatDatabase = instance ?: synchronized(this) {
-            instance ?: Room.databaseBuilder(
-                context.applicationContext, ChatDatabase::class.java, "teemoon-chat.db")
-                // No fallbackToDestructiveMigration. See the class comment.
-                .build()
-                .also { instance = it }
+            instance ?: builder(context, "teemoon-chat.db").build().also { instance = it }
         }
+
+        /**
+         * DELETED TEXT MUST NOT STAY READABLE (the maintainer, 2026-10-19: "yes residue fix"; measured: a deleted chat's text was
+         * still in teemoon-chat.db and its -wal, DeletedTextResidueTest). With [secureDelete] the delete zeroes the pages
+         * it frees; the WAL still holds them as they were, so it is checkpointed and truncated after every chat delete,
+         * and after delete all the file is VACUUMed down to what is left.
+         */
+        fun maintenance(db: ChatDatabase, scope: kotlinx.coroutines.CoroutineScope): StoreMaintenance {
+            // In the background, one at a time: "delete all" runs from the settings screen (MainActivity) and a VACUUM of
+            // a big store must not hold the frame.
+            val lock = kotlinx.coroutines.sync.Mutex()
+            return StoreMaintenance { all ->
+                scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+                    lock.withLock {
+                        runCatching {
+                            val w = db.openHelper.writableDatabase
+                            w.query("PRAGMA wal_checkpoint(TRUNCATE)").use { it.moveToFirst() }
+                            if (all) { w.execSQL("VACUUM"); w.query("PRAGMA wal_checkpoint(TRUNCATE)").use { it.moveToFirst() } }
+                        }
+                    }
+                }
+            }
+        }
+
+        /**
+         * PRAGMA secure_delete on the connection that writes (platform SQLite routes a statement that sets a pragma to it).
+         * Then a checkpoint: a kill between a delete and its [maintenance] scrub (a queued job, iOS e871b7a's window) left
+         * the deleted text in the file; the next open finishes that scrub. Cheap when the WAL is empty.
+         */
+        private val secureDelete = object : RoomDatabase.Callback() {
+            override fun onOpen(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.query("PRAGMA secure_delete = ON").use { it.moveToFirst() }
+                runCatching { db.query("PRAGMA wal_checkpoint(TRUNCATE)").use { it.moveToFirst() } }
+            }
+        }
+
+        /** The store's one builder: the app's database and the device tests' scratch stores are opened alike. */
+        fun builder(context: Context, name: String): RoomDatabase.Builder<ChatDatabase> =
+            Room.databaseBuilder(context.applicationContext, ChatDatabase::class.java, name)
+                .addCallback(secureDelete)
+                // No fallbackToDestructiveMigration. See the class comment.
     }
 }

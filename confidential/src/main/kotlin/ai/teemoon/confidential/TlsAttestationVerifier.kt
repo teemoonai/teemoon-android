@@ -1,4 +1,4 @@
-// ports: teemoon/Confidential/TLSAttestationVerifier.swift @ v1.0.1 (the verifier; TlsAttestation is its own file)
+// ports: teemoon/Confidential/TLSAttestationVerifier.swift @ b34d1ec (the verifier; TlsAttestation is its own file)
 //
 // TLS attestation — proves the HTTPS connection terminates INSIDE the model
 // TEE, so nothing between the device and the enclave (network, load
@@ -97,7 +97,17 @@ class OkHttpTlsProbe : TlsProbe {
     }
 }
 
-class TlsAttestationVerifier(private val probe: TlsProbe = OkHttpTlsProbe(), private val log: (String) -> Unit = {}) {
+class TlsAttestationVerifier(
+    private val probe: TlsProbe = OkHttpTlsProbe(),
+    private val log: (String) -> Unit = {},
+    /**
+     * The probe quote goes through DCAP like the record's quotes (iOS b34d1ec): a quote that is only parsed binds a
+     * fingerprint anyone could have written.
+     */
+    private val quoteCheck: suspend (String) -> DcapVerification = { hex ->
+        DcapVerifier(IntelPcsCollateralProvider(), log = log).verify(hex, System.currentTimeMillis() / 1000)
+    },
+) {
 
     /** Fetches attestation with `include_tls_fingerprint=true` over a fresh TLS connection to [directBaseUrl], captures that connection's certificate, and verifies the bindings. */
     suspend fun verify(directBaseUrl: String): TlsAttestation {
@@ -110,7 +120,8 @@ class TlsAttestationVerifier(private val probe: TlsProbe = OkHttpTlsProbe(), pri
         fun field(k: String) = (report?.get(k) as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
         val quote = field("intel_quote"); val address = field("signing_address"); val fingerprint = field("tls_cert_fingerprint")
         if (quote == null || address == null || fingerprint == null) return TlsAttestation.Inconclusive("attestation response missing TLS fields")
-        val outcome = verifyBindings(quote, address, field("signing_algo") ?: "ecdsa", fingerprint, certDer, nonce)
+        val bindings = verifyBindings(quote, address, field("signing_algo") ?: "ecdsa", fingerprint, certDer, nonce)
+        val outcome = if (bindings == TlsAttestation.Verified) withQuoteCheck(bindings, quoteCheck(quote)) else bindings
         if (outcome is TlsAttestation.Failed) log("[tls] ${outcome.reason}")
         return outcome
     }
@@ -125,6 +136,20 @@ class TlsAttestationVerifier(private val probe: TlsProbe = OkHttpTlsProbe(), pri
          * on-path attacker.
          */
         fun makeProbeRequest(url: String): Request = Request.Builder().url(url).get().build()
+
+        /**
+         * Bindings first, then DCAP on the same quote. A DCAP hard failure (bad quote, collateral unreachable, TCB
+         * outside the allow-list) fails the check, as it does for the record's quotes. Until 1.0.6 the probe quote was
+         * parsed for its report_data and never DCAP-verified.
+         */
+        fun withQuoteCheck(bindings: TlsAttestation, dcap: DcapVerification): TlsAttestation {
+            if (bindings != TlsAttestation.Verified) return bindings
+            if (!dcap.isHardFailure) return TlsAttestation.Verified
+            return when (dcap) {
+                is DcapVerification.Failed -> TlsAttestation.Failed("TLS attestation quote failed DCAP verification (${dcap.reason})")
+                is DcapVerification.Verified -> TlsAttestation.Failed("TLS attestation quote TCB status ${dcap.tcbStatus.rawValue} is not accepted")
+            }
+        }
 
         /** Verifies the three TLS-attestation bindings. Pure — no network. */
         fun verifyBindings(quoteHex: String, signingAddress: String, signingAlgo: String, tlsCertFingerprintHex: String, liveCertDer: ByteArray, nonceHex: String): TlsAttestation {

@@ -100,6 +100,8 @@ fun IosSheet(
      * is not visible above a large sheet on the tag); the presenter reads this to do the same.
      */
     lift: MutableFloatState? = null,
+    /** Names this sheet's settles in a system trace (NavTrace): `<traceLabel>:open`, `:close` or `:detent`. */
+    traceLabel: String = "sheet",
     content: @Composable () -> Unit,
 ) {
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -138,8 +140,11 @@ fun IosSheet(
             val toward = (target - motion.y) * velocity > 0
             val cap = sqrt(SHEET_STIFFNESS) * abs(target - motion.y)
             val v0 = if (toward) velocity.coerceIn(-cap, cap) else velocity
+            val label = traceLabel + when { target >= hiddenPx -> ":close"; motion.y >= hiddenPx -> ":open"; else -> ":detent" }
             motion.job = scope.launch {
-                animate(motion.y, target, v0, settleSpec) { v, _ -> motion.y = v.coerceIn(anchors.first(), hiddenPx) }
+                val cookie = NavTrace.begin(label)
+                try { animate(motion.y, target, v0, settleSpec) { v, _ -> motion.y = v.coerceIn(anchors.first(), hiddenPx) } }
+                finally { NavTrace.end(label, cookie) }
                 then()
             }
         }

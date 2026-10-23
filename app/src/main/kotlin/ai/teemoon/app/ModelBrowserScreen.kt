@@ -1,4 +1,4 @@
-// ports: teemoon/Views/Settings/ModelBrowserView.swift @ v1.0.4 (the browser; the equipped marking d7a30c9 added and
+// ports: teemoon/Views/Settings/ModelBrowserView.swift @ v1.0.5 (the browser; the equipped marking d7a30c9 added and
 //        bf7a86e removed is not here), teemoon/Views/Settings/ModelDetailView.swift @ v1.0.4 (+ the providers section @ 835d7c8),
 //        teemoon/Presentation/ModelBrowserQuery.swift @ v1.0.4 — REBUILD in Compose (one screen: the search field
 //        is always there; a large catalogue simply starts empty until the live list lands)

@@ -1,5 +1,5 @@
-// ports: teemoon/Confidential/DCAPVerifier.swift @ v1.0.1 (DCAPVerification, DCAPTcbStatus — value types only)
-//        teemoon/Confidential/DCAPService.swift @ v1.0.1 (RecordDCAPVerification and its rollups; the
+// ports: teemoon/Confidential/DCAPVerifier.swift @ 9722921 (DCAPVerification, DCAPTcbStatus — value types only)
+//        teemoon/Confidential/DCAPService.swift @ 9722921 (RecordDCAPVerification and its rollups; the
 //        service that runs dcap-qvl over a record is DcapService.kt)
 package ai.teemoon.confidential
 
@@ -11,18 +11,18 @@ sealed interface DcapVerification {
 
     val isVerified: Boolean get() = this is Verified
 
-    /** Hard failure = quote didn't verify (incl. no collateral) or TCB revoked. */
+    /** Hard failure = quote didn't verify (incl. no collateral) or TCB outside the allow-list. */
     val isHardFailure: Boolean
         get() = when (this) {
-            is Verified -> tcbStatus == DcapTcbStatus.REVOKED
+            is Verified -> !tcbStatus.isAccepted
             is Failed -> true
         }
 }
 
 /**
- * Intel TCB status, mapped from dcap-qvl. [UP_TO_DATE] is ideal; out-of-date
- * variants mean the hardware is genuine but behind on patches (degrade, don't
- * reject — matching near.ai's own verifier); [REVOKED] fails.
+ * Intel TCB status, mapped from dcap-qvl. Only [UP_TO_DATE] and [OUT_OF_DATE] are
+ * accepted ([isAccepted]); `OutOfDateConfigurationNeeded` maps to
+ * [CONFIGURATION_NEEDED] and fails with the rest.
  */
 enum class DcapTcbStatus(val rawValue: String) {
     UP_TO_DATE("upToDate"),
@@ -33,6 +33,9 @@ enum class DcapTcbStatus(val rawValue: String) {
 
     /** Whether this status should count as fully trusted (green) vs. degraded. */
     val isFullyTrusted: Boolean get() = this == UP_TO_DATE
+
+    /** The SDK's default allow-list. Anything else fails the quote. */
+    val isAccepted: Boolean get() = this == UP_TO_DATE || this == OUT_OF_DATE
 
     companion object {
         fun fromRaw(rawStatus: String): DcapTcbStatus {
@@ -52,11 +55,10 @@ enum class DcapTcbStatus(val rawValue: String) {
  * DCAP outcomes for each quote present in an attestation record.
  * null per slot = that quote wasn't in the record.
  *
- * TCB policy: a quote that fails DCAP or has revoked TCB is a hard failure
- * (degrades the session, fail-closed — including when collateral is
- * unreachable). Out-of-date TCB means genuine hardware behind on Intel
- * platform updates: near.ai's own verifier treats it as non-fatal but
- * flagged, and the sheet surfaces it the same way.
+ * TCB policy (near.ai inference-sdk's default allow-list): UpToDate and
+ * OutOfDate pass; every other status, and a quote that fails DCAP or whose
+ * collateral is unreachable, is a hard failure. OutOfDate is genuine
+ * hardware behind on Intel updates and is flagged in the sheet.
  */
 data class RecordDcapVerification(
     val gateway: DcapVerification? = null,
@@ -67,7 +69,7 @@ data class RecordDcapVerification(
 
     /**
      * True when any present quote hard-fails DCAP — verification failure
-     * (incl. unavailable collateral) or revoked TCB. Out-of-date is not hard.
+     * (incl. unavailable collateral) or a TCB status outside the allow-list.
      */
     val hasHardFailure: Boolean get() = present.any { it.isHardFailure }
 
@@ -97,7 +99,11 @@ data class RecordDcapVerification(
             for ((label, outcome) in listOf("gateway" to gateway, "model" to model, "gpu" to gpu)) {
                 when (outcome) {
                     is DcapVerification.Failed -> return "$label quote — ${outcome.reason}"
-                    is DcapVerification.Verified -> if (outcome.tcbStatus == DcapTcbStatus.REVOKED) return "$label quote — TCB revoked by Intel"
+                    is DcapVerification.Verified -> when {
+                        outcome.tcbStatus == DcapTcbStatus.REVOKED -> return "$label quote — TCB revoked by Intel"
+                        !outcome.tcbStatus.isAccepted ->
+                            return "$label quote — TCB status ${outcome.tcbStatus.rawValue} is not accepted (only up to date or out of date)"
+                    }
                     null -> Unit
                 }
             }

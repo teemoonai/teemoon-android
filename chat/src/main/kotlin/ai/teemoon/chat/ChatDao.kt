@@ -52,6 +52,20 @@ interface ChatDao {
     @Query("DELETE FROM messages WHERE threadId = :threadId AND timestamp >= :sinceMs")
     suspend fun deleteMessagesSince(threadId: String, sinceMs: Long)
 
+    @Query("DELETE FROM messages WHERE id IN (:ids)")
+    suspend fun deleteMessages(ids: List<String>)
+
+    @Query("UPDATE messages SET timestamp = :timestamp WHERE id = :id")
+    suspend fun setTimestamp(id: String, timestamp: Long)
+
+    /** Think Harder's new reply lands (iOS ReplySupersession .replace): the old one goes, in the same save. */
+    @Transaction
+    suspend fun supersede(oldIds: List<String>, questionId: String, askedAt: Long, reply: MessageEntity) {
+        deleteMessages(oldIds)
+        setTimestamp(questionId, askedAt)
+        upsertMessage(reply)
+    }
+
     // MARK: chat search (ChatSearchReconciler's two fetches — identity first, then content for the missing rows only)
 
     /** Each thread's latest assistant reply — the list row's preview line (iOS ChatRowView.preview). */

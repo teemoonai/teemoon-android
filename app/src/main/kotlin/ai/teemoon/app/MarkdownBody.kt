@@ -55,7 +55,26 @@ fun MarkdownBody(markdown: String, streaming: Boolean) {
     // at 0pt for a frame — the list re-anchored to the top, the anchor geometry re-sized its slack, and the follow
     // chased its own tail (traced 2026-09-07 on the AVD: `first` bouncing 0 ↔ 3 every chunk). Parse synchronously,
     // in composition, so the row's first measure is its real height.
-    val parsed = remember(text) { com.mikepenz.markdown.model.parseMarkdown(content = text) }
+    //
+    // ONE PARSE, BUT NOT ONE REPAINT. Every partial re-parses the whole reply (cheap: ~0.3 ms for 6,000 characters on
+    // the JVM), but the renderer's own body handed every top-level block a NEW node from that parse, and the state's new
+    // reference-link handler re-provided a composition local every text block reads — so each partial recomposed every
+    // heading, list, table and code block above the one being typed. Measured with StreamingReplyBenchmark on the AVD
+    // (2026-10-19): main-thread recompose grew linearly with the reply, 1.3 ms a frame at its start to 2.7 ms at 6,000
+    // characters. [MarkdownBlocks] hands a block whose text is unchanged its previous node, and one handler serves the
+    // message, so only the block in the tail recomposes. Same AST, same layout: the body below is the renderer's own
+    // (a top-aligned Column of MarkdownElement per top-level child), pinned by MarkdownStreamingSnapshotTest.
+    val blocks = remember { MarkdownBlocks() }
+    val parsed = remember(text) { com.mikepenz.markdown.model.parseMarkdown(content = text, referenceLinkHandler = blocks.handlerFor(text)) }
+    val components = remember {
+        markdownComponents(
+            image = { model ->
+                // Alt text only. The renderer would otherwise resolve the url; the guard above is why it never does.
+                Text(MarkdownImageAlt.altText(model.content.substring(model.node.startOffset, model.node.endOffset)),
+                    style = MaterialTheme.typography.bodySmall, color = TeemoonColors.secondaryLabel)
+            })
+    }
+    val imageTransformer = remember { NoOpImageTransformerImpl() }
     Column {
         Markdown(
             state = parsed,
@@ -70,19 +89,62 @@ fun MarkdownBody(markdown: String, streaming: Boolean) {
             ),
             dimens = com.mikepenz.markdown.model.markdownDimens(codeBackgroundCornerSize = 4.dp),
             padding = com.mikepenz.markdown.model.markdownPadding(codeBlock = PaddingValues(start = 14.dp, end = 14.dp, top = 8.dp, bottom = 8.dp)),
-            imageTransformer = NoOpImageTransformerImpl(),
+            imageTransformer = imageTransformer,
             // NO SIZE ANIMATION ON THE TEXT. The renderer's default wraps every text block in animateContentSize, so
             // a streamed word grew its paragraph's width and height over ~300 ms — several lines "typing" left to right
             // at once, the whole block clipped to the animating bounds (the user saw it on 2026-09-09). iOS paints the
             // paced text plainly; the only motion in a streaming reply is the tail growing and the follow.
             animations = com.mikepenz.markdown.model.markdownAnimations(animateTextSize = { this }),
-            components = markdownComponents(
-                image = { model ->
-                // Alt text only. The renderer would otherwise resolve the url; the guard above is why it never does.
-                Text(MarkdownImageAlt.altText(model.content.substring(model.node.startOffset, model.node.endOffset)),
-                    style = MaterialTheme.typography.bodySmall, color = TeemoonColors.secondaryLabel)
-            }),
+            components = components,
+            success = { state, comps, modifier ->
+                Column(modifier) { for (block in blocks.resolve(state)) MarkdownBlock(block, comps) }
+            },
         )
+    }
+}
+
+/** One top-level block: skipped while [block] is the same instance — its text unchanged since the last partial. */
+@Composable
+private fun MarkdownBlock(block: MarkdownBlocks.Block, components: com.mikepenz.markdown.compose.components.MarkdownComponents) =
+    com.mikepenz.markdown.compose.MarkdownElement(block.node, components, block.content)
+
+/**
+ * The top-level blocks of a streamed reply's successive parses, with a block's PREVIOUS node kept while its text is
+ * unchanged. A top-level block's subtree is a function of its own text, so a block at the same index, of the same
+ * type, over the same characters is the same block. Except for reference links: `[x]` resolves against a definition
+ * anywhere in the reply, through the handler — so a reply that defines one gets a fresh handler and fresh blocks on
+ * every parse, exactly as before.
+ */
+class MarkdownBlocks {
+    /** Identity equality on purpose: the same instance is what lets [MarkdownBlock] skip. */
+    @androidx.compose.runtime.Stable
+    class Block(val node: org.intellij.markdown.ast.ASTNode, val content: String)
+
+    private var previous: List<Block> = emptyList()
+    private var reuse = true
+    private val handler = com.mikepenz.markdown.model.ReferenceLinkHandlerImpl()
+
+    /** The handler for parsing [text]: one per message, unless [text] defines a reference link. */
+    fun handlerFor(text: String): com.mikepenz.markdown.model.ReferenceLinkHandler {
+        reuse = !LINK_DEFINITION.containsMatchIn(text)
+        return if (reuse) handler else com.mikepenz.markdown.model.ReferenceLinkHandlerImpl()
+    }
+
+    fun resolve(state: com.mikepenz.markdown.model.State.Success): List<Block> {
+        val content = state.content
+        val next = state.node.children.mapIndexed { i, node ->
+            val old = previous.getOrNull(i)
+            val length = node.endOffset - node.startOffset
+            if (reuse && old != null && old.node.type == node.type && old.node.endOffset - old.node.startOffset == length &&
+                content.regionMatches(node.startOffset, old.content, old.node.startOffset, length)) old else Block(node, content)
+        }
+        previous = next
+        return next
+    }
+
+    companion object {
+        /** A link reference definition line (`[label]: destination`), up to three spaces in. */
+        val LINK_DEFINITION = Regex("""(?m)^ {0,3}\[[^\]]+\]:""")
     }
 }
 

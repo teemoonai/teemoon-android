@@ -49,7 +49,7 @@ class ChatViewModelTest {
     }
     private val place = Provider.braveAnswers.copy(endpoint = "https://api.example.com/v1")
 
-    private fun vm(transport: GenerationTransport) = ChatViewModel(provider = { place }, credential = { "sk-test" }, makeTransport = { _, _, _, _ -> transport })
+    private fun vm(transport: GenerationTransport) = ChatViewModel(provider = { place }, credential = { "sk-test" }, makeTransport = { _, _, _, _, _, _ -> transport })
 
     /**
      * The sources a reply keeps are what it CITES (iOS ChatViewModel: GroundingSource.citedOrAll) — its markdown
@@ -58,7 +58,7 @@ class ChatViewModelTest {
      */
     @Test fun aReplyKeepsTheSourcesItCites() = runTest(dispatcher) {
         val vm = ChatViewModel(provider = { Provider.fireworks }, credential = { "sk-test" },
-            makeTransport = { _, _, _, _ -> Scripted(listOf(TurnResult(content = "See [the chart](https://example.org/chart) for more."))) })
+            makeTransport = { _, _, _, _, _, _ -> Scripted(listOf(TurnResult(content = "See [the chart](https://example.org/chart) for more."))) })
         vm.send("a link please"); advanceUntilIdle()
         val sources = vm.state.value.messages.last().sources
         assertEquals("the cited link is not the reply's source: $sources", listOf("https://example.org/chart"), sources.map { it.url })
@@ -166,7 +166,7 @@ class ChatViewModelTest {
 
     @Test fun hostedProvidersGetTheFullToolRoundBudget() = runTest(dispatcher) {
         val transport = ToolLooper(answerAfter = 99)
-        val vm = ChatViewModel(provider = { place }, credential = { "sk-test" }, groundingKey = { "brave-key" }, makeTransport = { _, _, _, _ -> transport })
+        val vm = ChatViewModel(provider = { place }, credential = { "sk-test" }, groundingKey = { "brave-key" }, makeTransport = { _, _, _, _, _, _ -> transport })
         vm.send("what is the oil price"); advanceUntilIdle()
         assertEquals("a hosted place gets iOS's 4 rounds, not the on-device 2",
             ToolRoundPolicy.DEFAULT_MAX_ROUNDS, transport.turns - 1)
@@ -175,7 +175,7 @@ class ChatViewModelTest {
     @Test fun onDeviceKeepsTheNarrowerBudget() = runTest(dispatcher) {
         val transport = ToolLooper(answerAfter = 99)
         val local = Provider.braveAnswers.copy(endpoint = "https://api.example.com/v1", localModelID = "gemma-3n-e2b")
-        val vm = ChatViewModel(provider = { local }, credential = { "sk-test" }, groundingKey = { "brave-key" }, makeTransport = { _, _, _, _ -> transport })
+        val vm = ChatViewModel(provider = { local }, credential = { "sk-test" }, groundingKey = { "brave-key" }, makeTransport = { _, _, _, _, _, _ -> transport })
         vm.send("what is the oil price"); advanceUntilIdle()
         assertEquals("each extra round on the phone is a re-prefill plus a serial decode", 2, transport.turns - 1)
     }
@@ -191,7 +191,7 @@ class ChatViewModelTest {
                 toolsPerCall += tools.size; onPartial("ok"); return TurnResult(content = "ok")
             }
         }
-        val vm = ChatViewModel(provider = { Provider.fireworks }, credential = { "sk-test" }, groundingKey = { null }, makeTransport = { _, _, _, _ -> transport })
+        val vm = ChatViewModel(provider = { Provider.fireworks }, credential = { "sk-test" }, groundingKey = { null }, makeTransport = { _, _, _, _, _, _ -> transport })
         vm.send("what is the weather"); advanceUntilIdle()
         vm.disableWebSearchAndRetry(); advanceUntilIdle()
         assertEquals("the first turn should carry the keyless tool, the retry none", listOf(1, 0), toolsPerCall)
@@ -203,10 +203,13 @@ class ChatViewModelTest {
             override suspend fun runTurn(messages: List<Map<String, Any>>, includeTools: Boolean, tools: List<Tool>, onPartial: (String) -> Unit): TurnResult { seen = messages; onPartial("ok"); return TurnResult(content = "ok") }
         }
         // Brave Answers omits the system prompt by preset; Fireworks does not.
-        val vm = ChatViewModel(provider = { Provider.fireworks }, systemPrompt = { "be brief {{datetime}}" }, makeTransport = { _, _, _, _ -> transport })
+        val vm = ChatViewModel(provider = { Provider.fireworks }, systemPrompt = { "be brief {{datetime}}" }, makeTransport = { _, _, _, _, _, _ -> transport })
         vm.send("hello"); advanceUntilIdle()
         assertEquals("system", seen!!.first()["role"]); assertTrue(!(seen.first()["content"] as String).contains("{{"))
-        assertEquals("hello", seen.last()["content"])
+        // The question's own time rides on the wire (iOS 0802a0f); the stored message is what was typed.
+        val sent = seen.last()["content"] as String
+        assertTrue(sent, sent.startsWith("hello\n\n[Sent at ") && sent.endsWith("]"))
+        assertEquals("hello", vm.state.value.messages.first { it.role == "user" }.text)
     }
 
     /** The gate re-read after `prepareTurn`: a hard block never proceeds; a soft degrade proceeds only if the user already chose "send anyway"; a verdict still pending is not a pass. */
@@ -234,7 +237,7 @@ class ChatViewModelTest {
         session.verifyTls(near)
         assertEquals("precondition: the composer's read", TrustSendPolicy.ALLOW, session.sendPolicy)
         val transport = Scripted(listOf(TurnResult(content = "must not be asked")))
-        val vm = ChatViewModel(provider = { near }, credential = { "sk-test" }, session = session, makeTransport = { _, _, _, _ -> transport })
+        val vm = ChatViewModel(provider = { near }, credential = { "sk-test" }, session = session, makeTransport = { _, _, _, _, _, _ -> transport })
         vm.send("hello"); advanceUntilIdle()
         assertEquals("nothing reached the wire", 0, transport.calls)
         assertEquals(postPrepareRefusal(TrustSendPolicy.BLOCK, false, false), vm.state.value.error)
@@ -252,7 +255,7 @@ class ChatViewModelTest {
         session.verifyTls(active)
         active = Provider.nvidia.copy(endpoint = "https://api.example.com/v1")
         val transport = Scripted(listOf(TurnResult(content = "hi from nvidia")))
-        val vm = ChatViewModel(provider = { active }, credential = { "sk-test" }, session = session, makeTransport = { _, _, _, _ -> transport })
+        val vm = ChatViewModel(provider = { active }, credential = { "sk-test" }, session = session, makeTransport = { _, _, _, _, _, _ -> transport })
         vm.send("hello"); advanceUntilIdle()
         assertEquals(1, transport.calls)
         assertNull(vm.state.value.error)
@@ -270,7 +273,7 @@ class ChatViewModelTest {
         val endpoints = mutableListOf<String>()
         val transport = Scripted(listOf(TurnResult(content = "an answer")))
         val vm = ChatViewModel(provider = { current }, credential = { "sk-test" }, groundingKey = { "brave-key" },
-            makeTransport = { endpoint, _, _, _ -> endpoints += endpoint; transport })
+            makeTransport = { endpoint, _, _, _, _, _ -> endpoints += endpoint; transport })
         vm.send("a question"); advanceUntilIdle()
         assertEquals(1, transport.calls)
         current = null
@@ -290,7 +293,7 @@ class ChatViewModelTest {
     @Test fun aRetryWithNoPlaceKeepsTheQuestionAndAsksForOne() = runTest(dispatcher) {
         var current: Provider? = Provider.fireworks
         val transport = Scripted(listOf(TurnResult(content = "an answer")))
-        val vm = ChatViewModel(provider = { current }, credential = { "sk-test" }, groundingKey = { "brave-key" }, makeTransport = { _, _, _, _ -> transport })
+        val vm = ChatViewModel(provider = { current }, credential = { "sk-test" }, groundingKey = { "brave-key" }, makeTransport = { _, _, _, _, _, _ -> transport })
         vm.send("a question"); advanceUntilIdle()
         val before = vm.state.value.messages.map { it.role to it.text }
         current = null

@@ -77,7 +77,7 @@ class ApiErrorMessageTest {
         assertEquals("x server error (HTTP 503). The service may be temporarily unavailable.", LlmError.apiErrorMessage("<html>", 503, "x"))
     }
 
-    // LLMErrorTests @ v1.0.4 — the problem-details body.
+    // LLMErrorTests @ v1.0.5 — the problem-details body.
 
     /** NVIDIA lists models its chat endpoint no longer serves; the 404 is the model, not the URL — and the ids stay out. */
     @Test fun nvidiaUnservedModel404NamesTheModelNotTheURL() {

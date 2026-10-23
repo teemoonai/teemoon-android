@@ -37,6 +37,8 @@ androidxTestRunner = "1.7.0"
 dcapQvl = "0.5.2"   # coordinated pin with iOS dcap-qvl-swift 0.5.2 (S1)
 kotlinxCoroutinesTest = "1.11.0"
 paparazzi = "2.0.0-alpha05"
+# :macrobenchmark and the Baseline Profile plugin move together (one androidx.benchmark release train).
+benchmark = "1.5.0"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
@@ -75,6 +77,14 @@ compose-ui-test-junit4 = { module = "androidx.compose.ui:ui-test-junit4" }
 androidx-test-espresso-core = { module = "androidx.test.espresso:espresso-core", version = "3.7.0" }
 compose-ui-test-manifest = { module = "androidx.compose.ui:ui-test-manifest" }
 dcap-qvl-android = { module = "com.phala:dcap-qvl-android", version.ref = "dcapQvl" }
+# AndroidX (allowlist: Compose/AndroidX). Frame timing for DebugDiagnostics; every call is behind BuildConfig.DEBUG,
+# so a release build never creates a JankStats.
+# :macrobenchmark only (test APK, never in the app): AndroidX, under the "Compose/AndroidX" allowlist entry.
+androidx-benchmark-macro-junit4 = { module = "androidx.benchmark:benchmark-macro-junit4", version.ref = "benchmark" }
+androidx-test-uiautomator = { module = "androidx.test.uiautomator:uiautomator", version = "2.3.0" }
+# Installs the Baseline Profile on devices without Play's cloud profiles (sideloads, the GitHub APK). AndroidX.
+androidx-profileinstaller = { module = "androidx.profileinstaller:profileinstaller", version = "1.4.1" }
+androidx-metrics-performance = { module = "androidx.metrics:metrics-performance", version = "1.0.0" }
 
 # S2 resolved 2026-09-03 at 0.16.1; 2026-10-14 0.18.0, which pins LiteRT ~2.3.0 — the vendored libLiteRt and NPU dispatchers
 # (ondevice/src/main/jniLibs) move with it: 2.3.0 added `get_hooks` to LiteRtDispatchInterface, so a 2.2.0 dispatcher does not fit.
@@ -84,6 +94,7 @@ litertlm-android = { module = "com.google.ai.edge.litertlm:litertlm-android", ve
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }
 android-library = { id = "com.android.library", version.ref = "agp" }
+android-test = { id = "com.android.test", version.ref = "agp" }
 kotlin-android = { id = "org.jetbrains.kotlin.android", version.ref = "kotlin" }
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
@@ -92,3 +103,4 @@ kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", versi
 kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
 paparazzi = { id = "app.cash.paparazzi", version.ref = "paparazzi" }
 ksp = { id = "com.google.devtools.ksp", version.ref = "ksp" }
+androidx-baselineprofile = { id = "androidx.baselineprofile", version.ref = "benchmark" }

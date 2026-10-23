@@ -173,7 +173,7 @@ fun ChatsSettingsScreen(settings: AppSettings, onDeleteAllChats: () -> Unit, onB
     var confirm by remember { mutableStateOf(false) }
     Section("system prompt")
     Group { InsetField(prompt, { prompt = it; settings.systemPrompt = it }, "system prompt", singleLine = false, minLines = 4) }
-    Footer("use {{datetime}} to insert the current date and time.")
+    Footer("{{date}} is replaced with today's date. The current time is added to each message you send.")
     Gap()
     ToggleRow("haptics", haptics, onSet = { haptics = it; settings.shouldPlayHaptics = it })
     Gap()

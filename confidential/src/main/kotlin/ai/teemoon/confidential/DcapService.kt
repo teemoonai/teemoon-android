@@ -1,5 +1,5 @@
-// ports: teemoon/Confidential/DCAPVerifier.swift @ v1.0.1 (DCAPVerifier; the value types are in DcapVerification.kt)
-//        teemoon/Confidential/DCAPService.swift @ v1.0.1 (DCAPService)
+// ports: teemoon/Confidential/DCAPVerifier.swift @ 9722921 (DCAPVerifier; the value types are in DcapVerification.kt)
+//        teemoon/Confidential/DCAPService.swift @ 9722921 (DCAPService)
 //
 // Real Intel TDX quote verification via Phala's dcap-qvl (the exact library
 // near.ai's own verifier uses), through the vendored Android binding. This
@@ -62,7 +62,8 @@ class DcapVerifier(
  * gateway, model TEE, and direct GPU node. This is the authoritative quote
  * verdict; if the hand-rolled parser's MRCONFIGID/report_data ever disagrees
  * with dcap-qvl's, the quote is treated as failed and the disagreement logged
- * loudly. Out-of-date TCB is flagged, not hard; failed or revoked is hard.
+ * loudly. Out-of-date TCB is flagged, not hard; failed, or any TCB
+ * status outside the allow-list (UpToDate, OutOfDate), is hard.
  */
 class DcapService(collateral: CollateralProvider, engine: DcapQvlEngine = AndroidDcapQvl, private val log: (String) -> Unit = {}) {
     private val verifier = DcapVerifier(collateral, engine, log)

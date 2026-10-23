@@ -57,6 +57,8 @@ class ChatSearchIndexException(val operation: String, message: String) : Excepti
 interface ChatSearchIndexing {
     suspend fun index(records: List<ChatMessageRecord>)
     suspend fun remove(messageIDs: List<String>)
+    /** Rows whose messages are gone from the store (reconcile): removed, and their text scrubbed from the files. */
+    suspend fun removeDeleted(messageIDs: List<String>) = remove(messageIDs)
     suspend fun removeThread(threadID: String)
     suspend fun removeAll()
     suspend fun indexedMessageIDs(): Set<String>

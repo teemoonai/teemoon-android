@@ -1,7 +1,7 @@
 // ports: teemoon/Providers/Adapters/FireworksAdapter.swift @ v1.0.4 (buildModels, listModels,
 //        control-plane paging, generic-probe fallback)
-// ports: teemoon/Providers/Provider+Presets.swift @ v1.0.4 (fireworksPrices — iOS 1.0.4's table, kit 0.5.0; ember-1 and
-//        deepseek-v4p1-flash's rate from the pricing page, 2026-10-02, ahead of iOS — tools/fireworks_prices.py)
+// ports: teemoon/Providers/Provider+Presets.swift @ cddc5e6 (fireworksPrices — iOS release-1.0.6's table: 54617ce's
+//        serverless refresh, cddc5e6's 1.0.6 prices)
 package ai.teemoon.providers
 
 import kotlinx.serialization.Serializable
@@ -212,21 +212,19 @@ object FireworksAdapter {
         return runCatching { Instant.parse(s).toEpochMilli() }.getOrNull()
     }
 
+    // Seven rows left serverless 2026-10-15 and are not here (iOS 54617ce): deepseek-v4-flash-0731,
+    // deepseek-v4-flash-vision-exp, deepseek-v4-pro-0813, glm-5p2, kimi-k2p6, kimi-k2p7-code, muse-glimmer-30b. A model
+    // with no row lists blank rather than borrowing a twin's number.
     val fireworksPrices = mapOf(
         "accounts/fireworks/models/kimi-k3" to "$3.00/$15.00",
         "accounts/fireworks/models/ember-1" to "$3.00/$15.00",   // live and priced on the page since iOS's table was cut (2026-10-02)
-        "accounts/fireworks/models/kimi-k2p7-code" to "$0.95/$4.00",
-        "accounts/fireworks/models/kimi-k2p6" to "$0.95/$4.00",
         "accounts/fireworks/models/inkling" to "$1.00/$4.05",
         "accounts/fireworks/models/deepseek-v4p1-flash" to "$0.30/$1.20",   // docs.fireworks.ai/serverless/pricing, 2026-10-02 (was $0.22/$0.66)
-        "accounts/fireworks/models/deepseek-v4-flash-0731" to "$0.22/$0.66",
-        "accounts/fireworks/models/deepseek-v4-flash-vision-exp" to "$0.22/$0.66",
-        "accounts/fireworks/models/deepseek-v4-pro-0813" to "$1.32/$3.96",
+        "accounts/fireworks/models/deepseek-v4p1-flash-1017" to "$0.30/$1.20",   // iOS cddc5e6 (1.0.6 price refresh)
+        "accounts/fireworks/models/muse-spark-open" to "$1.25/$4.25",            // iOS cddc5e6
         "accounts/fireworks/models/glm-5p3" to "$1.40/$4.40",
         "accounts/fireworks/models/glm-5p3-flash" to "$0.15/$0.50",
-        "accounts/fireworks/models/glm-5p2" to "$1.40/$4.40",
         "accounts/fireworks/models/qwen3p8-max" to "$2.00/$6.00",
-        "accounts/fireworks/models/muse-glimmer-30b" to "$0.35/$1.50",
         "accounts/fireworks/models/minimax-m3" to "$0.30/$1.20",
         "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b" to "$0.05/$0.20",
         "accounts/fireworks/models/nemotron-3-ultra-nvfp4" to "$0.60/$2.40",

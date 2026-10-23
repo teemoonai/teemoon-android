@@ -96,6 +96,25 @@ class ChatSearchIndex(
             CREATE INDEX IF NOT EXISTS docs_thread ON docs(thread_id)
         """.trimIndent(), "create schema")
         runCatching { db.exec("PRAGMA user_version = $SCHEMA_VERSION") }
+        // DELETED TEXT MUST NOT STAY READABLE (the maintainer, 2026-10-19: "yes residue fix"). This file is a full plaintext copy of
+        // every message. secure_delete zeroes the pages a delete frees (per connection, so on every open); FTS5's own
+        // 'secure-delete' option removes a deleted row's terms from the index segments at once instead of at the next
+        // merge (SQLite 3.42+; where it is refused, a delete falls back to 'optimize' — see [scrub]).
+        runCatching { db.exec("PRAGMA secure_delete = ON") }
+        ftsSecureDelete = runCatching { db.exec("INSERT INTO messages(messages, rank) VALUES('secure-delete', 1)") }.isSuccess
+    }
+
+    private var ftsSecureDelete = false
+
+    /**
+     * After a chat (or every chat) is deleted: the WAL still holds the pages as they were before the delete, so it is
+     * checkpointed into the zeroed file and truncated; after delete all the file is VACUUMed down. Without FTS5's
+     * secure-delete the segments are merged ('optimize') first, which is what drops the deleted terms there.
+     */
+    private fun scrub(db: SearchSqlDatabase, all: Boolean) {
+        if (!ftsSecureDelete || all) runCatching { db.exec("INSERT INTO messages(messages) VALUES('optimize')") }
+        runCatching { db.query("PRAGMA wal_checkpoint(TRUNCATE)") { it.long(0) } }
+        if (all) { runCatching { db.exec("VACUUM") }; runCatching { db.query("PRAGMA wal_checkpoint(TRUNCATE)") { it.long(0) } } }
     }
 
     private suspend fun <T> locked(block: (SearchSqlDatabase) -> T): T = withContext(Dispatchers.IO) { lock.withLock { block(handle()) } }
@@ -150,10 +169,30 @@ class ChatSearchIndex(
     override suspend fun removeThread(threadID: String) {
         val ids = locked { db -> db.query("SELECT message_id FROM docs WHERE thread_id = ?", listOf(threadID)) { it.string(0) }.filterNotNull() }
         remove(ids)
+        locked { db -> scrub(db, all = false) }
+    }
+
+    /**
+     * Reconcile's removal: these messages were deleted while the hooks could not run — the app was killed between the
+     * store's delete and the queued index removal (iOS e871b7a's window). Removing the rows is not enough: their text
+     * stays in the WAL until a checkpoint (DeletedTextResidueTest.aChatDeletedJustBeforeAKillStaysDeletedAndUnreadable).
+     */
+    override suspend fun removeDeleted(messageIDs: List<String>) {
+        if (messageIDs.isEmpty()) return
+        remove(messageIDs)
+        locked { db -> scrub(db, all = false) }
     }
 
     /** Empties the index. "delete all chats" must reach this, or it leaves a searchable plaintext copy of every one. */
-    override suspend fun removeAll() { locked { db -> exec(db, "DELETE FROM messages; DELETE FROM docs", "remove all") } }
+    override suspend fun removeAll() {
+        locked { db ->
+            // DROP, not DELETE: with FTS5's secure-delete a row-by-row delete of a big index rewrites the segments per
+            // row (18.8 s for 50k messages on the AVD); dropping frees every page at once, zeroed by secure_delete.
+            exec(db, "DROP TABLE IF EXISTS messages; DROP TABLE IF EXISTS docs", "remove all")
+            createSchema(db)
+            scrub(db, all = true)
+        }
+    }
 
     // MARK: Reads
 

@@ -2,24 +2,17 @@
 package ai.teemoon.app
 
 import ai.teemoon.inference.ToolCallDebugFormat
-import java.util.Locale
 
 object RequestDebugText {
-    private fun Double.debugFormatted() = String.format(Locale.US, "%.1fs", this)
 
     /** The developer card as copied: timings, the redacted URL and headers, the request body, each tool round, the response. */
     fun debugText(info: LastRequestDebugInfo): String {
         val parts = ArrayList<String>()
         parts += "=== ${info.providerName}${if (info.modelID.isEmpty()) "" else " ${info.modelID}"} Debug ==="
-        val timing = listOfNotNull(
-            info.totalDuration?.debugFormatted(),
-            info.timeToFirstToken?.let { "ttft ${it.debugFormatted()}" },
-            info.thinkingTime?.let { "think ${it.debugFormatted()}" },
-            info.generationTime?.let { "gen ${it.debugFormatted()}" },
-            info.outputTokens?.let { "${it}tok" },
-            info.firstLineTokensPerSecond?.let { String.format(Locale.US, "%.0ftok/s", it) })
         info.localStatsLine?.let { parts += it }
-        if (timing.isNotEmpty()) parts += timing.joinToString(" · ")
+        info.timingLine?.let { parts += it }
+        info.phasesLine?.let { parts += "phases $it" }
+        info.effortLevel?.let { parts += it }   // "effort high" / "thinking on", the card's words (iOS 7cd8c10)
         info.url?.let { parts += "\n--- URL ---\n${DebugHeaderRedaction.copyURLString(it)}" }
         info.requestHeaders?.takeIf { it.isNotEmpty() }?.let { parts += "\n--- Headers ---\n${DebugHeaderRedaction.copyHeaderBlock(it)}" }
         info.requestBodyJson?.let { parts += "\n--- Request Body ---\n${if (info.isE2EEActive) ToolCallDebugFormat.compactRequestBody(it) else it}" }

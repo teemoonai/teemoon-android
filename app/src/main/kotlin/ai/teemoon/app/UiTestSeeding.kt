@@ -3,7 +3,7 @@ package ai.teemoon.app
 import kotlinx.coroutines.flow.first
 
 // ports: teemoon/App/ContentView.swift (the `--uitesting` seeding task, seededCloudProvider) @ v1.0.1
-// ports: teemoon/App/UITestHostSecrets.swift @ v1.0.4 (the OpenRouter and NVIDIA key files and presets)
+// ports: teemoon/App/UITestHostSecrets.swift @ v1.0.5 (the OpenRouter and NVIDIA key files and presets)
 //        teemoon/App/UITestHostSecrets.swift (hostKeyFileNames, keyFromHostFile) @ v1.0.1
 
 import ai.teemoon.providers.AddEditProviderModel
@@ -46,6 +46,11 @@ object UiTestSeeding {
      * neither the file nor the script's shell, so it cannot name the token.
      */
     fun consumeArm(context: android.content.Context, intent: android.content.Intent?): Boolean {
+        // The benchmark build types (`benchmark`, and the Baseline Profile plugin's `nonMinifiedRelease` /
+        // `benchmarkRelease`) are NOT debuggable — a debuggable build measures nothing — so neither arm below exists
+        // for them: no runner in the process, no `run-as`. The build type is the arm. Those builds install under their
+        // own id (ai.teemoon.benchmark), are never shipped, and hold only seeded data; every shipped build reads false.
+        if (BuildConfig.BENCHMARK_SEEDING) return true
         if ((context.applicationInfo.flags and android.content.pm.ApplicationInfo.FLAG_DEBUGGABLE) == 0) return false
         if (instrumentationArmed) return true
         val marker = java.io.File(context.filesDir, ARM_FILE).takeIf { it.isFile } ?: return false
@@ -65,6 +70,8 @@ object UiTestSeeding {
     const val EXTRA_LOCAL_MODEL = "seed_local_model"
     /** The seeded local setup's NAME (default "local"): the error card finds a vendor console by the source's name, so the recovery journeys name the fake server after a preset. */
     const val EXTRA_LOCAL_NAME = "seed_local_name"
+    /** `ollama`: the seeded server is stored as an Ollama box, so Think Harder is offered on it (ReasoningControl, iOS 7cd8c10). */
+    const val EXTRA_LOCAL_KIND = "seed_local_kind"
     /** Live runs: the FIRST preset's model (iOS UITEST_SEED_MODEL) — a cheap one, so a live suite costs cents. */
     const val EXTRA_PRESET_MODEL = "seed_preset_model"
     /** B9: the seeded home server answers one question at a time (`maxMessages`), as Brave Answers' preset does. */
@@ -82,6 +89,10 @@ object UiTestSeeding {
     const val EXTRA_LONG_THREAD = "seed_long_thread"
     /** `UITEST_SEED_THREADS=1`: the four design fixtures — a populated list and a real exchange, for captures and step goldens. */
     const val EXTRA_THREADS = "seed_threads"
+    /** `seed_many_threads=<n>`: n short threads with markdown replies, all older than the long thread — the list-scroll fixture for :macrobenchmark. */
+    const val EXTRA_MANY_THREADS = "seed_many_threads"
+    /** `seed_stream_reply=true`: every turn is answered by [ScriptedReplyTransport] playing [StreamingReplyFixture.MARKDOWN] — the streaming fixture for :macrobenchmark. */
+    const val EXTRA_STREAM_REPLY = "seed_stream_reply"
     /** Points the Brave tool at an in-process fake, so a grounded turn runs on a device with no key and no network. */
     const val EXTRA_BRAVE_ENDPOINT = "seed_brave_endpoint"
     /** Start from an empty chat store — what a fresh install gives the iOS UI tests. Debuggable builds only, and only with the flag. */
@@ -131,7 +142,7 @@ object UiTestSeeding {
         return true
     }
 
-    data class Plan(val presets: List<String>, val localEndpoint: String?, val localModel: String?, val grounding: Boolean, val attestation: String? = null, val longThread: Int? = null, val onDevice: Boolean = false, val download: Boolean = false, val threads: Boolean = false, val alsoLocalEndpoint: String? = null, val localName: String? = null, val localMaxMessages: Int? = null, val presetModel: String? = null)
+    data class Plan(val presets: List<String>, val localEndpoint: String?, val localModel: String?, val grounding: Boolean, val attestation: String? = null, val longThread: Int? = null, val onDevice: Boolean = false, val download: Boolean = false, val threads: Boolean = false, val alsoLocalEndpoint: String? = null, val localName: String? = null, val localMaxMessages: Int? = null, val presetModel: String? = null, val manyThreads: Int? = null, val streamReply: Boolean = false, val localKind: String? = null)
 
     /** Null unless the flag is set: a normal launch never seeds. Preset names are iOS's (`nearai`, `grok`, `fireworks`, `braveanswers`). */
     fun plan(extras: Map<String, Any?>): Plan? {
@@ -139,7 +150,8 @@ object UiTestSeeding {
         val presets = (extras[EXTRA_PRESETS] as? String).orEmpty().split(',').map { it.trim().lowercase() }.filter { it.isNotEmpty() }
         return Plan(presets, (extras[EXTRA_LOCAL_ENDPOINT] as? String)?.takeIf { it.isNotBlank() }, (extras[EXTRA_LOCAL_MODEL] as? String)?.takeIf { it.isNotBlank() }, extras[EXTRA_GROUNDING] == true,
             (extras[EXTRA_ATTESTATION] as? String)?.takeIf { it == "degraded" || it == "verifyingPending" || ConfidentialSession.UiTestSeed.of(it) != null }, (extras[EXTRA_LONG_THREAD] as? Int)?.takeIf { it > 0 }, extras[EXTRA_ON_DEVICE] == true, extras[EXTRA_DOWNLOAD] == true,
-            extras[EXTRA_THREADS] == true, (extras[EXTRA_ALSO_LOCAL_ENDPOINT] as? String)?.takeIf { it.isNotBlank() }, (extras[EXTRA_LOCAL_NAME] as? String)?.takeIf { it.isNotBlank() }, (extras[EXTRA_LOCAL_MAX_MESSAGES] as? Int)?.takeIf { it > 0 }, (extras[EXTRA_PRESET_MODEL] as? String)?.takeIf { it.isNotBlank() })
+            extras[EXTRA_THREADS] == true, (extras[EXTRA_ALSO_LOCAL_ENDPOINT] as? String)?.takeIf { it.isNotBlank() }, (extras[EXTRA_LOCAL_NAME] as? String)?.takeIf { it.isNotBlank() }, (extras[EXTRA_LOCAL_MAX_MESSAGES] as? Int)?.takeIf { it > 0 }, (extras[EXTRA_PRESET_MODEL] as? String)?.takeIf { it.isNotBlank() },
+            (extras[EXTRA_MANY_THREADS] as? Int)?.takeIf { it > 0 }, extras[EXTRA_STREAM_REPLY] == true, (extras[EXTRA_LOCAL_KIND] as? String)?.takeIf { it == "ollama" })
     }
 
     /** UITestHostSecrets.keyFileNames(forPreset:) — the same file names, so one `~` serves both harnesses. */
@@ -300,4 +312,97 @@ suspend fun UiTestSeeding.seedFixtureThreads(repo: ChatRepository): String {
         repo.titleFromFirstMessage(thread.id, title)
     }
     return "fixture threads seeded: ${threads.size}"
+}
+
+/**
+ * The list-scroll fixture (Android-only, for :macrobenchmark): [count] two-message threads, an hour apart and all older
+ * than [seedLongThread]'s long thread, so a launch still opens that one. Replies carry markdown — a list, bold, inline
+ * code — so a row's snippet and an opened thread go through the same renderer a real history does. Idempotent.
+ */
+suspend fun UiTestSeeding.seedManyThreads(repo: ChatRepository, count: Int): String {
+    val base = 1_770_000_000_000L
+    if (repo.threads().first().any { it.id.startsWith("uitest-many-") }) return "many threads present"
+    for (k in 0 until count) {
+        val at = base - (k + 1) * 3_600_000L
+        val thread = repo.createThread("uitest-many-$k", at)
+        val question = "thread $k: how would I check that claim ${k % 7} holds on my own machine?"
+        repo.addMessage("uitest-many-$k-0", thread.id, "user", question, at)
+        repo.addMessage("uitest-many-$k-1", thread.id, "assistant",
+            "Three steps for claim ${k % 7}:\n\n1. Fetch the **quote** with `attest --raw`.\n2. Compare the measurement to the published build.\n3. Check the collateral is current.\n\n" +
+                "Each step is something you can rerun yourself. ".repeat(2), at + 30_000L)
+        repo.titleFromFirstMessage(thread.id, question)
+    }
+    return "many threads seeded: $count"
+}
+
+/**
+ * The streaming fixture (Android-only, for :macrobenchmark's StreamingReplyBenchmark): with `seed_stream_reply`, every
+ * turn on a seeded launch is answered by [ScriptedReplyTransport] instead of the wire — through the app's real
+ * ChatViewModel → GenerationEngine path (AppState.transportFor is the makeTransport seam), so what is measured is the
+ * transcript repainting a long markdown reply as it grows, and nothing leaves the device.
+ */
+object StreamingReplyFixture {
+    /** ~6,000 characters: headings, nested lists, inline code and links, a fenced code block, a table — every block kind the renderer draws. */
+    val MARKDOWN: String = buildString {
+        append("# Checking an attested reply yourself\n\n")
+        append("The short version: the quote binds the **code**, the collateral binds the **platform**, and the signature binds the **reply**. ")
+        append("Each of those is a separate check, and each can fail on its own, so it is worth walking through them one at a time.\n\n")
+        val sections = listOf("The quote", "The collateral", "The signature", "The build", "The transport", "What is left on faith")
+        sections.forEachIndexed { s, title ->
+            append("## ${s + 1}. $title\n\n")
+            append("This step answers one question and only one. If it passes, you know something specific; if it fails, nothing after it means anything. ")
+            append("Read the `$title` section of the report with `attest --raw --section ${s + 1}` and compare it against what the [published build](#build-${s + 1}) says.\n\n")
+            append("- Fetch the report over a channel you already trust.\n")
+            append("- Check the field named in this step:\n")
+            append("  - against the expected value, byte for byte;\n")
+            append("  - and against the previous run, so a change is noticed.\n")
+            append("- Write down what you checked and when.\n\n")
+            if (s == 1) {
+                append("```kotlin\n")
+                append("val quote = TdxQuote.parse(report.bytes)\n")
+                append("require(quote.mrTd.contentEquals(expected.mrTd)) { \"mrtd mismatch\" }\n")
+                append("require(quote.mrConfigId.contentEquals(expected.mrConfigId)) { \"config mismatch\" }\n")
+                append("val tcb = collateral.tcbStatus(quote.fmspc)\n")
+                append("check(tcb == TcbStatus.UP_TO_DATE) { \"platform is $" + "tcb\" }\n")
+                append("```\n\n")
+            }
+            if (s == 2) {
+                append("| field | quote | expected | verdict |\n")
+                append("|---|---|---|---|\n")
+                for (r in 0 until 6) append("| field-$r | 8f3a…c$r | 8f3a…c$r | matches |\n")
+                append("\n")
+            }
+            append("1. Run the check.\n2. Record the result.\n3. Repeat it tomorrow, because collateral expires and a platform that was current can fall behind.\n\n")
+            append("> A check you cannot rerun yourself is a claim, not a check.\n\n")
+        }
+        append("### Summary\n\n")
+        append("Attestation proves the measurement cleanly. The silicon is an assumption you inherit, and the chain from the measurement back to source is only as good as the build being reproducible. ")
+        append("None of this needs the provider's cooperation after the fact: everything above runs on your own machine, against bytes you fetched yourself.")
+    }
+
+    /** The seeded prompt the benchmark types (any prompt gets [MARKDOWN]). */
+    const val PROMPT = "how would I check an attested reply myself?"
+    /** ~30 tokens/s at a few characters a token: one partial every 33 ms. */
+    const val PARTIAL_INTERVAL_MS = 33L
+}
+
+/**
+ * Plays [text] back as a stream: CUMULATIVE partials (what OpenAiTransport's onPartial delivers), 2–6 characters
+ * apart in a fixed rotation (token-sized), one every [intervalMs]. No network, no tools; the turn ends with the whole text.
+ */
+class ScriptedReplyTransport(private val text: String, private val intervalMs: Long = StreamingReplyFixture.PARTIAL_INTERVAL_MS) : ai.teemoon.inference.GenerationTransport {
+    override suspend fun runTurn(messages: List<Map<String, Any>>, includeTools: Boolean, tools: List<ai.teemoon.inference.Tool>, onPartial: (String) -> Unit): ai.teemoon.inference.TurnResult {
+        for (end in partialEnds(text.length)) { kotlinx.coroutines.delay(intervalMs); onPartial(text.substring(0, end)) }
+        return ai.teemoon.inference.TurnResult(content = text)
+    }
+
+    companion object {
+        private val STEPS = intArrayOf(4, 3, 5, 2, 6, 4, 3)
+        /** The end offset of each partial: token-sized steps, the last one exactly [length]. */
+        fun partialEnds(length: Int): List<Int> {
+            val ends = ArrayList<Int>(); var at = 0; var k = 0
+            while (at < length) { at = minOf(length, at + STEPS[k++ % STEPS.size]); ends += at }
+            return ends
+        }
+    }
 }

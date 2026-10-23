@@ -25,6 +25,8 @@ class LiteRTTransportTest {
         }
         override fun benchmark() = LocalBenchmark(0.8, 120, 42, 900.0, 60.0)
         override fun close() { closed = true }
+        var dropped = 0
+        override fun dropKept() { dropped++ }
     }
     private class Factory(val engine: () -> ScriptedEngine) : LocalEngineFactory {
         var opened = ArrayList<String>()
@@ -74,7 +76,9 @@ class LiteRTTransportTest {
             val out = transport(cache(Factory { ScriptedEngine(pieces) })).runTurn(listOf(msg("user", "q")), false, emptyList()) { partials += it }
             assertTrue("no thinking in $partials", partials.none { it.contains("weighing") || it.contains("think") || it.contains("channel") })
             assertEquals("Sunny today.", partials.last().trim())
-            assertTrue(out.reasoning.orEmpty().contains("weighing it"))
+            // The channel thought is discarded, never reasoning (iOS a6ce6e8); a `<think>` block parses as before.
+            if (pieces.joinToString("").contains("<|channel>")) assertTrue(out.reasoning.isEmpty())
+            else assertTrue(out.reasoning.contains("weighing it"))
         }
     }
 
@@ -92,7 +96,9 @@ class LiteRTTransportTest {
             val out = transport(cache(Factory { ScriptedEngine(pieces) })).runTurn(listOf(msg("user", "q")), false, emptyList()) { partials += it }
             assertTrue("markup on screen: $partials", partials.none { it.contains("<") || it.contains("channel") || it.contains("think") || it.contains("weighing") })
             assertEquals("Sunny today.", partials.last().trim())
-            assertTrue(out.reasoning.orEmpty().contains("weighing it"))
+            // The channel thought is discarded, never reasoning (iOS a6ce6e8); a `<think>` block parses as before.
+            if (pieces.joinToString("").contains("<|channel>")) assertTrue(out.reasoning.isEmpty())
+            else assertTrue(out.reasoning.contains("weighing it"))
         }
     }
 
@@ -125,6 +131,11 @@ class LiteRTTransportTest {
         assertEquals("the engine must not run the call a second time", 0, out.toolCalls.size)
         assertEquals(1, out.report.executedToolCalls.size); assertEquals("web_search", out.report.executedToolCalls.single().name)
         assertEquals("1", out.report.requestHeaders?.get("tools-offered"))
+        // The card shows the tool the runtime was given, one per tools-offered (iOS ca3d155).
+        val shown = kotlinx.serialization.json.Json.parseToJsonElement(out.report.requestBodyJson!!) as kotlinx.serialization.json.JsonObject
+        assertEquals(1, (shown["tools"] as kotlinx.serialization.json.JsonArray).size)
+        val plain = transport(cache(Factory { ScriptedEngine(listOf("x")) })).runTurn(listOf(msg("user", "q")), false, emptyList()) {}
+        assertTrue("no tools offered, no tools key", plain.report.requestBodyJson?.contains("\"tools\"") == false)
     }
     @Test fun theMemoryGateRunsBeforeTheLoadAndLeavesNothingResident() = runTest {
         val factory = Factory { ScriptedEngine(listOf("x")) }; val residency = LocalEngineResidency()
@@ -257,6 +268,41 @@ class LiteRTTransportTest {
         assertFalse("the engine was closed under the decode", closedMidStream)
         assertEquals("evicted once the turn ended", 0, c.residentCount)
         assertTrue(engine.closed)
+    }
+
+    /** iOS fc09a91: deleting a chat drops every kept conversation at once; the engine and its weights stay resident. */
+    @Test fun deletingAChatDropsTheKeptConversationsButKeepsTheEngine() = runTest {
+        val engine = ScriptedEngine(listOf("hi")); val c = cache(Factory { engine })
+        c.engine("/m.litertlm", 8192, 2400, 512)
+        c.forgetKeptConversations()
+        assertEquals(1, engine.dropped); assertEquals("the weights stay loaded", 1, c.residentCount); assertFalse(engine.closed)
+    }
+
+    /** …and never under a running turn: the drop waits for the turn to end, inside the gate, as an eviction does. */
+    @Test fun aDeleteDuringATurnDropsTheKeptConversationWhenTheTurnEnds() = runTest {
+        val gate = LocalGenerationGate()
+        val midStream = CompletableDeferred<Unit>(); val resume = CompletableDeferred<Unit>()
+        var droppedMidStream = -1
+        val engine = object : LocalEngineHandle {
+            var dropped = 0
+            override suspend fun stream(spec: LocalConversationSpec, onPiece: suspend (String) -> Unit) {
+                onPiece("half"); midStream.complete(Unit); resume.await(); droppedMidStream = dropped; onPiece(" done")
+            }
+            override fun benchmark(): LocalBenchmark? = null
+            override fun close() {}
+            override fun dropKept() { dropped++ }
+        }
+        val c = cache(object : LocalEngineFactory {
+            override suspend fun open(modelPath: String, contextTokens: Int, requireNpu: Boolean): LocalEngineHandle = engine
+            override val backendLabel = "test"
+        }, gate = gate)
+        val turn = async { transport(c, gate = gate).runTurn(listOf(msg("user", "q")), false, emptyList()) {} }
+        midStream.await()
+        c.forgetKeptConversations()                         // a chat deleted from the list while another answers
+        resume.complete(Unit)
+        assertEquals("half done", turn.await().content)
+        assertEquals("not dropped under the decode", 0, droppedMidStream)
+        assertEquals("dropped once the turn ended", 1, engine.dropped)
     }
 
     /** With no turn running, an eviction is immediate — memory pressure still gets its gigabytes back at once. */

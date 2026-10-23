@@ -1,9 +1,9 @@
-// ports: teemoon/Confidential/AttestationService.swift @ v1.0.4 (fetch: three independent legs; only a blackout throws)
+// ports: teemoon/Confidential/AttestationService.swift @ ebc9bdb (fetch: three independent legs; only a blackout throws)
 //        teemoon/Confidential/AttestationService+Reports.swift @ v1.0.1
-//        teemoon/Confidential/AttestationService+Model.swift @ v1.0.4 (a 4xx is final)
-//        teemoon/Confidential/AttestationService+GPU.swift @ v1.0.4 (status before decode; a 4xx is final)
+//        teemoon/Confidential/AttestationService+Model.swift @ v1.0.5 (a 4xx is final)
+//        teemoon/Confidential/AttestationService+GPU.swift @ 97b2ca9 (status before decode; a 4xx is final)
 //        teemoon/Confidential/AttestationService+Routing.swift @ v1.0.1
-//        teemoon/Inference/ConfidentialLanguageModel.swift @ v1.0.1 (TEEContext only)
+//        teemoon/Inference/ConfidentialLanguageModel.swift @ 3d561c4 (TEEContext only)
 //
 // Orchestrates the near.ai remote attestation report: wire envelopes, host
 // routing, the GPU node fetch, and the model Ed25519 race. The resulting data
@@ -299,14 +299,6 @@ object AttestationService {
     }
 
     // MARK: - GPU node (+GPU)
-
-    /** Used by the TEE signature verifier to check for key rotation on mismatch. */
-    suspend fun fetchSigningAddress(nodeUrl: String, apiKey: String, http: AttestationHttp = okHttp, log: (String) -> Unit = {}): String? {
-        val data = try { http(attestationUrl(nodeUrl, randomNonce()), authHeaders(apiKey)).second } catch (e: CancellationException) { throw e } catch (_: Exception) { log("GPU signing address fetch failed — no data from ${host(nodeUrl)}"); return null }
-        val report = GpuNodeReport.decode(data) ?: run { log("GPU report decode failed"); return null }
-        report.signingAddress?.let { return it }
-        return addressFromReportData(report.intelQuote)
-    }
 
     /** An older node with no signing_address: the address lives in the first 20 bytes of report_data. */
     private fun addressFromReportData(quoteHex: String?): String? {

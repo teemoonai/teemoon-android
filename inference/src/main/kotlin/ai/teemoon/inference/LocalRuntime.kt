@@ -110,6 +110,12 @@ interface LocalEngineHandle {
     /** Where the engine runs ("npu", "gpu", "cpu") and whether its drafter is on. */
     val backend: String? get() = null
     val speculative: Boolean get() = false
+    /** Whether a runtime conversation (its KV cache) is still open between turns: only a kept one may be (iOS parity). */
+    val holdsConversation: Boolean get() = false
+    /** Drops a kept conversation (its KV and its transcript copy); the engine and its weights stay. See LocalEngineCache.forgetKeptConversations. */
+    fun dropKept() {}
+    /** How the last turn started, for the developer card: "reused (N turns)" or "rebuilt" (iOS fcfdfb0); null before any turn. */
+    val lastConversation: String? get() = null
 }
 
 /** Builds engines. The LiteRT-LM binding lives in :ondevice; tests use a scripted one. */

@@ -1,4 +1,4 @@
-// ports: teemoonTests/LocalWarmUpPolicyTests.swift @ v1.0.4 (all 3)
+// ports: teemoonTests/LocalWarmUpPolicyTests.swift @ v1.0.5 (all 3)
 package ai.teemoon.providers
 
 import org.junit.Assert.assertEquals

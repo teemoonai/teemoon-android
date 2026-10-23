@@ -48,8 +48,16 @@ object TeemoonHttp {
         chain.proceed(stripped)
     }
 
+    /**
+     * The one connection pool and dispatcher every client shares (iOS 06c1b25: one chat URLSession for the app's life).
+     * The transport is built per send, and a fresh `OkHttpClient.Builder()` meant a fresh pool each time — a new TCP and
+     * TLS handshake for every turn to the same host. `newBuilder()` shares the pool; OkHttp still keys a pooled
+     * connection by its whole address (TLS settings included), so a client with its own trust never borrows another's.
+     */
+    private val shared: OkHttpClient by lazy { OkHttpClient() }
+
     /** The one way to build a client: the gate (before the call and on every hop), key headers kept to their host, and no https→http redirect. Add timeouts on the result. */
-    fun builder(): OkHttpClient.Builder = OkHttpClient.Builder()
+    fun builder(): OkHttpClient.Builder = shared.newBuilder()
         .addInterceptor(cleartextGate)
         .addNetworkInterceptor(cleartextGate)
         .addNetworkInterceptor(keyHeadersStayHome)

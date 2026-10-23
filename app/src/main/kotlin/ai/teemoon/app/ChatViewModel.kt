@@ -2,8 +2,11 @@
 //        teemoon/Views/Chat/ChatView.swift @ v1.0.4 (runPendingSearchRetryIfReady, retry(from:) — the search-offer re-ask only)
 //        teemoon/Chat/ChatViewModel.swift @ v1.0.4 (postPrepareRefusal, acceptedDegrade; a refusal before the wire is abandoned, not booked)
 //        teemoon/Chat/ChatViewModel.swift @ v1.0.4 (the saved reply's sources: GroundingSource.citedOrAll)
+//        teemoon/Chat/ChatViewModel.swift @ 14b2974 (Think Harder keeps the old reply until the new one lands: ReplySupersession)
+//        teemoon/Chat/ChatViewModel.swift @ cf57d0c (a re-ask of the first question is not a first message: turnIsReask)
 package ai.teemoon.app
 
+import ai.teemoon.inference.ProviderWait
 import androidx.lifecycle.ViewModel
 import ai.teemoon.confidential.TrustSendPolicy
 import androidx.lifecycle.viewModelScope
@@ -14,17 +17,22 @@ import ai.teemoon.providers.effectiveOmitSystemPrompt
 import ai.teemoon.inference.GenerationEngine
 import ai.teemoon.inference.GroundingSource
 import ai.teemoon.inference.OpenAiTransport
+import ai.teemoon.inference.ReasoningControl
+import ai.teemoon.inference.ReasoningEffort
+import ai.teemoon.inference.SessionAffinity
 import ai.teemoon.inference.StreamCallbacks
 import ai.teemoon.inference.ToolCallState
 import ai.teemoon.inference.ToolRoundPolicy
 import ai.teemoon.inference.WireMessage
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import ai.teemoon.chat.MessageEntity
+import ai.teemoon.confidential.ResponseVerification
 import ai.teemoon.confidential.TeeContext
 import ai.teemoon.inference.GenerationTransport
 import ai.teemoon.inference.LlmError
@@ -54,6 +62,10 @@ data class ChatUiState(
     val error: String? = null,
     val isStreaming: Boolean = false,
     val awaitingModel: Boolean = false,
+    /** The request in flight with no response headers yet, or null (ProviderWait; the chip shows it from 5 s). */
+    val providerWait: ProviderWait? = null,
+    /** Think Harder's old reply, dimmed until the new one shows text (ChatGeneration.superseding, mirrored for the screen). */
+    val superseding: ReplySupersession = ReplySupersession(),
     /** A retry found no place: the screen shows the composer's "no provider configured" alert, then calls [ChatViewModel.placeRequestShown]. */
     val needsPlace: Boolean = false,
     val warnings: List<String> = emptyList(),
@@ -101,7 +113,11 @@ class ChatViewModel(
     private val onBraveKey: (String) -> Unit = {},
     private val now: () -> Long = { System.currentTimeMillis() },
     /** iOS ChatGeneration.makeLanguageModel: a test's scripted transport in place of the network one. */
-    private val makeTransport: ((endpoint: String, model: String, context: TeeContext?, events: StreamCallbacks) -> GenerationTransport)? = null,
+    private val makeTransport: ((endpoint: String, model: String, context: TeeContext?, events: StreamCallbacks, effort: ReasoningEffort?, affinityID: String?) -> GenerationTransport)? = null,
+    /** How hard the provider's model can be asked to think (AppState.reasoningControl); a test passes its own. */
+    private val reasoningControl: (Provider) -> ReasoningControl = { ReasoningControl.resolve(it, null, null) },
+    /** Awaited before a turn is resolved: a self-hosted server's kind, learned on its first send (AppState.firstSendKind). */
+    private val beforeSend: suspend (Provider) -> Unit = {},
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(ChatUiState())
@@ -123,7 +139,14 @@ class ChatViewModel(
      * [acceptedDegrade] is the user having chosen "send anyway" on the soft alert, which a CONFIRM after
      * prepareTurn settles may honour; a BLOCK never is (iOS ChatViewModel.generate, 9f4aa84).
      */
-    fun send(prompt: String, acceptedDegrade: Boolean = false) {
+    /**
+     * [effort]: chat sends low unless the person asks for more (iOS ad960c7, the maintainer 2026-10-19); null is the provider's own
+     * default. [askedAtMs]: the question's time, kept by a plain retry (iOS restampIfReasked); null is now — a new
+     * question, or Think Harder asking again. [reasking]: Think Harder's question, already in the transcript and the
+     * store, asked again in place of [superseded] — the replies that stay, dimmed, until the new one lands.
+     */
+    fun send(prompt: String, acceptedDegrade: Boolean = false, effort: ReasoningEffort? = ReasoningEffort.CHAT_DEFAULT, askedAtMs: Long? = null,
+             reasking: ChatMessage? = null, superseded: Set<String> = emptySet(), retried: Boolean = false) {
         if (prompt.isBlank() || _state.value.isStreaming) return
         // No place, no turn. This is the last gate, not the first — the composer's SendPrep stops a send with no place
         // (BLOCKED_NO_PROVIDER) — but the error card's retries call send() directly. There used to be a compiled
@@ -131,31 +154,44 @@ class ChatViewModel(
         val place = provider() ?: return
         val startMs = now()
         if (!generation.beginTurn(startMs)) return
-        val userMessageId = "m-$startMs"
+        // The old reply stays until the new one lands (ReplySupersession); the model is never sent it, nor the
+        // question a second time.
+        if (reasking != null) setSuperseding(ReplySupersession(superseded))
+        val prior = generation.superseding.history(_state.value.messages).let { m -> if (reasking != null) m.takeWhile { it.id != reasking.id } else m }
+        // "cache — first message" is a chat's first SEND only. Asking the first question again — a retry, Think Harder —
+        // reads its figure, "cache 0%" on a miss (the maintainer, 2026-10-21, cache-first-message-retry).
+        generation.turnIsFirstMessage = reasking == null && !retried && prior.none { it.role == "user" }
+        val userMessageId = reasking?.id ?: "m-$startMs"
+        val askedAt = askedAtMs ?: startMs
         val assistantId = "a-$startMs"
         val tid = threadId ?: ""
 
         // The wire transcript: system prompt (unless the provider forbids one), then the prior turns capped from the end.
-        val all = _state.value.messages.filter { it.toolCall == null }.map { WireMessage(it.role, it.text) } + WireMessage("user", prompt)
+        // Every user turn carries the time IT was sent, from its stored timestamp (iOS 3f21459/0802a0f): the same turn
+        // spells the same bytes on every request, so a cached prefix and a kept on-device conversation hold.
+        val timeNotes = ChatGeneration.wantsTimeNotes(systemPrompt(), omitSystemPrompt = place.effectiveOmitSystemPrompt)
+        fun noted(text: String, atMs: Long) = if (timeNotes) text + ChatGeneration.timeNote(atMs) else text
+        val all = prior.filter { it.toolCall == null }.map { WireMessage(it.role, if (it.role == "user") noted(it.text, it.createdAtMs) else it.text) } +
+            WireMessage("user", prompt)
         val history = ChatGeneration.buildWireMessages(all, ChatGeneration.resolvePromptTemplates(systemPrompt()),
             maxMessages = place.effectiveMaxMessages, omitSystemPrompt = place.effectiveOmitSystemPrompt)
 
         _state.update { it.copy(
             messages = it.messages +
-                ChatMessage("user", prompt, id = userMessageId, createdAtMs = startMs) +
+                listOfNotNull(ChatMessage("user", prompt, id = userMessageId, createdAtMs = askedAt).takeIf { reasking == null }) +
                 ChatMessage("assistant", "", streaming = true, id = assistantId, createdAtMs = startMs + 1),
             error = null, lastError = null, isStreaming = true, warnings = emptyList(),
-            sources = emptyList(), isExecutingTools = false, awaitingModel = false, turnStartedAtMs = startMs,
+            sources = emptyList(), isExecutingTools = false, awaitingModel = false, providerWait = null, turnStartedAtMs = startMs,
         ) }
 
         val endpoint = place.chatCompletionsUrl
         val model = place.model
         val providerName = place.name
 
-        viewModelScope.launch {
+        if (reasking == null) viewModelScope.launch {
             repo?.let { r ->
                 threadId?.let { t ->
-                    r.addMessage(userMessageId, t, "user", prompt, startMs)
+                    r.addMessage(userMessageId, t, "user", prompt, askedAt)
                     r.titleFromFirstMessage(t, prompt)
                 }
             }
@@ -166,16 +202,44 @@ class ChatViewModel(
         // Opened per turn below: the transport is built after prepareTurn so it carries this turn's context.
         var lastResult: RequestResult? = null
         var persisted = false
+        // This turn's job: once stopped, its stream writes nothing. A transport whose read outlives the stop (a
+        // blocked read, an on-device engine finishing its step) used to write into whatever row was then last — after
+        // a stopped Think Harder, the restored old reply; after a stop before any text, the question's own bubble.
+        var turnJob: Job? = null
+        fun stopped() = turnJob?.isCancelled == true
+        // The reply's one save. Under Think Harder it is iOS's `.replace`: the old reply deleted, the question
+        // restamped and the new reply saved in one transaction, and the transcript swapped in the same update; a
+        // blank reply is `.restore` — nothing saved, and the turn's end puts the old one back.
+        fun persistReply(text: String, sources: List<GroundingSource>, sealed: Boolean, elapsed: Long?) {
+            val reply = MessageEntity(id = assistantId, threadId = tid, role = "assistant", content = text, timestamp = now(),
+                sourcesJson = sources.takeIf { it.isNotEmpty() }?.let(GroundingSource::encodeList), isE2EE = sealed, generatingTimeMs = elapsed)
+            when (val outcome = generation.superseding.outcome(failed = false, cancelled = false, output = text)) {
+                ReplySupersession.Outcome.Restore -> return
+                is ReplySupersession.Outcome.Replace -> {
+                    val question = MessageEntity(id = userMessageId, threadId = tid, role = "user", content = prompt, timestamp = askedAt)
+                    land(outcome.replyIDs, userMessageId, askedAt)
+                    repo?.let { r -> threadId?.let { viewModelScope.launch { r.supersede(outcome.replyIDs.toList(), question, askedAt, reply) } } }
+                }
+                null -> repo?.let { r -> threadId?.let { viewModelScope.launch { r.addMessage(reply.id, reply.threadId, reply.role, reply.content, reply.timestamp,
+                    sourcesJson = reply.sourcesJson, isE2EE = reply.isE2EE, generatingTimeMs = reply.generatingTimeMs) } } }
+            }
+        }
         fun engine(context: TeeContext?): GenerationEngine {
             val callbacks = object : StreamCallbacks {
                 override fun onText(text: String) {
+                    if (stopped()) return
                     if (text.isNotEmpty() && generation.markFirstToken(now())) onFirstToken(place)
                     generation.output = text
-                    replaceStreamingText(text)
+                    // The first text of Think Harder's new reply takes the old one out, in the same update.
+                    replaceStreamingText(text, generation.superseding.takeIf { it.isActive && !it.swapped && text.isNotEmpty() }?.noteText(text))
                 }
                 override fun onAwaitingModel(turn: Int, awaiting: Boolean) {
                     generation.noteAwaiting(turn, awaiting)
                     _state.update { it.copy(awaitingModel = generation.isAwaitingModel) }
+                }
+                override fun onAwaitingResponse(turn: Int, sentAt: java.time.Instant?) {
+                    generation.noteResponseWait(turn, sentAt?.toEpochMilli(), providerName)
+                    _state.update { it.copy(providerWait = generation.providerWait) }
                 }
                 // ONE assistant message per turn, as on iOS: the engine emits CUMULATIVE text across rounds, so
                 // opening a second bubble here re-rendered round one's text inside it.
@@ -207,21 +271,33 @@ class ChatViewModel(
                     generation.recordSuccess(result, providerName, model, tid)
                     _state.update { it.copy(lastRequestDebugInfo = generation.lastRequestDebugInfo) }
                 }
+                // The signature check no longer holds the turn (iOS cef6ad8: it added ≥2 s after the last token): its verdict
+                // lands here afterwards. The session counts it only while the same provider is selected — a verdict that
+                // lands after a switch must not count for the new one; the card takes it only for the same send.
+                override val verifiesAfterTurn: Boolean get() = session != null
+                override fun onVerified(verification: ResponseVerification) {
+                    viewModelScope.launch {
+                        generation.applyLateVerification(verification, tid, startMs)
+                        if (provider()?.id == place.id) session?.recordVerification(verification)
+                        _state.update { it.copy(lastRequestDebugInfo = generation.lastRequestDebugInfo) }
+                    }
+                }
                 // Persist the reply as soon as its text is final — before the signature check, which can take seconds.
                 override fun onTurnText(text: String) {
-                    if (persisted) return; persisted = true
+                    if (persisted || stopped()) return; persisted = true
                     // What the reply CITES, as iOS saves it (GroundingSource.citedOrAll): its own links, with the search
                     // snippet where one matched — the whole search haul only when it cites nothing
                     val sources = GroundingSource.citedOrAll(text, generation.groundingSources.toList())
                     val sealed = lastResult?.isE2eeActive ?: (context?.e2eePeer != null)
                     val elapsed = _state.value.turnStartedAtMs?.let { now() - it }
-                    repo?.let { r -> threadId?.let { t -> viewModelScope.launch { r.addMessage(assistantId, t, "assistant", text, now(),
-                        sourcesJson = sources.takeIf { it.isNotEmpty() }?.let(GroundingSource::encodeList), isE2EE = sealed, generatingTimeMs = elapsed) } } }
+                    persistReply(text, sources, sealed, elapsed)
                 }
             }
+            // Resolved here, where the store is; the transport reads it per request (iOS 7cd8c10).
+            ReasoningControl.note(reasoningControl(place), place)
             return GenerationEngine(
-                transport = makeTransport?.invoke(endpoint, model, context, callbacks) ?: OpenAiTransport(endpoint, model, apiKey = credential(place), authHeaderName = place.authHeaderName,
-                    teeContext = context, extraParams = place.extraParams, providerName = providerName),
+                transport = makeTransport?.invoke(endpoint, model, context, callbacks, effort, SessionAffinity.id(tid)) ?: OpenAiTransport(endpoint, model, apiKey = credential(place), authHeaderName = place.authHeaderName,
+                    teeContext = context, extraParams = place.extraParams, providerName = providerName, effort = effort?.let { ReasoningEffort.For(it, place) }, affinityID = SessionAffinity.id(tid)),
                 tools = tools,
                 events = callbacks,
                 // The ceiling is the MODEL's, not the app's, and iOS sets it in two places:
@@ -231,6 +307,8 @@ class ChatViewModel(
                 // This passed 2 for every provider, so a hosted model researched two rounds
                 // shallower than the same model on iOS (2026-09 port review, B3).
                 maxToolRounds = if (place.isLocal) LocalDefaults.MAX_TOOL_ROUNDS else ToolRoundPolicy.DEFAULT_MAX_ROUNDS,
+                // The late signature check outlives the turn (StreamCallbacks.verifiesAfterTurn).
+                lateScope = viewModelScope,
             )
         }
 
@@ -239,6 +317,7 @@ class ChatViewModel(
         // window between `onStop` and the kill in which to do it. Null in tests and previews.
         onTurn?.invoke(true, null, "")
         job = viewModelScope.launch {
+            turnJob = coroutineContext[Job]
             try {
                 // prepareTurn refreshes a stale record, waits for the model key, and opens the turn.
                 val context = session?.prepareTurn()
@@ -258,14 +337,19 @@ class ChatViewModel(
                     throw RefusedBeforeTheWire(UNSEALED_SEND_REFUSED)
                 }
                 generation.seedDebugInfo(providerName, model, endpoint, tid, expectingE2EE = context?.e2eePeer != null)
-                val answer = engine(context).run(history, prompt)
+                // Before engine() notes the ReasoningControl, so an Ollama box's first turn already gets its field.
+                beforeSend(place)
+                // The question's own time rides on the wire only (ChatGeneration.timeNote); the stored message stays as typed.
+                val answer = engine(context).run(history, noted(prompt, askedAt))
+                // Stopped while the engine was finishing a read that outlived the stop: the turn ends as a stop, and
+                // the answer it brought back is neither saved nor shown.
+                coroutineContext.ensureActive()
                 generation.output = answer
                 // The session records what actually went out: sealed, or plaintext to a non-attesting provider.
                 session?.finishTurn(isE2EEActive = lastResult?.isE2eeActive ?: (if (context != null) false else null), error = null, verification = lastResult?.teeVerification)
                 // Normally persisted by onTurnText already; this is the fallback for a transport that never reported final text.
                 val cited = GroundingSource.citedOrAll(answer, generation.groundingSources.toList())
-                if (!persisted) repo?.let { r -> threadId?.let { t -> r.addMessage(assistantId, t, "assistant", answer, now(),
-                    sourcesJson = cited.takeIf { it.isNotEmpty() }?.let(GroundingSource::encodeList), isE2EE = lastResult?.isE2eeActive ?: false) } }
+                if (!persisted) { persisted = true; persistReply(answer, cited, lastResult?.isE2eeActive ?: false, null) }
                 // The rail stays with the message it belongs to, as the persisted row does.
                 stampLastAssistant(sources = cited, isE2EE = lastResult?.isE2eeActive ?: false)
                 val emptyReply = generation.finishGeneration(providerName, endpoint, tid, lastResult?.toolCalls ?: emptyList(), lastResult, now())
@@ -292,6 +376,8 @@ class ChatViewModel(
                 onTurn?.invoke(false, TurnOutcome.FAILED, "")
             } finally {
                 generation.endTurn()
+                // A failed, stopped or empty Think Harder: the question keeps its old answer, and no partial reply.
+                restoreSuperseded()
                 settle()
             }
         }
@@ -303,7 +389,7 @@ class ChatViewModel(
      */
     var onTurn: ((Boolean, TurnOutcome?, String) -> Unit)? = null
 
-    fun stop() { generation.stop(); job?.cancel(); settle() }
+    fun stop() { generation.stop(); job?.cancel(); restoreSuperseded(); settle() }
 
     /**
      * The error card's "this model can't search the web — turn off & retry". Grounding is off by the time this runs,
@@ -317,10 +403,38 @@ class ChatViewModel(
         retryLastTurn()
     }
 
-    /** Asks the last question again (the error card's retry, and the search-off retry above). */
-    fun retryLastTurn(acceptedDegrade: Boolean = false) {
+    /** Asks the last question again (the error card's retry, and the search-off retry above). [effort]: Think Harder's gated path. */
+    fun retryLastTurn(acceptedDegrade: Boolean = false, effort: ReasoningEffort = ReasoningEffort.CHAT_DEFAULT) {
         val last = _state.value.messages.lastOrNull { it.role == "user" } ?: return
-        retry(from = last, acceptedDegrade = acceptedDegrade)
+        retry(from = last, acceptedDegrade = acceptedDegrade, effort = effort)
+    }
+
+    /**
+     * Think Harder (iOS 42b12d8/0802a0f, the maintainer 2026-10-19): the newest finished reply's question again, same provider and
+     * model, at high effort with room to think, in place of that reply — and asked NOW, so its time note says so.
+     * Only the newest finished reply qualifies: on an earlier one the retry would delete every later turn.
+     */
+    fun thinkHarder(replyId: String, acceptedDegrade: Boolean = false) {
+        if (!canThinkHarder(replyId)) return
+        val question = question(answeredBy = replyId) ?: return
+        retry(from = question, acceptedDegrade = acceptedDegrade, effort = ReasoningEffort.THINK_HARDER)
+    }
+
+    /** The menu's gate (ConversationView.thinkHarderAction): an assistant reply that is the thread's last message, nothing generating. */
+    fun canThinkHarder(replyId: String): Boolean {
+        val s = _state.value
+        val last = s.messages.lastOrNull() ?: return false
+        if (s.isStreaming || last.id != replyId || last.role != "assistant") return false
+        // Offered only where the selected provider has a higher level to ask for (iOS ChatView.canThinkHarder, 7cd8c10).
+        val place = provider() ?: return false
+        return ReasoningEffort.canThinkHarder(reasoningControl(place), place)
+    }
+
+    /** The question a reply answered: the user message just before it (iOS ChatViewModel.question(answeredBy:)). */
+    fun question(answeredBy: String): ChatMessage? {
+        val msgs = _state.value.messages
+        val i = msgs.indexOfFirst { it.id == answeredBy }.takeIf { it > 0 } ?: return null
+        return msgs.subList(0, i).lastOrNull { it.role == "user" }
     }
 
     private fun stampLastAssistant(sources: List<GroundingSource>, isE2EE: Boolean) {
@@ -359,20 +473,30 @@ class ChatViewModel(
     fun placeRequestShown() = _state.update { it.copy(needsPlace = false) }
 
     /** iOS ChatView.retry(from:): drop the question and everything after it, then ask it again. */
-    private fun retry(from: ChatMessage, acceptedDegrade: Boolean = false) {
+    private fun retry(from: ChatMessage, acceptedDegrade: Boolean = false, effort: ReasoningEffort = ReasoningEffort.CHAT_DEFAULT) {
         if (_state.value.isStreaming) return
         // No place: keep the question and say why. Dropping it first and letting send() find no place deleted it from
         // the transcript and the store with nothing sent and nothing shown (the local audit's re-run, 2026-10-13).
         if (provider() == null) { _state.update { it.copy(needsPlace = true) }; return }
         val index = _state.value.messages.indexOfFirst { it.id == from.id }
         if (index < 0) return
+        if (effort == ReasoningEffort.THINK_HARDER) {
+            // The old reply stays until the new one lands (ReplySupersession), and its question with it: asked again
+            // now, restamped only when the new reply is saved. Build 50 deleted both first, so a failure or a stop
+            // left the question with no answer.
+            _state.update { it.copy(error = null, lastError = null) }
+            send(from.text, acceptedDegrade, effort = effort, reasking = from, superseded = _state.value.messages.drop(index + 1).map { it.id }.toSet())
+            return
+        }
+        // Delete all messages from the question on, and ask it again.
         val kept = _state.value.messages.take(index)
         val dropped = _state.value.messages.drop(index).map { it.id }.toSet()
         generation.offerByMessageID.keys.removeAll(dropped)
         _state.update { it.copy(messages = kept, offers = generation.offerByMessageID.toMap(), error = null) }
         viewModelScope.launch {
             repo?.let { r -> threadId?.let { t -> r.deleteMessagesSince(t, from.createdAtMs) } }
-            send(from.text, acceptedDegrade)
+            // A plain retry keeps the time the question was first sent; Think Harder asks again now (restampIfReasked).
+            send(from.text, acceptedDegrade, effort = effort, askedAtMs = if (effort == ReasoningEffort.THINK_HARDER) null else from.createdAtMs, retried = true)
         }
     }
 
@@ -382,9 +506,38 @@ class ChatViewModel(
      * retry, an edit; a `_state.value = _state.value.copy(…)` read on one thread and written after the other's write
      * dropped that write. iOS's ChatViewModel is @MainActor and has no such interleaving.
      */
-    private fun replaceStreamingText(text: String) = _state.update { s ->
-        val last = s.messages.lastOrNull() ?: return@update s
-        s.copy(messages = s.messages.dropLast(1) + last.copy(text = text))
+    private fun replaceStreamingText(text: String, swapped: ReplySupersession? = null) {
+        if (swapped != null) generation.superseding = swapped
+        _state.update { s ->
+            NavTrace.count("stream.received", text.length.toLong())   // reveal lag, source side (StreamLagMetric)
+            val last = s.messages.lastOrNull() ?: return@update s
+            s.copy(messages = s.messages.dropLast(1) + last.copy(text = text), superseding = swapped ?: s.superseding)
+        }
+    }
+
+    private fun setSuperseding(value: ReplySupersession) {
+        generation.superseding = value
+        _state.update { it.copy(superseding = value) }
+    }
+
+    /** `.replace`: the old reply leaves the transcript and the question takes the time it was asked again — cleared only now, or the old reply shows for a frame. */
+    private fun land(oldIds: Set<String>, questionId: String, askedAt: Long) {
+        generation.superseding = ReplySupersession()
+        generation.offerByMessageID.keys.removeAll(oldIds)
+        _state.update { s -> s.copy(
+            messages = s.messages.filter { it.id !in oldIds }.map { if (it.id == questionId) it.copy(createdAtMs = askedAt) else it },
+            superseding = ReplySupersession(), offers = generation.offerByMessageID.toMap()) }
+    }
+
+    /** `.restore`: the old reply as it was; the new one's row, partial or empty, goes. */
+    private fun restoreSuperseded() {
+        val s = generation.superseding
+        if (!s.isActive) return
+        generation.superseding = ReplySupersession()
+        _state.update { st ->
+            val lastOld = st.messages.indexOfLast { it.id in s.replyIDs }
+            st.copy(messages = if (lastOld >= 0) st.messages.take(lastOld + 1) else st.messages, superseding = ReplySupersession())
+        }
     }
 
     private fun settle() {
@@ -399,8 +552,9 @@ class ChatViewModel(
             // transcript's phase-A reserve so the settle never pins the card into view, and it was never persisted anyway
             // (Pixel 10 Pro, 2026-09-17: the Brave 422 card a screen-height under its prompt).
             if (msgs.lastOrNull()?.let { it.role == "assistant" && it.text.isBlank() } == true) msgs.removeAt(msgs.lastIndex)
-            msgs.lastOrNull()?.let { msgs[msgs.lastIndex] = it.copy(streaming = false, generatingTimeMs = it.generatingTimeMs ?: elapsed) }
-            s.copy(messages = msgs, isStreaming = false, awaitingModel = false, isExecutingTools = false, turnStartedAtMs = null)
+            // Only the turn's own row takes the elapsed time: after a Think Harder restore the last row is the old reply.
+            msgs.lastOrNull()?.let { msgs[msgs.lastIndex] = it.copy(streaming = false, generatingTimeMs = if (it.streaming) it.generatingTimeMs ?: elapsed else it.generatingTimeMs) }
+            s.copy(messages = msgs, isStreaming = false, awaitingModel = false, providerWait = null, isExecutingTools = false, turnStartedAtMs = null)
         }
     }
 }

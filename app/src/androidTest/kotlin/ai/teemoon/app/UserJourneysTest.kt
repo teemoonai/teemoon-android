@@ -5,6 +5,7 @@ package ai.teemoon.app
 // switching the place from the chip. Added 2026-09-08 with GroundedTurnTest, after a failing search that no test had
 // touched: a ported policy with a JVM suite is not a tested feature.
 
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.semantics.getOrNull
 import android.content.Intent
 import androidx.compose.ui.test.hasContentDescription
@@ -23,6 +24,7 @@ import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextClearance
 import androidx.compose.ui.test.performTextInput
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.doubleClick
 import androidx.compose.ui.test.longClick
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -301,7 +303,8 @@ class UserJourneysTest {
         launch(UiTestSeeding.EXTRA_LOCAL_ENDPOINT to server.baseUrl, UiTestSeeding.EXTRA_LOCAL_MODEL to "fake-model")
         keepingSettings {
         tap("settings"); tapLast("chats")
-        compose.waitUntil(10_000) { exists("use {{datetime}}") }
+        // the footer since 1.0.6 (b00f98b); the test waited on the old "use {{datetime}}" one and timed out before typing
+        compose.waitUntil(10_000) { exists("{{date}} is replaced") }
         val promptField = sheetField(0)
         promptField.performTextClearance(); promptField.performTextInput("speak like a lighthouse keeper. now: {{datetime}}"); Thread.sleep(500)
         tap("back"); tap(A11yLabels.CLOSE_SETTINGS)
@@ -787,9 +790,10 @@ class UserJourneysTest {
     }
 
     /**
-     * B7: part of an answer can be selected and copied. A long press on the answer selects the word under the finger
-     * (the answer sits in a SelectionContainer, as iOS's is `.textSelection(.enabled)`); the platform's floating
-     * toolbar is a window of its own, outside Compose's tree, so its "copy" is found and pressed through accessibility.
+     * B7: part of an answer can be selected and copied. Since 1.0.6 a long press on the answer opens its menu (Think
+     * Harder's home, the maintainer 2026-10-19) and never starts a selection; a DOUBLE TAP selects the word under the finger (iOS
+     * 8c19327, build 57: testDoubleTapSelectsAWordAndLongPressIsTheMenu). The platform's floating toolbar is a window of
+     * its own, outside Compose's tree, so its "copy" is found and pressed through accessibility.
      */
     @Test fun partOfAnAnswerCanBeSelectedAndCopied() {
         val answer = "Selectable alpha bravo charlie delta echo foxtrot golf hotel india juliet."
@@ -798,7 +802,6 @@ class UserJourneysTest {
         send("say the alphabet"); compose.waitUntil(60_000) { exists("juliet") }; compose.waitUntil(30_000) { !tagExists("chat.stop") }
         val ua = InstrumentationRegistry.getInstrumentation().uiAutomation
         InstrumentationRegistry.getInstrumentation().runOnMainSync { ctx.getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("", "")) }
-        compose.onAllNodes(hasText("charlie", substring = true))[0].performTouchInput { longClick(center) }
         fun copyButton(): AccessibilityNodeInfo? {
             ua.serviceInfo = ua.serviceInfo.apply { flags = flags or AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS }
             for (w in ua.windows) {
@@ -812,6 +815,15 @@ class UserJourneysTest {
             }
             return null
         }
+        // A finger's second, not longClick's default: that is the node's own long-press timeout plus 100 ms, and the
+        // answer's selection container reports an hour (MessageViews.ReplySelection).
+        compose.onAllNodes(hasText("charlie", substring = true))[0].performTouchInput { down(center); advanceEventTime(1_000); up() }
+        compose.waitUntil(5_000) { exists(ReplyMenu.COPY) }
+        assertTrue("the menu still offers select text", !exists("select text"))
+        androidx.test.espresso.Espresso.pressBack(); compose.waitUntil(5_000) { !exists(ReplyMenu.COPY) }
+        Thread.sleep(800)
+        assertTrue("a long press started a selection", copyButton() == null)
+        compose.onAllNodes(hasText("charlie", substring = true))[0].performTouchInput { doubleClick(percentOffset(0.35f, 0.25f)) }   // on the first line, not past its end
         var button: AccessibilityNodeInfo? = null
         compose.waitUntil(5_000) { button = copyButton(); button != null }
         var target = button
@@ -824,6 +836,7 @@ class UserJourneysTest {
         assertTrue("nothing was copied from the answer", copied.isNotEmpty())
         assertTrue("the copy \"$copied\" is not from the answer", answer.contains(copied))
         assertTrue("the whole answer was copied, not a part of it", copied.length < answer.length)
+        assertTrue("a double tap did not pick one word of the answer: \"$copied\"", copied in answer.split(' ', '.'))
     }
 
     /** H1: tint, size and width chosen in settings stick, and survive a relaunch. */

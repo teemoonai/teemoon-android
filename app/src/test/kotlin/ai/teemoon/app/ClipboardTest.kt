@@ -1,4 +1,4 @@
-// ports: teemoonTests/SensitiveClipboardTests.swift @ v1.0.4 — the half a JVM test can hold.
+// ports: teemoonTests/SensitiveClipboardTests.swift @ v1.0.5 — the half a JVM test can hold.
 //
 // iOS's three cases are: the copy round-trips, it REPLACES rather than accumulates, and the lifetime is short.
 // Only the third survives translation as a unit test, and the reasons are worth writing down rather than leaving

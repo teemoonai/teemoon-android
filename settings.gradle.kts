@@ -15,3 +15,5 @@ dependencyResolutionManagement {
 rootProject.name = "teemoon"
 
 include(":app", ":chat", ":providers", ":inference", ":confidential", ":conformance", ":ondevice")
+// Android-only, no Swift counterpart: startup and scroll macrobenchmarks against :app's `benchmark` build type.
+include(":macrobenchmark")

@@ -32,6 +32,8 @@ class FakeSseServer(private val lines: Int = 6, private val delayMs: Long = 4,
      * on screen. The window iOS measured at 3.0 s per round on DeepSeek, and the one the trailing activity chip covers.
      */
     private val followUpDelayMs: Long = 0,
+    /** Silence before EVERY completion's response headers — a provider holding the request in its queue (the waiting chip). */
+    private val headerDelayMs: Long = 0,
     /** A `<think>…</think>` block ahead of the answer, for the thinking disclosure. */
     private val thinking: Boolean = false,
     /** Every completion fails with this HTTP status and a JSON error body: the error card's row, from a real turn. */
@@ -168,6 +170,7 @@ class FakeSseServer(private val lines: Int = 6, private val delayMs: Long = 4,
         val n = completions.incrementAndGet()
         if (n <= failFirst) { json(out, """{"error":{"message":"the fake server was told to fail","type":"server_error"}}""", failStatus ?: 500); return }
         if (failFirst == 0) failStatus?.let { json(out, """{"error":{"message":"the fake server was told to fail","type":"server_error"}}""", it); return }
+        if (headerDelayMs > 0) Thread.sleep(headerDelayMs)
         out.write("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nConnection: close\r\n\r\n".toByteArray())
         val nth = posts.incrementAndGet()
         // word-by-word, the marker JSON split at its spaces exactly as a real server delivers it

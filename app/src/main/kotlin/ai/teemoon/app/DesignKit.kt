@@ -101,6 +101,7 @@ import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.RoundRect
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.KeyboardType
@@ -413,6 +414,27 @@ fun CopyGlyph(tint: Color = TeemoonColors.tint, sizeDp: Dp = 18.dp) {
     }
 }
 
+/** SF `brain`: two lobes and the fissure between them — Think Harder in a reply's menu. */
+@Composable
+fun BrainGlyph(tint: Color = TeemoonColors.label, sizeDp: Dp = 18.dp) {
+    Canvas(Modifier.size(sizeDp)) {
+        val w = size.width; val h = size.height; val s = 1.5.dp.toPx()
+        val outline = Path().apply {
+            moveTo(w * 0.5f, h * 0.16f)
+            cubicTo(w * 0.36f, h * 0.06f, w * 0.14f, h * 0.14f, w * 0.16f, h * 0.36f)
+            cubicTo(w * 0.04f, h * 0.44f, w * 0.06f, h * 0.68f, w * 0.2f, h * 0.74f)
+            cubicTo(w * 0.24f, h * 0.92f, w * 0.44f, h * 0.94f, w * 0.5f, h * 0.84f)
+            cubicTo(w * 0.56f, h * 0.94f, w * 0.76f, h * 0.92f, w * 0.8f, h * 0.74f)
+            cubicTo(w * 0.94f, h * 0.68f, w * 0.96f, h * 0.44f, w * 0.84f, h * 0.36f)
+            cubicTo(w * 0.86f, h * 0.14f, w * 0.64f, h * 0.06f, w * 0.5f, h * 0.16f)
+        }
+        drawPath(outline, tint, style = Stroke(s, join = StrokeJoin.Round))
+        drawLine(tint, Offset(w * 0.5f, h * 0.16f), Offset(w * 0.5f, h * 0.84f), s, StrokeCap.Round)
+        val fold = Path().apply { moveTo(w * 0.26f, h * 0.46f); quadraticTo(w * 0.36f, h * 0.4f, w * 0.38f, h * 0.54f); moveTo(w * 0.74f, h * 0.46f); quadraticTo(w * 0.64f, h * 0.4f, w * 0.62f, h * 0.54f) }
+        drawPath(fold, tint, style = Stroke(s, cap = StrokeCap.Round))
+    }
+}
+
 /** SF `eye` / `eye.slash`: the outline with its pupil, struck through when the secret is shown. */
 @Composable
 fun EyeGlyph(open: Boolean = true, tint: Color = TeemoonColors.tint, sizeDp: Dp = 20.dp) {
@@ -671,6 +693,19 @@ fun GlobeGlyph(color: Color, size: Dp = 12.dp) = Canvas(Modifier.size(size)) {
     drawCircle(color, r, Offset(w / 2, h / 2), style = stroke)
     drawLine(color, Offset(w / 2 - r, h / 2), Offset(w / 2 + r, h / 2), st)
     drawOval(color, Offset(w / 2 - r * 0.45f, h / 2 - r), Size(r * 0.9f, r * 2), style = stroke)
+}
+
+/** SF `hourglass` at caption2: a cap and a base, and two bulbs meeting at the waist. */
+@Composable
+fun HourglassGlyph(color: Color, size: Dp = 12.dp) = Canvas(Modifier.size(size)) {
+    val w = this.size.width; val h = this.size.height; val st = 1.2.dp.toPx()
+    val l = w * 0.24f; val r = w * 0.76f; val top = h * 0.1f; val bot = h * 0.9f
+    drawLine(color, Offset(w * 0.16f, top), Offset(w * 0.84f, top), st, cap = StrokeCap.Round)
+    drawLine(color, Offset(w * 0.16f, bot), Offset(w * 0.84f, bot), st, cap = StrokeCap.Round)
+    val p = Path()
+    p.moveTo(l, top); p.lineTo(r, top); p.quadraticTo(r, h * 0.38f, w / 2, h / 2); p.quadraticTo(l, h * 0.38f, l, top)
+    p.moveTo(l, bot); p.lineTo(r, bot); p.quadraticTo(r, h * 0.62f, w / 2, h / 2); p.quadraticTo(l, h * 0.62f, l, bot)
+    drawPath(p, color, style = Stroke(st, join = StrokeJoin.Round))
 }
 
 /** SF `sparkles` at caption2: one four-point star, a smaller one at its shoulder. */

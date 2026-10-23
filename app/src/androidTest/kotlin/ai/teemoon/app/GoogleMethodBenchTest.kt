@@ -224,7 +224,13 @@ class GoogleMethodBenchTest {
         val variants = tasks.flatMap { t ->
             listOfNotNull(("$backendName-$t-off" to (t to false)).takeIf { t in offFor }, "$backendName-$t-on" to (t to true))
         }.toMap()
-        log("device ${Build.MANUFACTURER} ${Build.MODEL} soc=$soc method=engine-speculative variants=${variants.keys} repeats=${BenchSpec.REPEATS} cool<=${coolS}s")
+        // `-e gbench_sampler greedy` (top-k 1): draft acceptance is highest when the main model's pick is deterministic.
+        // The app passes no SamplerConfig (the runtime's default), so default is the number users get; greedy is the ceiling.
+        val sampler = when (args.getString("gbench_sampler")) {
+            "greedy" -> com.google.ai.edge.litertlm.SamplerConfig(1, 1.0, 0.0, 0)
+            else -> null
+        }
+        log("device ${Build.MANUFACTURER} ${Build.MODEL} soc=$soc method=engine-speculative sampler=${args.getString("gbench_sampler") ?: "default"} variants=${variants.keys} repeats=${BenchSpec.REPEATS} cool<=${coolS}s")
         val scenario = ActivityScenario.launch<MainActivity>(Intent(ctx, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         scenario.moveToState(Lifecycle.State.RESUMED)
         ExperimentalFlags.enableBenchmark = true
@@ -242,7 +248,7 @@ class GoogleMethodBenchTest {
             val engine = Engine(EngineConfig(modelPath = file!!.path, backend = backend(), maxNumTokens = 4096, cacheDir = ctx.cacheDir.path))
             try {
                 val t0 = System.nanoTime(); engine.initialize(); val init = (System.nanoTime() - t0) / 1e9
-                val conv = engine.createConversation(ConversationConfig(maxOutputToken = BenchSpec.GOOGLE_DECODE_TOKENS, thinkingConfig = ThinkingConfig(false)))
+                val conv = engine.createConversation(ConversationConfig(samplerConfig = sampler, maxOutputToken = BenchSpec.GOOGLE_DECODE_TOKENS, thinkingConfig = ThinkingConfig(false)))
                 try {
                     conv.sendMessage(BenchSpec.TASKS.getValue(task))
                     conv.getBenchmarkInfo().let { b ->

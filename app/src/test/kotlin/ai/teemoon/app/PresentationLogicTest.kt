@@ -167,9 +167,15 @@ class TranscriptTest {
 class AppSettingsTest {
     @Test fun aKeptDefaultPromptMigratesAndAUsersOwnDoesNot() {
         val kept = InMemoryPrefs().also { it.putString(UserDefaultsKey.SYSTEM_PROMPT, "you are a helpful assistant"); it.putInt(UserDefaultsKey.SYSTEM_PROMPT_VERSION, 2) }
-        assertEquals(AppSettings.DEFAULT_SYSTEM_PROMPT, AppSettings(kept).systemPrompt); assertEquals(3, kept.getInt(UserDefaultsKey.SYSTEM_PROMPT_VERSION))
+        assertEquals(AppSettings.DEFAULT_SYSTEM_PROMPT, AppSettings(kept).systemPrompt); assertEquals(4, kept.getInt(UserDefaultsKey.SYSTEM_PROMPT_VERSION))
         val mine = InMemoryPrefs().also { it.putString(UserDefaultsKey.SYSTEM_PROMPT, "talk like a pirate"); it.putInt(UserDefaultsKey.SYSTEM_PROMPT_VERSION, 3) }
         assertEquals("talk like a pirate", AppSettings(mine).systemPrompt)
+        // v4 (iOS 1.0.6 build 45): an UNMODIFIED v3 default moves to "Today's date is {{date}}."; an edited one stays
+        val v3 = "The current date and time is {{datetime}}." + AppSettings.DEFAULT_SYSTEM_PROMPT.removePrefix("Today's date is {{date}}.")
+        val keptV3 = InMemoryPrefs().also { it.putString(UserDefaultsKey.SYSTEM_PROMPT, v3); it.putInt(UserDefaultsKey.SYSTEM_PROMPT_VERSION, 3) }
+        assertEquals(AppSettings.DEFAULT_SYSTEM_PROMPT, AppSettings(keptV3).systemPrompt)
+        val editedV3 = InMemoryPrefs().also { it.putString(UserDefaultsKey.SYSTEM_PROMPT, "$v3 Answer in French."); it.putInt(UserDefaultsKey.SYSTEM_PROMPT_VERSION, 3) }
+        assertEquals("$v3 Answer in French.", AppSettings(editedV3).systemPrompt)
         val fresh = AppSettings(InMemoryPrefs()); assertEquals(AppSettings.DEFAULT_SYSTEM_PROMPT, fresh.systemPrompt); assertEquals(AppTintColor.ORANGE, fresh.appTintColor); assertFalse(fresh.developerModeEnabled); assertTrue(fresh.shouldPlayHaptics)
     }
     @Test fun groundingNeedsTheToggleAndAKey() {

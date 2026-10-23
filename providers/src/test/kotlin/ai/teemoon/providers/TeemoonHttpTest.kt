@@ -13,6 +13,7 @@ import kotlin.concurrent.thread
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
+import org.junit.Assert.assertSame
 import org.junit.Test
 import java.io.IOException
 
@@ -130,5 +131,15 @@ class TeemoonHttpTest {
         t1.join(5_000); t2.join(5_000); first.socket.close(); second.socket.close()
         assertTrue("the redirect was not followed: ${second.head}", second.head.startsWith("GET /v1/models"))
         assertTrue("x-api-key followed the redirect to another port: ${second.head}", !second.head.contains("secret-port"))
+    }
+
+    /** iOS 06c1b25's point on Android: two clients built here share one pool, so a second send reuses the first's connection. */
+    @Test fun everyClientSharesOneConnectionPool() {
+        val a = TeemoonHttp.builder().readTimeout(240, java.util.concurrent.TimeUnit.SECONDS).build()
+        val b = TeemoonHttp.client()
+        assertSame(a.connectionPool, b.connectionPool)
+        assertSame(a.dispatcher, b.dispatcher)
+        // and each still carries the gate, once per kind
+        assertEquals(1, b.interceptors.count { it === TeemoonHttp.cleartextGate })
     }
 }

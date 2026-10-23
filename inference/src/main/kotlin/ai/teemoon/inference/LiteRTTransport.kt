@@ -1,6 +1,8 @@
 // ports: teemoon/Inference/LiteRTTransport.swift @ v1.0.4 — the transport over the LocalEngineFactory seam (the
 //        LiteRT-LM binding itself is :ondevice's LiteRtLmEngineFactory); EngineCache.building: one build per key,
 //        shared; the engine is discarded when the turn ends, never under it
+// ports: teemoon/Inference/LiteRTTransport.swift @ a6ce6e8 (thinking, thinkingReserveTokens, strippingInlineThought, the
+//        "thinking" header, wasTruncated at the cap; 7cd8c10's ThinkingConfig for Think Harder)
 //
 // On-device inference: the on-device GenerationTransport. Tool calling is wired
 // through LiteRTToolBridge; the shared GenerationEngine loop sits above.
@@ -15,6 +17,8 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import java.io.File
+import java.time.Duration
+import java.time.Instant
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Deferred
 
@@ -44,6 +48,7 @@ class LocalEngineCache(
      */
     private val building = HashMap<Key, Deferred<LocalEngineHandle>>()
     private var evictionPending = false
+    private var forgetPending = false
     val residentCount: Int get() = synchronized(this) { engines.size }
 
     /**
@@ -60,10 +65,23 @@ class LocalEngineCache(
         evictNow()
     }
 
-    /** Called by the transport at the end of every turn, still inside the gate: performs an eviction deferred during it. */
+    /**
+     * A deleted chat's text must not outlive it in a kept conversation (iOS fc09a91; the maintainer, 2026-10-19: "yes clear on
+     * delete"). The kept state is per engine, not per thread, so all of it goes and the next on-device turn seeds
+     * again; the engines and their weights stay loaded. Like an eviction, never under a running turn: it waits for
+     * [afterTurn].
+     */
+    fun forgetKeptConversations() {
+        if (gate.isBusy) { synchronized(this) { forgetPending = true }; log("[litert] dropping kept conversations after the turn"); return }
+        forgetNow()
+    }
+
+    private fun forgetNow() { val all = synchronized(this) { engines.values.toList() }; all.forEach { runCatching { it.dropKept() } }; if (all.isNotEmpty()) log("[litert] kept conversations dropped") }
+
+    /** Called by the transport at the end of every turn, still inside the gate: performs an eviction or a forget deferred during it. */
     fun afterTurn() {
-        val pending = synchronized(this) { evictionPending.also { evictionPending = false } }
-        if (pending) evictNow()
+        val (evict, forget) = synchronized(this) { (evictionPending to forgetPending).also { evictionPending = false; forgetPending = false } }
+        if (evict) evictNow() else if (forget) forgetNow()
     }
 
     private fun evictNow() { synchronized(this) { if (engines.isEmpty()) return; log("[litert] releasing ${engines.size} engine(s)"); engines.values.forEach { runCatching { it.close() } }; engines.clear(); publish() } }
@@ -128,7 +146,12 @@ class LiteRTTransport(
     private val events: StreamCallbacks? = null,
     private val headroomMB: Int = 512,
     private val maxTokens: Int = LocalDefaults.MAX_TOKENS,
-    private val enableThinking: Boolean = LocalDefaults.ENABLE_THINKING,
+    /**
+     * Think Harder: LiteRT's ThinkingConfig on (iOS 7cd8c10). Off for every other turn, as before 1.0.6. The thought is
+     * handled like cloud reasoning — never shown, never saved (a6ce6e8): the GPU bundle sends it in its own channel,
+     * which the factory never reads; the NPU bundle writes it inline, held back while it streams and stripped below.
+     */
+    private val thinking: Boolean = LocalDefaults.ENABLE_THINKING,
     private val temperature: Float = LocalDefaults.TEMPERATURE,
     private val backendLabel: String = "gpu",
     /** This bundle is NPU-compiled and runs on the NPU alone; see LocalEngineFactory.open. */
@@ -155,14 +178,21 @@ class LiteRTTransport(
         val history = trimmedHistory(prior, budgetTokens = contextTokens - estimatedTokens(systemMessage ?: "") - estimatedTokens(lastText) - answerReserve, log = log)
             .mapNotNull { m -> (m["content"] as? String)?.takeIf { it.isNotEmpty() }?.let { role(m["role"] as? String) to it } }
         val executed = ArrayList<ToolCallRecord>()
+        // The developer card's phase line (TurnPhase): the runtime runs the tool loop, so this transport times it.
+        val phases = ArrayList<TurnPhase>()
+        var toolStartedAt: Instant? = null
         val shims = if (includeTools && tools.isNotEmpty()) bridge.bridged(tools,
             onStarted = { _, argsJson ->
+                toolStartedAt = Instant.now()
                 // Flip the chip to "searching" while the search is actually running, as GenerationEngine does for remote providers.
                 val query = runCatching { (Json.parseToJsonElement(argsJson) as? JsonObject)?.get("query") as? JsonPrimitive }.getOrNull()?.takeIf { it.isString }?.content
                 if (!query.isNullOrEmpty()) events?.onQueriesFound(listOf(query))
             },
             onExecuted = { name, args, result ->
                 synchronized(executed) { executed += ToolCallRecord(name, args, result) }
+                val end = Instant.now()
+                synchronized(phases) { phases += TurnPhase(TurnPhase.Kind.TOOL, end, ms = toolStartedAt?.let { Duration.between(it, end).toMillis() },
+                    bytes = result.toByteArray(Charsets.UTF_8).size, tokens = TurnPhase.tokenEstimate(result.toByteArray(Charsets.UTF_8).size)) }
                 // Per ROUND, not once at the end: the rail populates as sources arrive, and the chip is told the search finished.
                 val sources = BraveWebSearchTool.parseSources(from = result)
                 if (sources.isNotEmpty()) events?.onSourcesFound(sources)
@@ -177,7 +207,9 @@ class LiteRTTransport(
             log("[litert] prompt of ~$fixedTokens tokens (tools ~$toolTokens) cannot fit a $contextTokens window")
             throw LocalInferenceError.PromptTooLarge(fixedTokens, contextTokens, toolTokens)
         }
-        val spec = LocalConversationSpec(systemMessage, history, shims, lastText, maxTokens, enableThinking, temperature)
+        // A thought counts against the cap too (~400 tokens a question, iOS measured): room for one on top of the answer.
+        val cap = if (thinking) maxTokens + THINKING_RESERVE_TOKENS else maxTokens
+        val spec = LocalConversationSpec(systemMessage, history, shims, lastText, cap, thinking, temperature)
         val answer = StringBuilder()
         // Tool-call markup must never stream to the user — same machine as the SSE path. Always enabled: a small local
         // model may emit tool syntax whether or not tools were offered this turn. Stream the ELIDED accumulation, never
@@ -190,25 +222,38 @@ class LiteRTTransport(
         // tokens to be consistent"). While only thinking has arrived nothing is emitted and the chip stays up; the
         // reasoning is kept in TurnResult.reasoning, where the cloud path keeps it.
         var lastShown = ""
+        var firstTokenAt: Instant? = null
+        var firstVisibleAt: Instant? = null
         fun emitAnswerOnly() {
             val visible = elision.visibleContent
             if (ThinkingContentParser.mayBeginOpener(visible)) return   // an opener still arriving in pieces is not answer
             val shown = ThinkingContentParser.parse(visible).answer ?: return
+            if (shown.isNotEmpty() && firstVisibleAt == null) firstVisibleAt = Instant.now()
             if (shown != lastShown) { lastShown = shown; onPartial(shown) }
         }
-        engine.stream(spec) { piece ->
-            if (piece.isEmpty()) return@stream
-            answer.append(piece)
-            if (elision.append(piece).isNotEmpty()) emitAnswerOnly()
+        // An inline thought is held back while it streams, so it never flashes on screen (iOS a6ce6e8).
+        val inlineThought = InlineThoughtFilter()
+        engine.stream(spec) { text ->
+            if (text.isEmpty()) return@stream
+            if (firstTokenAt == null) firstTokenAt = Instant.now()
+            answer.append(text)
+            val piece = inlineThought.append(text)
+            if (piece.isNotEmpty() && elision.append(piece).isNotEmpty()) emitAnswerOnly()
             if (!currentCoroutineContext().isActive) throw kotlinx.coroutines.CancellationException()
         }
         // End of stream: a suffix held back as a possible marker prefix is now known to be prose.
+        inlineThought.finish().takeIf { it.isNotEmpty() }?.let { elision.append(it) }
         if (elision.finish().isNotEmpty()) emitAnswerOnly()
         val bench = engine.benchmark()
         bench?.let { log("[litert] ttft=${it.timeToFirstTokenSeconds}s prefill=${it.prefillTokens}tok (${it.prefillTokensPerSecond.toInt()}tok/s) · decode=${it.decodeTokens}tok (${it.decodeTokensPerSecond.toInt()}tok/s)") }
         val records = synchronized(executed) { executed.toList() }
         if (records.isNotEmpty()) log("[litert] executed ${records.size} tool call(s)")
-        val parsed = ThinkingContentParser.parse(answer.toString())
+        // The inline thought goes, all of it when the cap cut it off: never the reply, never reasoning for the
+        // reasoning-only fallback to promote. A `<think>` block still parses as before.
+        val parsed = ThinkingContentParser.parse(strippingInlineThought(answer.toString()))
+        // The runtime stopped at the cap: with no answer that is the "no reply" error, never the thought.
+        val hitCap = bench?.decodeTokens?.let { it >= cap } ?: false
+        if (hitCap) log("[litert] the answer reached the $cap-token cap")
         return TurnResult(
             content = parsed.answer ?: "",
             reasoning = parsed.thinking ?: "",
@@ -216,11 +261,14 @@ class LiteRTTransport(
             toolCalls = emptyMap(),
             isTextBasedToolCall = false,
             completionTokens = bench?.decodeTokens,
+            wasTruncated = hitCap,
             // The developer panel's equivalent of a request for a turn that never made one: url stays null, the messages
             // actually sent and the runtime settings ARE the request.
             report = TurnReport(url = null,
-                requestHeaders = mapOf("runtime" to "LiteRT-LM", "model" to File(modelPath).name, "backend" to backendLabel, "context-tokens" to contextTokens.toString(), "tools-offered" to (if (includeTools) tools.size.toString() else "0")),
-                requestBodyJson = prettyMessages(messages), isE2eeActive = false, executedToolCalls = records, verify = null,
+                requestHeaders = mapOf("runtime" to "LiteRT-LM", "model" to File(modelPath).name, "backend" to backendLabel, "context-tokens" to contextTokens.toString(), "tools-offered" to (if (includeTools) tools.size.toString() else "0"),
+                    "thinking" to if (thinking) "on" else "off") + listOfNotNull(engine.lastConversation?.let { "conversation" to it }),
+                requestBodyJson = prettyRequest(messages, if (includeTools) tools else emptyList()), isE2eeActive = false, executedToolCalls = records, verify = null,
+                firstTokenAt = firstTokenAt, firstVisibleTokenAt = firstVisibleAt, phases = synchronized(phases) { phases.toList() },
                 localStats = bench?.let { LocalTurnStats(engine.backend ?: backendLabel, engine.speculative, it.prefillTokens, it.prefillTokensPerSecond) }),
         )
     }
@@ -229,6 +277,16 @@ class LiteRTTransport(
         const val DEFAULT_CONTEXT_TOKENS = 8192
         /** Room for the model's own answer and the grounding payload a tool round injects; generous because the failure it prevents is a hard INVALID_ARGUMENT, seen as a one-token non-answer. */
         const val ANSWER_RESERVE_TOKENS = 4800
+        /** Room for a Think Harder thought on top of the answer cap (iOS a6ce6e8): 4800 + 2048. */
+        const val THINKING_RESERVE_TOKENS = 2048
+
+        private val INLINE_THOUGHT = Regex("""<\|channel>thought[\s\S]*?(?:<channel\|>|$)""")
+
+        /**
+         * Some bundles put the thought inline as `<|channel>thought…<channel|>` (the Tensor NPU build). Like the channel,
+         * it is discarded: never shown, never the saved reply. Cut off by the cap, all of it goes.
+         */
+        fun strippingInlineThought(raw: String): String = raw.replace(INLINE_THOUGHT, "")
         /** The least room an answer is worth starting with. Below this the turn is refused up front rather than cut off mid-sentence. */
         const val MIN_ANSWER_TOKENS = 256
 
@@ -253,6 +311,24 @@ class LiteRTTransport(
 
         private val pretty = Json { prettyPrint = true }
         fun prettyMessages(messages: List<Map<String, Any>>): String? = runCatching { pretty.encodeToString(JsonElement.serializer(), JsonArray(messages.map { toJson(it) })) }.getOrNull()
+
+        /**
+         * The card's request body (iOS ca3d155; the maintainer, 2026-10-22: Gemma's card said "tools-offered: 1" and showed no
+         * tool): the messages and the tools the model was given, in the cloud card's `tools` shape from the same mapping
+         * the wire uses ([OpenAiTransport.wireTools]), keys sorted. No tools offered, no `tools` key: the body is as it
+         * was. Display only — built from the list handed to the runtime this turn; nothing the model gets changes.
+         */
+        fun prettyRequest(messages: List<Map<String, Any>>, tools: List<Tool>): String? {
+            if (tools.isEmpty()) return prettyMessages(messages)
+            return runCatching {
+                pretty.encodeToString(JsonElement.serializer(), sorted(JsonObject(mapOf("messages" to JsonArray(messages.map { toJson(it) }), "tools" to OpenAiTransport.wireTools(tools)))))
+            }.getOrNull()
+        }
+        private fun sorted(e: JsonElement): JsonElement = when (e) {
+            is JsonObject -> JsonObject(e.entries.sortedBy { it.key }.associate { (k, v) -> k to sorted(v) })
+            is JsonArray -> JsonArray(e.map { sorted(it) })
+            else -> e
+        }
         private fun toJson(v: Any?): JsonElement = when (v) {
             null -> JsonNull; is String -> JsonPrimitive(v); is Number -> JsonPrimitive(v); is Boolean -> JsonPrimitive(v)
             is Map<*, *> -> JsonObject(v.entries.sortedBy { it.key.toString() }.associate { it.key.toString() to toJson(it.value) })
