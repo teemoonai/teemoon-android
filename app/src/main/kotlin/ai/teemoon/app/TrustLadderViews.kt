@@ -1,5 +1,5 @@
 // ports: teemoon/Views/Chat/EnclaveGroupView.swift, TrustSeamDivider.swift, NoActionLogNotice.swift, RecipeCardView.swift,
-//        ImageRowView.swift, NodeEgressSection.swift, FableAuditBlock.swift @ v1.0.1 — every branch, in the same
+//        ImageRowView.swift, NodeEgressSection.swift, FableAuditBlock.swift @ v1.0.1 (TrustSeamDivider.swift @ 8c524172) — every branch, in the same
 //        registers. (These were one 892-line TrustLadderKnownCode.swift until iOS split them into "honest filenames"
 //        in 4f367df on 2026-08-30 — two days BEFORE the 2026-09-01 baseline, so the old name never existed at the sha
 //        this header pins to. Corrected 2026-09-22.) teemoon/Views/Chat/TrustLadder.swift @ v1.0.1
@@ -18,11 +18,16 @@ import ai.teemoon.confidential.ModelLayerVerification
 import ai.teemoon.confidential.NodeFinding
 import ai.teemoon.confidential.PlaintextExposure
 import ai.teemoon.confidential.StepState
+import ai.teemoon.confidential.DeployLogBinding
+import ai.teemoon.confidential.TrustScopeLine
+import ai.teemoon.confidential.TrustScopeText
+import ai.teemoon.confidential.NearTrustScope
 import ai.teemoon.confidential.partitionRecipeRows
 import ai.teemoon.confidential.splitNodeFindings
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
@@ -59,6 +64,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
@@ -77,6 +83,9 @@ import androidx.compose.ui.unit.Dp
 
 /** ImageRowView's tiering: who sees plaintext outright, who could reach it, who sees metrics, who forwards logs. */
 object ImageRowPresentation {
+    /** An image name with line-break chances after "/" and before "@" (zero-width spaces), so it wraps there, not mid-word. */
+    fun breakable(name: String): String = name.replace("/", "/\u200B").replace("@", "\u200B@")
+
     fun tier(image: ImageEntry): Int? {
         if (image.kind == ImageEntry.Kind.GUEST_OS || image.plaintextRole != null) return 1
         return when (image.capability) {
@@ -113,7 +122,7 @@ object ImageRowPresentation {
         val names = tagged.joinToString(", ") { it.name.substringAfterLast('/') }
         val pinned = images.size - tagged.size
         val pronoun = if (tagged.size == 1) "its" else "their"; val rows = if (tagged.size == 1) "its row" else "their rows"
-        return "pins $pinned of ${images.size} images by content digest — ${tagged.size} ($names) by tag only: $pronoun running bytes can change without changing the hash verified above. see $rows."
+        return "names $pinned of ${images.size} images by content digest — ${tagged.size} ($names) by tag only: $pronoun running bytes can change without changing the hash verified above. see $rows."
     }
     fun handlesMessage(image: ImageEntry) = image.plaintextRole != null || image.kind == ImageEntry.Kind.LOCAL
     /** A tag-pinned sidecar with no capability and no plaintext role is named, not individually shown. */
@@ -143,6 +152,15 @@ private val footnote @Composable get() = MaterialTheme.typography.bodySmall
         leading?.invoke(); Text(title, style = caption2.copy(fontWeight = FontWeight.Medium), color = color); ArrowUpRightGlyph(color, 10.dp)
     }
 }
+/**
+ * A run of links that WRAPS: each link stays whole and the next one starts a new line when it doesn't fit. A Row gave
+ * the last link whatever width was left — "audit · private" ran a letter a line under each sglang image and stretched
+ * the block a screen tall (the maintainer's Pixel, default text, 2026-11-01; 3917 too).
+ */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
+@Composable internal fun LinkFlow(modifier: Modifier = Modifier, content: @Composable () -> Unit) =
+    FlowRow(modifier, horizontalArrangement = Arrangement.spacedBy(14.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) { content() }
+
 /** A capsule tag: caption2, 6×2 padding, a soft fill of its colour. */
 @Composable private fun CapsuleTag(text: String, color: Color, fillAlpha: Float = 0.15f, weight: FontWeight = FontWeight.Medium, leading: (@Composable () -> Unit)? = null) {
     Row(Modifier.clip(CircleShape).background(color.copy(alpha = fillAlpha)).padding(horizontal = 6.dp, vertical = 2.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
@@ -229,9 +247,20 @@ fun EvidenceCard(title: String, subtitle: String, content: @Composable () -> Uni
 
 @Composable
 fun EvidenceRowView(item: EvidenceItem) {
+    // the ✓/✕ are text and grow with the reader's text size: the mark's column grows with them, or at 200% the mark ran
+    // into its label (A6 screen check, pm 2026-11-06)
+    val markW = 16.dp * androidx.compose.ui.platform.LocalDensity.current.fontScale.coerceAtLeast(1f)
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.Top) {
-        val (glyph, tone) = when (item.state) { StepState.DONE -> "✓" to TrustTone.OK; StepState.LIVE -> "●" to TrustTone.OK; StepState.PENDING -> "…" to TrustTone.VERIFYING; StepState.STUCK -> "✕" to TrustTone.FAILED }
-        Text(glyph, color = tone.color(), modifier = Modifier.width(16.dp))
+        when (item.state) {
+            // iOS EvidenceRow: `.live, .pending, .none` are a small ProgressView. A green dot read as a pass while the
+            // check was still in flight (T1 goldens, 2026-11-06).
+            StepState.LIVE, StepState.PENDING ->
+                androidx.compose.foundation.layout.Box(Modifier.width(markW).padding(top = 3.dp)) { SpokeSpinner(TeemoonColors.secondaryLabel, Modifier.size(14.dp)) }
+            StepState.DONE -> Text("✓", color = TrustTone.OK.color(), modifier = Modifier.width(markW))
+            StepState.STUCK -> Text("✕", color = TrustTone.FAILED.color(), modifier = Modifier.width(markW))
+            // couldn't check (an outage): orange, never the red of evidence (trust-unchecked-glyph, the maintainer 2026-11-06)
+            StepState.UNCHECKED -> androidx.compose.foundation.layout.Box(Modifier.width(markW).padding(top = 2.dp)) { TriangleGlyph(TeemoonColors.orange) }
+        }
         Column(verticalArrangement = Arrangement.spacedBy(2.dp)) { Text(item.label, style = MaterialTheme.typography.bodyMedium); ProofText(item.detail, captionStyle) }
     }
 }
@@ -241,6 +270,7 @@ fun EvidenceRowView(item: EvidenceItem) {
  * not a green attestation check). The reviewer's conclusion replaces the fixed subtitle — boilerplate must never
  * outrank the verdict — clipped to three lines; the class badge survives any truncation. nil ⇒ neutral copy, never reassurance.
  */
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
 fun FableAuditBlock(url: String, title: String, subtitle: String, verdict: String?, verdictClass: AuditVerdictClass?) {
     val uri = LocalUriHandler.current
@@ -249,15 +279,24 @@ fun FableAuditBlock(url: String, title: String, subtitle: String, verdict: Strin
         .clickable { uri.openUri(url) }.padding(horizontal = 11.dp, vertical = 8.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(9.dp)) {
         MagnifierDocGlyph(TeemoonColors.orange)
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(1.dp)) {
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text(title, style = captionStyle.copy(fontWeight = FontWeight.SemiBold), color = TeemoonColors.label)
-                verdictClass?.let { Text(it.label.uppercase(), style = caption2.copy(fontWeight = FontWeight.Bold), color = badge, modifier = Modifier.clip(CircleShape).background(badge.copy(alpha = 0.16f)).padding(horizontal = 6.dp, vertical = 1.5.dp)) }
+            // A FlowRow, not a Row: the badge goes under the title when both don't fit. In a Row the title took the width
+            // first and the badge was squeezed to a letter a line at large text (the maintainer, Pixel, 2026-11-01; in 3917 too).
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                Text(title, style = captionStyle.copy(fontWeight = FontWeight.SemiBold), color = TeemoonColors.label, modifier = Modifier.align(Alignment.CenterVertically))
+                verdictClass?.let { Text(it.label.uppercase(), style = caption2.copy(fontWeight = FontWeight.Bold), color = badge, maxLines = 1, modifier = Modifier.align(Alignment.CenterVertically).clip(CircleShape).background(badge.copy(alpha = 0.16f)).padding(horizontal = 6.dp, vertical = 1.5.dp)) }
             }
             if (verdict != null) Text(MarkdownInline.annotate(verdict), style = caption2, color = TeemoonColors.label, maxLines = 3, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
-            else { caption(subtitle); Text("verdict not recorded — open the review", style = caption2, color = TeemoonColors.secondaryLabel, modifier = Modifier.padding(top = 2.dp)) }
+            else FableAuditCopy.withoutVerdict(subtitle).let { (sub, note) -> sub?.let { caption(it) }; Text(note, style = caption2, color = TeemoonColors.secondaryLabel, modifier = Modifier.padding(top = 2.dp)) }
         }
         ArrowUpRightGlyph(TeemoonColors.orange, 10.dp)
     }
+}
+
+/** The review block's lines when the index records no verdict for the page (pm audit-index sweep #4f). */
+internal object FableAuditCopy {
+    const val VERDICT_NOT_RECORDED = "verdict not recorded — open the review"
+    /** (subtitle shown, the note under it): no "reviewed" claim without a verdict (trust-audit-links-gated, the maintainer 2026-11-06). */
+    fun withoutVerdict(@Suppress("UNUSED_PARAMETER") subtitle: String): Pair<String?, String> = null to VERDICT_NOT_RECORDED
 }
 
 /** NodeEgressSection: the machine-read findings unioned and severity-sorted — live first, latent second, informational behind a disclosure. */
@@ -297,14 +336,22 @@ fun NodeEgressSection(findings: List<NodeFinding>) {
     }
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-fun ImageRowView(image: ImageEntry, rung: TrustRung, audit: AuditIndex = AuditIndex.shared, onCopy: (String) -> Unit = {}) {
+fun ImageRowView(image: ImageEntry, rung: TrustRung, audit: AuditIndex = AuditIndex.shared, onCopy: (String) -> Unit = {},
+                 /** Trust scope's word on this image's value, e.g. " · in the quote ✓" for the guest OS. */
+                 valueSuffix: String = "",
+                 /** Trust scope's line for this image, e.g. the compose manager's running digest. */
+                 scopeLine: TrustScopeLine? = null, reviewLine: TrustScopeLine? = null) {
     val expert = rung == TrustRung.EXPERT
     val tier = ImageRowPresentation.tier(image)
     val unverified = image.kind == ImageEntry.Kind.UNVERIFIED; val tagPinned = image.kind == ImageEntry.Kind.TAG_PINNED
     Column(Modifier.fillMaxWidth().padding(top = 2.dp), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-        Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(image.name, style = footnote.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Medium), color = TeemoonColors.label, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+        // A FlowRow: the provenance chip goes under the name when both don't fit, instead of squeezing the name to a few
+        // letters (large text, the maintainer 2026-11-01). The name wraps, breaking after "/" and before "@" — never cut mid-word
+        // ("nearaidev/compose-mana…" at 200%: A6 screen check, pm 2026-11-06).
+        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+            Text(ImageRowPresentation.breakable(image.name), style = footnote.copy(fontFamily = FontFamily.Monospace, fontWeight = FontWeight.Medium), color = TeemoonColors.label, modifier = Modifier.align(Alignment.CenterVertically))
             // The provenance-tier chip beside the name: a red `unverified` always shows; a tag-pinned row's chip is ORANGE
             // (cannot-check — a tag pins no bytes), never red (red = positive evidence of tamper).
             if (image.kind != ImageEntry.Kind.LOCAL) {
@@ -325,6 +372,10 @@ fun ImageRowView(image: ImageEntry, rung: TrustRung, audit: AuditIndex = AuditIn
         // Register matches the claim: red = tamper evidence, ORANGE = structurally uncheckable, secondary = plain fact.
         image.note?.let { Text(it, style = captionStyle, color = if (unverified) TeemoonColors.red else if (tagPinned) TeemoonColors.orange else TeemoonColors.secondaryLabel) }
         if (expert) image.digest?.let { ValuePill(it, image.digestFull, onCopy) }
+        // its own line, not inside the pill: the pill is one line and ellipsizes, which cut the suffix off
+        if (expert && valueSuffix.isNotEmpty()) Text(valueSuffix.removePrefix(" · "), style = caption2.copy(fontWeight = FontWeight.SemiBold), color = TeemoonColors.verified)
+        scopeLine?.let { TrustScopeLineView(it) }
+        reviewLine?.let { TrustScopeLineView(it) }
         if (image.kind == ImageEntry.Kind.GUEST_OS) {
             // A recorded, out-of-band digest match — a muted source link, never a peer of the orange provenance links; NOT
             // recorded → an amber caution that states what is true and does not claim "doesn't match latest".
@@ -346,14 +397,14 @@ fun ImageRowView(image: ImageEntry, rung: TrustRung, audit: AuditIndex = AuditIn
                     Box(Modifier.width(16.dp), contentAlignment = Alignment.Center) { CircleMark(ok = holds, color = if (holds) TeemoonColors.verified else TeemoonColors.orange) }
                     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Text(line.title, style = captionStyle.copy(fontWeight = FontWeight.Medium), color = TeemoonColors.label); ProofText(line.detail)
-                        if (line.links.isNotEmpty()) Row(Modifier.padding(top = 1.dp), horizontalArrangement = Arrangement.spacedBy(14.dp)) { line.links.forEach { LinkText(it.title, it.url) } }
+                        if (line.links.isNotEmpty()) LinkFlow(Modifier.padding(top = 1.dp)) { line.links.forEach { LinkText(it.title, it.url) } }
                     }
                 }
             }
         }
         // Caveated upstream-project pointer: a MUTED affordance in its own register — never one of the provenance links.
         if (expert) image.projectPointer?.let { pp -> Column(Modifier.padding(top = 1.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) { LinkText("upstream · ${pp.name}", pp.url, color = TeemoonColors.secondaryLabel, leading = { BoxGlyph(TeemoonColors.secondaryLabel) }); caption(pp.status) } }
-        if (expert && image.links.isNotEmpty()) Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) { image.links.forEach { LinkText(it.title, it.url) } }
+        if (expert && image.links.isNotEmpty()) LinkFlow { image.links.forEach { LinkText(it.title, it.url) } }
     }
 }
 
@@ -364,16 +415,17 @@ fun NoActionLogNotice() = Row(Modifier.fillMaxWidth().clip(RoundedCornerShape(12
     TriangleGlyph(TeemoonColors.orange)
     Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
         Text("recipe not verifiable", style = footnote.copy(fontWeight = FontWeight.SemiBold), color = TeemoonColors.label)
-        caption("this enclave exposed no signed action log, so the running engine + proxy recipe can’t be hash-checked on this device — it isn’t pinned by anything you can verify here.")
+        caption(ai.teemoon.confidential.TrustScopeText.NO_ACTION_LOG_DETAIL)
     }
 }
 
-/** The trust seam: a dashed rule with a centred caption — everything below it is pinned by the signed action log. */
+/** The trust seam: a dashed rule with a centred caption — everything below it is pinned by the action log, "signed" once (a) binds it. */
 @Composable
-fun TrustSeamDivider() = Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+fun TrustSeamDivider(signed: Boolean = true) = Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
     val tertiary = TeemoonColors.tertiaryLabel
     val rule: @Composable RowScope.() -> Unit = { Canvas(Modifier.weight(1f).height(1.dp)) { drawLine(tertiary, Offset(0f, size.height / 2), Offset(size.width, size.height / 2), 1.dp.toPx(), pathEffect = PathEffect.dashPathEffect(floatArrayOf(3.dp.toPx(), 3.dp.toPx()))) } }
-    rule(); Text("pinned by the signed action log", style = caption2, color = TeemoonColors.tertiaryLabel); rule()
+    // Wraps, centred, never one fixed line: at the largest text sizes it is wider than the phone (iOS 8c524172).
+    rule(); Text("pinned by the ${if (signed) "signed " else ""}action log", style = caption2, color = TeemoonColors.tertiaryLabel, textAlign = TextAlign.Center); rule()
 }
 
 /**
@@ -382,7 +434,9 @@ fun TrustSeamDivider() = Row(Modifier.fillMaxWidth().padding(vertical = 3.dp), v
  * dropped row), orange when the source was unreachable, a spinner while pending.
  */
 @Composable
-fun RecipeCardView(recipe: EnclaveGroup.RecipeCard, images: List<ImageEntry>, rung: TrustRung, audit: AuditIndex = AuditIndex.shared, onCopy: (String) -> Unit = {}) {
+fun RecipeCardView(recipe: EnclaveGroup.RecipeCard, images: List<ImageEntry>, rung: TrustRung, audit: AuditIndex = AuditIndex.shared, onCopy: (String) -> Unit = {},
+                   /** Trust scope for this record: (a) on top of the card, (c) below its rows. */
+                   scope: NearTrustScope? = null) {
     val expert = rung == TrustRung.EXPERT
     val isFailure = recipe.verification == ModelLayerVerification.HASH_MISMATCH
     val tint = when (recipe.verification) { ModelLayerVerification.VERIFIED -> TeemoonColors.verified; ModelLayerVerification.HASH_MISMATCH -> TeemoonColors.red; ModelLayerVerification.FETCH_FAILED -> TeemoonColors.orange; null -> TeemoonColors.secondaryLabel }
@@ -391,9 +445,12 @@ fun RecipeCardView(recipe: EnclaveGroup.RecipeCard, images: List<ImageEntry>, ru
         // header
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             Row(horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) { ListDocGlyph(TeemoonColors.secondaryLabel); Text("the running recipe", style = footnote.copy(fontWeight = FontWeight.SemiBold), color = TeemoonColors.label) }
-            // "the exact images … pinned" overclaims the moment a tag-pinned member exists (a tag names, it doesn't pin)
-            Text(MarkdownInline.annotate(if (tagPinned == 0) "the exact images the signed action log pinned — the engine + proxy that handle your message, plus their telemetry sidecars — checked on this device against its `file_sha256`."
-                                          else "the images the signed action log’s recipe declares — checked on this device against its `file_sha256`."), style = caption2, color = TeemoonColors.secondaryLabel)
+            // (a), the card's first line (near-trust-scope, iOS aa84e369)
+            TrustScopeText.actionLogLine(scope?.deployLogBinding)?.let { TrustScopeLineView(it) }
+            // near-trust-scope (the maintainer 2026-11-06): the log NAMES the images ("pinned"/"the exact" overclaimed); a tag names, it doesn't pin
+            Text(MarkdownInline.annotate(if (tagPinned == 0) "the images the action log names — the engine + proxy that handle your message, plus their telemetry sidecars — checked on this device against its `file_sha256`."
+                                          // before (a) binds the log it may not be called signed (near-trust-scope)
+                                          else ai.teemoon.confidential.TrustScopeText.recipeDeclaresCaption(scope?.deployLogBinding)), style = caption2, color = TeemoonColors.secondaryLabel)
             val verdict = ImageRowPresentation.recipeVerdict(recipe.verification, tagPinned)
             if (verdict != null) Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.Top) {
                 when (recipe.verification) { ModelLayerVerification.VERIFIED -> SealGlyph(tint, ok = true); ModelLayerVerification.HASH_MISMATCH -> OctagonGlyph(tint); else -> TriangleGlyph(tint) }
@@ -411,37 +468,49 @@ fun RecipeCardView(recipe: EnclaveGroup.RecipeCard, images: List<ImageEntry>, ru
         if (split != null) {
             val (handlers, telemetry) = split
             SubHeader("handles your message")
-            handlers.forEach { ImageRowView(it, rung, audit, onCopy) }
+            handlers.forEach { ScopedImageRow(it, rung, audit, onCopy, scope) }
             if (telemetry.isNotEmpty()) {
                 SubHeader("telemetry sidecars")
                 caption(if (telemetry.any { it.kind == ImageEntry.Kind.TAG_PINNED }) "pinned by the same action log and verified the same way — except rows marked ‘pinned by tag’, which the action log names but cannot pin by content — not on your message’s path, but each runs with real privileges inside the enclave: see each row’s tag."
                         else "pinned by the same action log and verified the same way — not on your message’s path, but each runs with real privileges inside the enclave: see each row’s tag.", TeemoonColors.tertiaryLabel)
-                telemetry.filterNot(ImageRowPresentation::collapsible).forEach { ImageRowView(it, rung, audit, onCopy) }
+                telemetry.filterNot(ImageRowPresentation::collapsible).forEach { ScopedImageRow(it, rung, audit, onCopy, scope) }
                 val collapsed = telemetry.filter(ImageRowPresentation::collapsible)
                 if (collapsed.isNotEmpty()) caption("${collapsed.size} more pinned by tag only — not individually verifiable here: ${collapsed.joinToString(", ") { it.name }}", TeemoonColors.orange)
             }
-        } else images.forEach { ImageRowView(it, rung, audit, onCopy) }
+        } else images.forEach { ScopedImageRow(it, rung, audit, onCopy, scope) }
+        // (c): what the action log names as running, after the image lists (near-trust-scope, iOS aa84e369)
+        scope?.let { TrustScopeText.runningRows(it) }?.takeIf { it.isNotEmpty() }?.let { RunningNowSection(it, Modifier.padding(top = 4.dp)) }
         // A mismatch drops the inner compose, so the card can be image-less. Say so — an empty red card must not read as "nothing to see."
         if (images.isEmpty() && isFailure) caption("recipe contents unavailable — the fetched file didn’t match the pinned hash, so its images aren’t shown.")
     }
 }
 
+@OptIn(androidx.compose.foundation.layout.ExperimentalLayoutApi::class)
 @Composable
-fun EnclaveGroupView(group: EnclaveGroup, rung: TrustRung, audit: AuditIndex = AuditIndex.shared, onCopy: (String) -> Unit = {}) {
+fun EnclaveGroupView(group: EnclaveGroup, rung: TrustRung, audit: AuditIndex = AuditIndex.shared, onCopy: (String) -> Unit = {},
+                     /** Trust scope for the model enclave's record; the gateway has none. */
+                     scope: NearTrustScope? = null) {
     val expert = rung == TrustRung.EXPERT
     Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).background(TeemoonColors.groupedCard).padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
-            Text(group.role, style = footnote.copy(fontWeight = FontWeight.SemiBold), color = TeemoonColors.label)
-            if (group.primary) CapsuleTag("primary · own quote", TeemoonColors.verified)
-            Spacer(Modifier.weight(1f))
-            // Tri-state: a FAILED quote must show a red counter-signal, not silently drop the seal.
-            when (group.quoteVerified) {
+            // The role and its tag flow onto a second line before the verdict wraps: at 320 dp the three did not fit one
+            // row, and "quote failed" (then the role) was squeezed to a letter a line (T6 goldens, 2026-11-06).
+            FlowRow(Modifier.weight(1f), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                Text(group.role, style = footnote.copy(fontWeight = FontWeight.SemiBold), color = TeemoonColors.label, modifier = Modifier.align(Alignment.CenterVertically))
+                if (group.primary) CapsuleTag("primary · own quote", TeemoonColors.verified)
+            }
+            // Tri-state: a FAILED quote must show a red counter-signal, not silently drop the seal. While Intel's verdict
+            // is out the seal waits, as every pending check does (trust-pending-state: no green while pending).
+            if (group.quotePending) SpokeSpinner(TeemoonColors.secondaryLabel, Modifier.size(12.dp))
+            else when (group.quoteVerified) {
                 true -> SealGlyph(TeemoonColors.verified, ok = true)
-                false -> Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) { SealGlyph(TeemoonColors.red, ok = false); Text("quote failed", style = caption2.copy(fontWeight = FontWeight.SemiBold), color = TeemoonColors.red) }
+                false -> Row(horizontalArrangement = Arrangement.spacedBy(3.dp), verticalAlignment = Alignment.CenterVertically) { SealGlyph(TeemoonColors.red, ok = false); Text("quote failed", style = caption2.copy(fontWeight = FontWeight.SemiBold), color = TeemoonColors.red, maxLines = 1, softWrap = false) }
                 null -> Unit
             }
         }
         Text(group.binding, style = captionStyle, color = TeemoonColors.secondaryLabel)
+        // (b), directly under the binding text (near-trust-scope, iOS aa84e369)
+        if (group.primary) TrustScopeText.bootLogLine(scope?.bootLogReplay)?.let { TrustScopeLineView(it) }
         group.deployment?.let { caption(it, TeemoonColors.tertiaryLabel) }
         if (expert) group.mrConfig?.let { ValuePill("mr_config ${it.take(12)}…", it, onCopy) }
         // Recipe IA (model enclave only): the images split at a dashed trust seam. The seam + recipe are load-bearing — NEVER
@@ -449,15 +518,66 @@ fun EnclaveGroupView(group: EnclaveGroup, rung: TrustRung, audit: AuditIndex = A
         val recipe = group.recipe
         if (recipe != null) {
             val measured = group.images.filter { !it.isRecipe }; val recipeImages = group.images.filter { it.isRecipe }
-            measured.forEach { ImageRowView(it, rung, audit, onCopy) }
-            if (measured.isNotEmpty()) TrustSeamDivider()
-            if (recipeImages.isNotEmpty() || recipe.fileSHA != null || recipe.verification != null) RecipeCardView(recipe, recipeImages, rung, audit, onCopy) else NoActionLogNotice()
-        } else group.images.forEach { ImageRowView(it, rung, audit, onCopy) }
+            measured.forEach { ScopedImageRow(it, rung, audit, onCopy, scope) }
+            if (measured.isNotEmpty()) TrustSeamDivider(signed = scope?.deployLogBinding == DeployLogBinding.Bound)
+            if (recipeImages.isNotEmpty() || recipe.fileSHA != null || recipe.verification != null) RecipeCardView(recipe, recipeImages, rung, audit, onCopy, scope) else NoActionLogNotice()
+        } else group.images.forEach { ScopedImageRow(it, rung, audit, onCopy, scope) }
         // The one caption stating the counterpart of the role tags — rendered even (especially) when no image is tagged.
         group.plaintextCaption?.let { Text(it, style = captionStyle, color = TeemoonColors.secondaryLabel, modifier = Modifier.padding(top = 2.dp)) }
-        if (group.images.any { it.configLines.isNotEmpty() }) caption(ExpertSections.BINDING_NOTE, TeemoonColors.tertiaryLabel)
+        if (group.images.any { it.configLines.isNotEmpty() }) caption(ai.teemoon.confidential.TrustScopeText.measuredBindingNote(scope?.deployLogBinding), TeemoonColors.tertiaryLabel)
         group.measurementCaption?.let { Text(proofText(it, TeemoonColors.label, TeemoonColors.tertiaryLabel), style = caption2) }
         if (expert && group.egressFindings.isNotEmpty()) NodeEgressSection(group.egressFindings)
         if (expert) group.configAuditURL?.let { FableAuditBlock(it, "fable miniaudit · deployment config", "allowed_envs, egress & telemetry reviewed · this measurement", audit.verdict(it), audit.verdictClass(it)) }
+    }
+}
+
+/**
+ * An image row with trust scope's words on it (iOS EnclaveGroupView.row @ aa84e369/711e006b): the guest OS's value
+ * gains " · in the quote ✓" when the boot log puts it there; the compose manager's row gains its running line, and
+ * when another manager runs, the declared image stays shown but unlinked.
+ */
+@Composable
+fun ScopedImageRow(image: ImageEntry, rung: TrustRung, audit: AuditIndex, onCopy: (String) -> Unit, scope: NearTrustScope?) {
+    val isManager = image.name.endsWith("compose-manager")
+    // a different running manager wears its own review, when the audits have one for its digest (iOS 359a99d1)
+    ImageRowView(if (isManager) TrustScopeText.managerRow(image, scope?.composeManager) { audit.imageAuditURL("nearaidev/compose-manager", "sha256:$it") } else image, rung, audit, onCopy,
+        valueSuffix = if (image.kind == ImageEntry.Kind.GUEST_OS) TrustScopeText.osImageSuffix(scope?.bootLogReplay) else "",
+        scopeLine = if (isManager) TrustScopeText.composeManagerLine(scope?.composeManager) else null,
+        reviewLine = if (isManager) TrustScopeText.unreviewedManagerLine(scope?.composeManager) { audit.imageAuditURL("nearaidev/compose-manager", "sha256:$it") } else null)
+}
+
+/** One trust-scope line (iOS TrustScopeLineView): green when proven, orange when not checked, red when broken. */
+@Composable
+fun TrustScopeLineView(line: TrustScopeLine) {
+    val tint = when (line.tone) {
+        TrustScopeLine.Tone.PROVEN -> TeemoonColors.verified; TrustScopeLine.Tone.CAUTION -> TeemoonColors.orange
+        TrustScopeLine.Tone.BROKEN -> TeemoonColors.red; TrustScopeLine.Tone.QUIET -> TeemoonColors.secondaryLabel
+    }
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        Row(horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.Top) {
+            when (line.tone) {
+                TrustScopeLine.Tone.PROVEN -> SealGlyph(tint, ok = true); TrustScopeLine.Tone.CAUTION -> TriangleGlyph(tint)
+                TrustScopeLine.Tone.BROKEN -> OctagonGlyph(tint); TrustScopeLine.Tone.QUIET -> Text("–", style = caption2, color = tint)
+            }
+            Text(line.text, style = caption2.copy(fontWeight = FontWeight.SemiBold), color = tint)
+        }
+        line.detail?.let { Text(it, style = caption2, color = TeemoonColors.secondaryLabel) }
+    }
+}
+
+/** (c): what the action log names as running, one row per service, its file's check under it (iOS RunningNowSection). */
+@Composable
+fun RunningNowSection(rows: List<TrustScopeText.RunningRowText>, modifier: Modifier = Modifier) {
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text(TrustScopeText.RUNNING_HEADER.uppercase(), style = caption2.copy(fontWeight = FontWeight.SemiBold), color = TeemoonColors.secondaryLabel)
+        rows.forEach { row ->
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(row.title, style = captionStyle.copy(fontFamily = FontFamily.Monospace), color = TeemoonColors.label)
+                row.caption?.let { Text(it, style = caption2, color = TeemoonColors.tertiaryLabel) }
+                row.state?.let { TrustScopeLineView(it) }
+                row.liveness?.let { TrustScopeLineView(it) }
+            }
+        }
+        Text(TrustScopeText.RUNNING_FOOTER, style = caption2, color = TeemoonColors.tertiaryLabel)
     }
 }

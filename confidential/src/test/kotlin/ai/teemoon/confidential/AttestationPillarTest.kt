@@ -3,6 +3,7 @@ package ai.teemoon.confidential
 
 import ai.teemoon.providers.Provider
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -65,10 +66,24 @@ class AttestationPillarTest {
         assertEquals("encrypted", pillar(s, "private")?.chipLabel)
     }
 
+    /**
+     * iOS 0c3708c: the phone traces the images the measured launch config names — compose-manager by its overridable
+     * default — not the manager the action log says started (read from 1.2). The verified line must not claim more.
+     */
+    @Test fun theVerifiedCodeLineClaimsTheLaunchConfigsImagesNotWhatBooted() {
+        val s = summary(AttestationRecord.preview, verifiedResponseCount = 2, imageProvenance = allVerified,
+            dcap = RecordDcapVerification(gateway = upToDate))
+        val line = pillar(s, "code")!!.summaryLine
+        assertFalse("claims the running code: $line", line.contains("booted"))
+        assertTrue(line.contains("launch config"))
+    }
+
     @Test fun e2eeDown_onlyPrivacyPillarNeedsAttention() {
         // E2EE failed on the last request, but hardware + code are fine — the
-        // privacy failure must not drag the other pillars down.
-        val s = summary(AttestationRecord.preview, state = AttestationState.DEGRADED, lastRequestUsedE2EE = false, imageProvenance = allVerified)
+        // privacy failure must not drag the other pillars down. Hardware has its verdicts: a pending one is
+        // "checking", never "verified" (T1, iOS 2fe36fa3).
+        val s = summary(AttestationRecord.preview, state = AttestationState.DEGRADED, lastRequestUsedE2EE = false, imageProvenance = allVerified,
+            dcap = RecordDcapVerification(gateway = upToDate), nras = NrasVerification.Verified)
         assertEquals(PillarState.ATTENTION, pillar(s, "private")?.state)
         assertEquals(PillarState.VERIFIED, pillar(s, "hardware")?.state)
         assertEquals(PillarState.VERIFIED, pillar(s, "code")?.state)
@@ -94,8 +109,27 @@ class AttestationPillarTest {
     }
 
     @Test fun hardwareLineNamesGPUWhenPresent() {
-        val s = summary(AttestationRecord.preview)  // preview has gpuArch HOPPER
+        val s = summary(AttestationRecord.preview, dcap = RecordDcapVerification(gateway = upToDate), nras = NrasVerification.Verified)  // preview has gpuArch HOPPER
         assertTrue(pillar(s, "hardware")?.summaryLine?.contains("NVIDIA") == true)
+    }
+
+    /** T1 (iOS 2fe36fa3): outside VERIFYING too, a pillar with an unanswered row is checking — "confirmed by Intel and NVIDIA" waits for both. */
+    @Test fun aPillarWithAPendingRowIsChecking() {
+        val s = summary(AttestationRecord.preview.copy(nvidiaPayload = "{}"), state = AttestationState.DEGRADED, lastRequestUsedE2EE = false, imageProvenance = allVerified)
+        assertEquals(PillarState.CHECKING, pillar(s, "hardware")?.state)
+        assertFalse(pillar(s, "hardware")!!.summaryLine.contains("confirmed"))
+    }
+
+    /** iOS AppStateTests.theGPURowSaysCheckingUntilNVIDIAAnswers (341a62a3; A2 @ 123d0b28): checking until NVIDIA answers, then NVIDIA's result. */
+    @Test fun theGPURowSaysCheckingUntilNVIDIAAnswers() {
+        val record = AttestationRecord.preview.copy(nvidiaPayload = "{}")
+        assertEquals("Checking GPU evidence with NVIDIA…", summary(record, state = AttestationState.VERIFYING).gpuRowDetail)
+        val answered = summary(record, nras = NrasVerification.Verified)
+        assertEquals("NVIDIA confirmed genuine attested GPUs for this request", answered.gpuRowDetail)
+        // trust-hardware-fail-lines 2 (the maintainer 2026-11-06): a failed or inconclusive NVIDIA check says NVIDIA's reason,
+        // never "verified via gateway" beside its ✕
+        assertEquals("nonce mismatch", summary(record, nras = NrasVerification.Failed("nonce mismatch")).gpuRowDetail)
+        assertEquals("service unreachable", summary(record, nras = NrasVerification.Inconclusive("service unreachable")).gpuRowDetail)
     }
 
     // MARK: Android-only — resolveState and the GPU / NRAS rows
@@ -112,26 +146,39 @@ class AttestationPillarTest {
     }
 
     @Test fun nrasRowAppearsOnlyWithGpuEvidence() {
-        assertNull(summary(AttestationRecord.preview, nras = NrasVerification.Verified).nrasState)
+        assertNull(summary(AttestationRecord.preview.copy(nvidiaPayload = null)).nrasState)
+        // S37 B4 (iOS d5e40fee): a verdict with no payload behind it is the missing-evidence couldn't-check, and the row shows it
+        assertEquals(StepState.UNCHECKED, summary(AttestationRecord.preview.copy(nvidiaPayload = null), nras = NrasVerification.Inconclusive(NrasVerification.EVIDENCE_ABSENT)).nrasState)
         val withEvidence = AttestationRecord.preview.copy(nvidiaPayload = "{}")
         assertEquals(StepState.DONE, summary(withEvidence, nras = NrasVerification.Verified).nrasState)
-        assertEquals(StepState.STUCK, summary(withEvidence, nras = NrasVerification.Inconclusive("unreachable")).nrasState)
+        // NVIDIA unreachable is the orange "couldn't check", as Intel's is; a rejection stays red (trust-unchecked-glyph)
+        assertEquals(StepState.UNCHECKED, summary(withEvidence, nras = NrasVerification.Inconclusive("unreachable")).nrasState)
+        assertEquals(StepState.STUCK, summary(withEvidence, nras = NrasVerification.Failed("rejected")).nrasState)
         assertEquals("unreachable", summary(withEvidence, nras = NrasVerification.Inconclusive("unreachable")).nrasDetail)
         assertEquals(StepState.PENDING, summary(withEvidence).nrasState)
         assertEquals(StepState.LIVE, summary(withEvidence, state = AttestationState.VERIFYING).nrasState)
     }
 
+    /** The GPU node's own TDX line is no longer a row (A2, iOS 123d0b28 deleted the unreachable "GPU secure enclave" row). */
     @Test fun gpuRowIsSupplementaryAndNeverCounted() {
         val s = summary(AttestationRecord.preview)
         assertTrue(s.showGPURow)
-        assertNull(s.gpuTdxValid)
-        assertEquals("GPU node unreachable — verified via gateway", s.gpuTdxDetail)
-        // Unreachable GPU → no row after verification, and nothing in the banner count.
         assertTrue(pillar(s, "hardware")!!.checks.none { it.label == "GPU secure enclave" })
         val withGpu = AttestationRecord.preview.copy(gpuQuoteVerification = AttestationFixtures.verification(ByteArray(64), signatureValid = false))
-        val bad = summary(withGpu)
-        assertEquals(false, bad.gpuTdxValid)
-        assertEquals("TDX signature verification failed", bad.gpuTdxDetail)
-        assertEquals(s.checksTotal, bad.checksTotal)
+        assertTrue(pillar(summary(withGpu), "hardware")!!.checks.none { it.label == "GPU secure enclave" })
+        assertEquals(s.checksTotal, summary(withGpu).checksTotal)
+    }
+
+    /**
+     * trust-unchecked-glyph (the maintainer 2026-11-06): a quote Intel couldn't check gets its own state — the orange "couldn't
+     * check" mark, not the red ✕ of a failed one — and its pillar never reads verified.
+     */
+    @Test fun anUncheckedQuoteIsItsOwnState() {
+        val s = summary(AttestationRecord.preview, state = AttestationState.DEGRADED,
+            dcap = RecordDcapVerification(gateway = upToDate, model = DcapVerification.Unchecked("collateral: pcs unreachable")), nras = NrasVerification.Verified)
+        assertEquals(StepState.UNCHECKED, s.dcapState)
+        assertEquals(StepState.STUCK, summary(AttestationRecord.preview, state = AttestationState.DEGRADED,
+            dcap = RecordDcapVerification(gateway = DcapVerification.Failed("bad"))).dcapState)
+        assertEquals(PillarState.ATTENTION, pillar(s, "hardware")?.state)
     }
 }

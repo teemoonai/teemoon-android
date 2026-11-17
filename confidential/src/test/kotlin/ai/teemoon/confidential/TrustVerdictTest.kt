@@ -1,4 +1,5 @@
-// ports: teemoonTests/TrustVerdictTests.swift @ v1.0.4
+// ports: teemoonTests/TrustVerdictTests.swift @ v1.0.4, @ 8bfe33cb (trust-leaks-wording: leaksReviewQualifiesTheHero,
+//        theReadingClaimNeedsAReviewedBuild, aReviewedLeakOutranksAnUnpublishedImage)
 //        teemoonTests/AuditIndexTests.swift @ v1.0.4 (everydayRollupWorstClassWins only)
 package ai.teemoon.confidential
 
@@ -36,10 +37,34 @@ class TrustVerdictTest {
         assertEquals("end-to-end encrypted", v.chipCaption)
     }
 
+    /** trust-leaks-wording (the maintainer 2026-11-06), row 3: the reviewer's own sentence, never a fixed one. */
     @Test fun leaksReviewQualifiesTheHero() {
-        val v = TrustVerdict.make(input { copy(auditState = EverydayAuditState.LEAKS) })
-        assertEquals("encrypted to glm-5.2 — but its logs copy what you type", v.heroTitle)
-        assertTrue(v.everydayClaims.any { it.id == "audit" && it.status == TrustClaim.Status.ALERT })
+        val found = "every prompt is written to the container log and shipped to telemetry."
+        val v = TrustVerdict.make(input { copy(auditState = EverydayAuditState.LEAKS, leaksExposure = found) })
+        assertEquals("encrypted to glm-5.2", v.heroTitle)
+        assertEquals("sealed to the model's hardware on the way in. a review of this exact build found: $found", v.heroSubtitle)
+        assertTrue(v.everydayClaims.any { it.id == "audit" && it.status == TrustClaim.Status.ALERT && it.title == found })
+        assertFalse("the fixed sentence is gone", v.everydayClaims.any { it.title.contains("copies what you type") })
+        // nor the blanket claim in its detail: untrue where chat never passes the leaking service (pm, FLUX-only pages)
+        assertEquals("The seal still protects your message on the way in; this is about what happens after it's unlocked.",
+            v.everydayClaims.first { it.id == "audit" }.detail)
+        val bare = TrustVerdict.make(input { copy(auditState = EverydayAuditState.LEAKS) })
+        assertEquals("no exposure recorded: line A", AuditedSealText.NOT_REVIEWED, bare.heroSubtitle)
+        assertEquals("audits never gate", TrustSendPolicy.ALLOW, bare.sendPolicy)
+    }
+
+    /** Rows 1 and 2: "only it can read this" only when reviewed; otherwise the tail drops and line A shows. */
+    @Test fun theReadingClaimNeedsAReviewedBuild() {
+        for (state in listOf(null, EverydayAuditState.INCOMPLETE, EverydayAuditState.REVIEWED_WITH_CAVEAT)) {
+            val v = TrustVerdict.make(input { copy(auditState = state) })
+            assertEquals("$state", "encrypted to glm-5.2", v.heroTitle)
+            assertEquals(AuditedSealText.NOT_REVIEWED, v.heroSubtitle)
+            assertEquals("row 5: the chip is unchanged", "end-to-end encrypted", v.chipCaption)
+        }
+        assertEquals("only you and glm-5.2's sealed hardware can read this chat.", TrustVerdict.make(input()).heroSubtitle)
+        val unchecked = TrustVerdict.make(input { copy(provenanceUnchecked = true) })
+        assertEquals("encrypted to glm-5.2", unchecked.heroTitle)
+        assertEquals(PROVENANCE_UNCHECKED_HEADER, unchecked.heroSubtitle)
     }
 
     @Test fun hardFailureBlocksSending() {
@@ -79,10 +104,9 @@ class TrustVerdictTest {
      * "one image unpublished" the moment provenance landed — the weaker line hid the stronger one.
      */
     @Test fun aReviewedLeakOutranksAnUnpublishedImage() {
-        val v = TrustVerdict.make(input { copy(auditState = EverydayAuditState.LEAKS, unpublishedButSealed = true) })
-        assertTrue(v.heroTitle.contains("logs copy what you type"))
-        assertFalse(v.heroTitle.contains("unpublished"))
-        assertTrue(v.heroSubtitle.contains("monitoring logs"))
+        val v = TrustVerdict.make(input { copy(auditState = EverydayAuditState.LEAKS, unpublishedButSealed = true, leaksExposure = "x.") })
+        assertEquals("encrypted to glm-5.2", v.heroTitle)
+        assertTrue(v.heroSubtitle.endsWith("found: x."))
     }
 
     @Test fun unpublishedButSealedDoesNotSayUnencrypted() {
@@ -108,11 +132,13 @@ class TrustVerdictTest {
         // Any leaks → alert, regardless of coverage.
         assertEquals(EverydayAuditState.LEAKS, everydayAuditState(listOf(PRIVATE_REVIEW, LEAKS), allTouchersCovered = true))
         assertEquals(EverydayAuditState.LEAKS, everydayAuditState(listOf(LEAKS), allTouchersCovered = false))
-        // Full coverage, no leaks/inconclusive → reviewed. compromisable
-        // control-plane pages don't demote it (their verdicts state no
-        // data-plane reach); qualified-pass doesn't either.
-        assertEquals(EverydayAuditState.REVIEWED,
+        // Full coverage, every class private or a qualified pass → reviewed.
+        assertEquals(EverydayAuditState.REVIEWED, everydayAuditState(listOf(PRIVATE_REVIEW, QUALIFIED_PASS), allTouchersCovered = true))
+        // trust-audit-claim (the maintainer 2026-11-06): a compromisable page is the caveat, not green — the old rule let it pass…
+        assertEquals(EverydayAuditState.REVIEWED_WITH_CAVEAT,
             everydayAuditState(listOf(PRIVATE_REVIEW, QUALIFIED_PASS, COMPROMISABLE), allTouchersCovered = true))
+        // …and a page with no class, or one this build doesn't know, is a gap — it used to be dropped.
+        assertEquals(EverydayAuditState.INCOMPLETE, everydayAuditState(listOf(PRIVATE_REVIEW, null), allTouchersCovered = true))
         // A coverage gap can never read as an all-clear…
         assertEquals(EverydayAuditState.INCOMPLETE, everydayAuditState(listOf(PRIVATE_REVIEW), allTouchersCovered = false))
         // …nor can an empty class set (offline, no index)…
@@ -197,5 +223,14 @@ class TrustVerdictTest {
         assertEquals(AuditVerdictClass.PRIVATE_REVIEW, AuditVerdictClass.fromRaw("private"))
         assertNull(AuditVerdictClass.fromRaw("catastrophic"))
         assertEquals("qualified pass", AuditVerdictClass.QUALIFIED_PASS.label)
+    }
+
+    /** trust-audit-claim: the caveat's words, approved 2026-11-06. */
+    @Test fun theCaveatClaimSaysWhatTheCatchIs() {
+        val v = TrustVerdict.make(TrustVerdict.Input(attestationState = AttestationState.OK, modelName = "m", auditState = EverydayAuditState.REVIEWED_WITH_CAVEAT))
+        val c = v.everydayClaims.first { it.id == "audit" }
+        assertEquals(TrustClaim.Status.INFO, c.status)
+        assertEquals("the code that can read your message was reviewed, with a catch", c.title)
+        assertEquals("teemoon's AI-assisted review found nothing set to copy your words in this exact setup, but someone with near.ai's operator access could change that.", c.detail)
     }
 }

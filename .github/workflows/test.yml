@@ -23,6 +23,8 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
+      - name: NDK r27c and CMake 3.22.1, pinned (the isolated image decoder's Wuffs; sdkmanager checks each package's checksum)
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;27.2.12479018" "cmake;3.22.1" > /dev/null
       - uses: gradle/actions/setup-gradle@v4
       - name: Unit tests
         run: ./gradlew test --no-daemon --console=plain

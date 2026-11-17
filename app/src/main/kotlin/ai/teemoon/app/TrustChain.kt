@@ -8,6 +8,7 @@ import ai.teemoon.confidential.AttestationSummary
 import ai.teemoon.confidential.ModelArtifact
 import ai.teemoon.confidential.RunLink
 import ai.teemoon.confidential.StepState
+import ai.teemoon.confidential.PROVENANCE_UNCHECKED_STEP
 import ai.teemoon.confidential.TrustClaim
 import ai.teemoon.confidential.toHex
 
@@ -32,9 +33,16 @@ data class ChainNode(
 
 object TrustChain {
     /** The everyday chain: the verdict's claims, one node each. */
-    fun everyday(claims: List<TrustClaim>): List<ChainNode> = dimDownstream(claims.map { c ->
-        ChainNode(id = c.id, status = status(c.status), title = c.title, detail = c.detail, jumpTitle = c.jumpTitle, jumpTarget = c.jumpTarget, jumpAtEveryday = c.jumpAtEveryday)
-    })
+    fun everyday(claims: List<TrustClaim>, halted: Boolean = false): List<ChainNode> {
+        val nodes = dimDownstream(claims.map { c ->
+            ChainNode(id = c.id, status = status(c.status), title = c.title, detail = c.detail, jumpTitle = c.jumpTitle, jumpTarget = c.jumpTarget, jumpAtEveryday = c.jumpAtEveryday)
+        })
+        // trust-blocked-chain-and-gateway-row (a), the maintainer 2026-11-06: nothing green under a block or a stale record. A
+        // failing step already greys what follows it; a block whose cause isn't on this chain greys everything after
+        // the message.
+        if (!halted || nodes.any { it.status == ChainNode.Status.FAIL }) return nodes
+        return nodes.mapIndexed { i, n -> if (i > 0) n.copy(dimmed = true) else n }
+    }
 
     private fun status(s: TrustClaim.Status) = when (s) {
         TrustClaim.Status.ORIGIN -> ChainNode.Status.ORIGIN; TrustClaim.Status.OK -> ChainNode.Status.OK; TrustClaim.Status.ALERT -> ChainNode.Status.ALERT
@@ -56,7 +64,8 @@ object TrustChain {
         val key = attestation?.modelEd25519PubKey
         if (key != null) {
             val hex = key.toHex()
-            nodes += ChainNode("target", ChainNode.Status.OK, "encryption target · Ed25519 public key",
+            // the seal is not proven until DCAP and NVIDIA answer (trust-pending-state Q4, iOS hardwareChecksPending)
+            nodes += ChainNode("target", if (summary.hardwareChecksPending) ChainNode.Status.PENDING else ChainNode.Status.OK, "encryption target · Ed25519 public key",
                 "your device seals this chat to $modelName's public key before it ever leaves $deviceBoundary.",
                 value = "ed25519:${hex.take(12)}…", copyValue = hex,
                 everydayTitle = "$deviceSubject locks this chat to $modelName", everydayDetail = "before anything leaves your device, it's sealed so only $modelName can open it.")
@@ -67,10 +76,14 @@ object TrustChain {
                 everydayDetail = if (verifying) "getting $modelName's key…" else "$modelName's key wasn't available, so nothing was sealed to it.")
         }
         nodes += when (summary.e2eeKeyBound) {
-            true -> ChainNode("bound", ChainNode.Status.OK, "key bound in the model's TDX quote",
+            true -> ChainNode("bound", if (summary.hardwareChecksPending) ChainNode.Status.PENDING else ChainNode.Status.OK, "key bound in the model's TDX quote",
                 "that public key sits in `report_data` of $modelName's hardware quote — the private half never leaves the enclave. no one else (gateway, operator, near.ai) can decrypt.",
                 everydayTitle = "only $modelName holds the key", everydayDetail = "the key to open your chat lives inside $modelName's sealed chip and never leaves it — not near.ai, not the network, nobody else can read your message.")
-            false -> ChainNode("bound", ChainNode.Status.FAIL, "key binding · could not be established",
+            // the key IS in report_data; the quote that carries it didn't verify (trust-quote-failed, the maintainer 2026-11-06)
+            false -> if (summary.keyInUnverifiedQuote) ChainNode("bound", ChainNode.Status.FAIL, "key in report_data, but the quote didn't verify",
+                "the public key matches report_data, but the quote's signature or certificate chain failed, so nothing proves this key lives inside the enclave.",
+                everydayTitle = "couldn't lock this chat", everydayDetail = "$deviceSubject couldn't confirm $modelName holds the key — so nothing has been sent.")
+            else ChainNode("bound", ChainNode.Status.FAIL, "key binding · could not be established",
                 "the encryption key was NOT found in $modelName's `report_data` — end-to-end encryption isn't established.",
                 everydayTitle = "couldn't lock this chat", everydayDetail = "$deviceSubject couldn't confirm $modelName holds the key — so nothing has been sent.")
             null -> ChainNode("bound", ChainNode.Status.PENDING, "key bound in the model's TDX quote", "checking the model quote…",
@@ -91,6 +104,9 @@ object TrustChain {
             StepState.DONE -> ChainNode("source", ChainNode.Status.OK, "the running code traces to public source",
                 summary.provenanceEvidence ?: "every near.ai image running the model verified against its published build.", jumpTitle = "known code",
                 everydayTitle = "the code is public and checked", everydayDetail = "every piece of software running the model is open source, and teemoon checked it matches.")
+            // GitHub didn't answer: said, not a spinner (trust-provenance-unchecked)
+            StepState.UNCHECKED -> ChainNode("source", ChainNode.Status.INFO, "checking the running code against public source", summary.provenanceDetail,
+                everydayTitle = PROVENANCE_UNCHECKED_STEP, everydayDetail = "")
             StepState.STUCK -> ChainNode("source", ChainNode.Status.FAIL, "image provenance · unverified", summary.provenanceDetail,
                 everydayTitle = "couldn't confirm the code", everydayDetail = "teemoon couldn't confirm the running software matches the published code.")
             else -> ChainNode("source", ChainNode.Status.PENDING, "checking the running code against public source", "checking Sigstore / public attestations…",

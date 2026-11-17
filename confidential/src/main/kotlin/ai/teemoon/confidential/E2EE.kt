@@ -16,6 +16,7 @@ package ai.teemoon.confidential
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
@@ -64,6 +65,11 @@ class E2EEPeer private constructor(
         signingSeed, Ed25519ToX25519.privateKey(signingSeed), Ed25519ToX25519.publicKey(modelEd25519PubKey), modelEd25519PubKey.toHex())
 
     companion object {
+        /**
+         * Whether a peer could be made for [modelEd25519PubKey] — the constructor's own conversion of the model's key —
+         * without drawing a client key. What a read of "could this send be sealed" asks; only a send makes a peer.
+         */
+        fun keyUsable(modelEd25519PubKey: ByteArray): Boolean = runCatching { Ed25519ToX25519.publicKey(modelEd25519PubKey) }.isSuccess
         /** TEST SEAM: a peer around a raw X25519 model key, BYPASSING the conversion guard, so the exploit suite can pin the layer below it. */
         fun bypassingConversion(modelX25519Key: ByteArray, modelPubKeyHex: String): E2EEPeer {
             val seed = ByteArray(32).also { SecureRandom().nextBytes(it) }
@@ -125,7 +131,16 @@ class E2EEPeer private constructor(
         out["messages"] = JsonArray(messages.map { msgEl ->
             val msg = msgEl as? JsonObject ?: return@map msgEl
             val m = msg.toMutableMap()
-            str(msg, "content")?.let { m["content"] = enc(it) }
+            // `content` is a string, or — an image message — an ARRAY of parts, sealed as its JSON encrypted whole, as
+            // near's SDK does (inference-sdk 4bb1de0, js/src/core/e2ee-chat.ts:271-273). Until 1.1.0 only a string was
+            // sealed, so an array went out in plain text beside a sealed system prompt and the body still "changed".
+            // Anything else can't be sealed: FAIL CLOSED, the request is not sent.
+            when (val content = msg["content"]) {
+                null, JsonNull -> Unit
+                is JsonArray -> m["content"] = enc(Json.encodeToString(JsonElement.serializer(), content))
+                is JsonPrimitive -> if (content.isString) { str(msg, "content")?.let { m["content"] = enc(it) } } else throw E2EEError.EncryptionFailed
+                is JsonObject -> throw E2EEError.EncryptionFailed
+            }
             str(msg, "name")?.let { m["name"] = enc(it) }
             str(msg, "refusal")?.let { m["refusal"] = enc(it) }
             (msg["tool_calls"] as? JsonArray)?.let { calls ->

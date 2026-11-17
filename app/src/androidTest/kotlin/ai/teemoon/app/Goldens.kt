@@ -21,7 +21,7 @@ import kotlin.math.abs
  * writes every capture instead of comparing, then pulls them into the assets. Baselines are per AVD: the same
  * density, size and keyboard (`tools/parity_capture_compose.sh` documents the AVD).
  *
- * Tolerance: the status bar (the clock) is not compared; a pixel differs when any channel moves more than
+ * Tolerance: the status bar (the clock, the owner's notifications) is not compared, and is blanked in every saved image; a pixel differs when any channel moves more than
  * [CHANNEL_TOLERANCE]; the step fails when more than [PIXEL_BUDGET] of the compared pixels differ. That budget is far
  * above a row's timestamp, a cursor blink or a "thought for 4s" chip, and far below a wrong colour, a missing row, a
  * misplaced sheet or a keyboard that should not be there.
@@ -54,7 +54,7 @@ class GoldenRule : TestRule {
         val a = IntArray(w * h).also { actual.getPixels(it, 0, w, 0, 0, w, h) }
         val diff = IntArray(w * h)
         var differing = 0; var compared = 0
-        for (y in STATUS_BAR_PX until h) for (x in 0 until w) {
+        for (y in statusBarPx.coerceAtMost(h) until h) for (x in 0 until w) {
             val i = y * w + x; compared++
             val p = e[i]; val q = a[i]
             val d = maxOf(abs(((p shr 16) and 255) - ((q shr 16) and 255)), abs(((p shr 8) and 255) - ((q shr 8) and 255)), abs((p and 255) - (q and 255)))
@@ -66,7 +66,30 @@ class GoldenRule : TestRule {
         return "%.2f%% of pixels differ (budget %.2f%%) — see journeys/goldens/".format(fraction * 100, PIXEL_BUDGET * 100)
     }
 
-    private fun save(b: Bitmap, f: File) { f.outputStream().use { b.compress(Bitmap.CompressFormat.PNG, 100, it) } }
+    /**
+     * The device's own status bar, at least [STATUS_BAR_PX]: 68dp (179px) on the Pixel 10 Pro (136px on the teemoon AVD), where a 90px band left
+     * the notification icons in the compared rows — and in the saved images (pm, 2026-11-06).
+     */
+    private val statusBarPx by lazy {
+        val res = android.content.res.Resources.getSystem()
+        val id = res.getIdentifier("status_bar_height", "dimen", "android")
+        // the resource alone undercounts: the teemoon AVD's says < 90px while its window inset is 136px
+        val inset = if (android.os.Build.VERSION.SDK_INT >= 30) runCatching {
+            inst.targetContext.getSystemService(android.view.WindowManager::class.java).maximumWindowMetrics.windowInsets
+                .getInsetsIgnoringVisibility(android.view.WindowInsets.Type.statusBars()).top
+        }.getOrDefault(0) else 0
+        maxOf(STATUS_BAR_PX, if (id != 0) res.getDimensionPixelSize(id) else 0, inset)
+    }
+
+    /**
+     * Every saved image has its status bar blanked: on the owner's phone it carries his notifications and VPN key, and
+     * goldens are committed (and may reach the public repo). Nothing compared lives there.
+     */
+    private fun save(b: Bitmap, f: File) {
+        val out = b.copy(Bitmap.Config.ARGB_8888, true)
+        android.graphics.Canvas(out).drawRect(0f, 0f, out.width.toFloat(), statusBarPx.coerceAtMost(out.height).toFloat(), android.graphics.Paint().apply { color = android.graphics.Color.BLACK })
+        f.outputStream().use { out.compress(Bitmap.CompressFormat.PNG, 100, it) }
+    }
 
     override fun apply(base: Statement, description: Description) = object : Statement() {
         override fun evaluate() {
@@ -77,7 +100,7 @@ class GoldenRule : TestRule {
     }
 
     companion object {
-        /** The status bar carries the clock; nothing under test lives there. */
+        /** The status bar carries the clock; nothing under test lives there. The floor: the device's own height wins when taller. */
         const val STATUS_BAR_PX = 90
         const val CHANNEL_TOLERANCE = 32
         const val PIXEL_BUDGET = 0.004

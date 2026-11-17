@@ -11,7 +11,7 @@ class ConversationReuseTest {
     private val search = BridgedTool("web_search", """{"type":"function","function":{"name":"web_search"}}""") { "" }
     private fun spec(history: List<Pair<LocalRole, String>> = emptyList(), user: String = "hi", system: String? = "be terse",
                      tools: List<BridgedTool> = listOf(search), maxOut: Int = 4800, thinking: Boolean = false) =
-        LocalConversationSpec(system, history, tools, user, maxOut, thinking, 0.7f)
+        LocalConversationSpec(system, history, tools, user, maxOut, thinking)
 
     /** Turn one answered "hello"; turn two's seed is that exchange. */
     private val first = spec()

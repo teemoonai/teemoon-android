@@ -176,7 +176,9 @@ Guards: `ConfidentialSessionTest` (three Swift suites in one file),
 
 Room entities and DAO (`ChatModels.kt`, `ChatDao.kt`, `ChatDatabase.kt`),
 `ChatRepository`, and FTS search under `chat.search` (`ChatSearchIndex`,
-`SearchSql` with the bundled SQLite driver). `ChatListSession.kt` holds
+`SearchSql` with the bundled SQLite driver), and importing other apps' chats under `chat.imports` (a top-level-array
+scanner, one source per app — `NearChatImport` — and the source-neutral `ChatImportWriter`; the corpus is
+`conformance/vendor/import/<source>/`). `ChatListSession.kt` holds
 `ChatListSearchMemory` and `TranscriptDeepLink`. Migration failure crashes;
 any other open failure quarantines to an in-memory store and surfaces
 (`ChatDatabase.open`). Exported schemas under `chat/schemas` are the paper

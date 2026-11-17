@@ -3,6 +3,7 @@
 //        carries CITATION_ASK after the sources (2026-10-02; near.ai's GLM ignored the description-only ask).
 //        NOT here: ChatGeneration offer lifetime; GenerationEngine.sourcesInToolResult now IS parseSources, as iOS —
 //        the wiring seam lives in that file.)
+//        WebSearchOfferTool: teemoon/Inference/BraveWebSearchTool.swift @ 8494cdb9
 package ai.teemoon.inference
 
 import ai.teemoon.providers.TeemoonHttp
@@ -205,6 +206,11 @@ class BraveWebSearchTool(
     var fetch: suspend (url: String, headers: Map<String, String>, timeoutMs: Long) -> Pair<Int, ByteArray> = ::liveFetch,
     var onUnconfiguredSearch: ((String) -> Unit)? = null,
     clock: () -> Instant = { Instant.now() },
+    /**
+     * The "Today is …" day, as the request's DisclosurePolicy renders it (docs/DISCLOSURE.md, iOS 868edec6): a minimised
+     * destination gets the UTC day. null: this phone's day, as a private destination's.
+     */
+    today: String? = null,
 ) : Tool {
 
     override val name = "web_search"
@@ -214,7 +220,7 @@ class BraveWebSearchTool(
     override val parametersSchema: String = ARGUMENTS_SCHEMA
 
     init {
-        val today = DATE_FORMAT.format(clock().atZone(ZoneId.systemDefault()))
+        val today = today ?: ai.teemoon.providers.DisclosurePolicy(ai.teemoon.providers.DisclosurePolicy.Tier.PRIVATE).toolDay(clock())
         description = """
             Search the web for current, real-time information. Use this when the user asks about \
             recent events, current news, live prices, or anything that may have changed since your \
@@ -608,7 +614,7 @@ class BraveWebSearchTool(
         } catch (e: Exception) {
             throw LlmError(
                 source = LlmError.Source.BraveGrounding,
-                userMessage = "Brave web search failed — check your network connection.",
+                userMessage = "brave web search failed: check your connection.",
                 url = url,
                 requestHeaders = mapOf("X-Subscription-Token" to apiKey),
                 underlyingError = e,
@@ -631,7 +637,7 @@ class BraveWebSearchTool(
         } catch (_: Exception) {
             throw LlmError(
                 source = LlmError.Source.BraveGrounding,
-                userMessage = "Brave web search returned an unexpected response format.",
+                userMessage = "brave web search sent an answer teemoon couldn't read.",
                 url = url,
                 requestHeaders = mapOf("X-Subscription-Token" to apiKey),
                 responseBody = data.decodeToString(),
@@ -642,7 +648,7 @@ class BraveWebSearchTool(
         if (context.isEmpty()) {
             throw LlmError(
                 source = LlmError.Source.BraveGrounding,
-                userMessage = "Brave web search returned no results for this query.",
+                userMessage = "brave web search found nothing for this query.",
                 url = url,
                 requestHeaders = mapOf("X-Subscription-Token" to apiKey),
             )
@@ -654,5 +660,25 @@ class BraveWebSearchTool(
         // line after the sources: near.ai 3 of 3, Fireworks 3 of 3. It sits AFTER contextXML so the kit's pinned
         // <source> bytes are untouched and parseSources reads the same elements.
         return context + CITATION_ASK
+    }
+}
+
+/**
+ * The keyless `web_search` for an on-device model: the offer trigger only, so only `query` (iOS WebSearchOfferTool).
+ * The full [BraveWebSearchTool] schema is ~400 prefill tokens — measured on the iPhone 16 Pro (Gemma 4 E2B), a new chat
+ * with the default system prompt prefilled 157 tokens and streamed its first chunk at 0.30 s; with the full keyless
+ * schema, 559 and 1.60–1.70 s (iOS 8494cdb9). Keyless the tool can only raise the offer, so the rest is pure cost.
+ * Same name, same keyless policy reply, same offer callback.
+ */
+class WebSearchOfferTool(var onUnconfiguredSearch: ((String) -> Unit)? = null) : Tool {
+    override val name = "web_search"
+    override val description = "Search the web for current information."
+    override val parametersSchema = """{"type":"object","properties":{"query":{"type":"string","description":"The search query."}},"required":["query"]}"""
+
+    override suspend fun execute(argumentsJson: String): String {
+        val q = runCatching { Json.parseToJsonElement(argumentsJson).jsonObject["query"]?.jsonPrimitive?.content }.getOrNull().orEmpty().take(400)
+        if (q.isEmpty()) return "[BraveWebSearchTool] Empty query — skipping search."
+        onUnconfiguredSearch?.invoke(q)
+        return BraveWebSearchTool.SEARCH_POLICY
     }
 }

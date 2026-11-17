@@ -85,16 +85,92 @@ class LiveCloudTurnsTest {
         fun ask() {
             tapTag("chat.composer"); compose.onAllNodes(hasSetTextAction())[0].performTextInput("what is 17 plus 25? reply with the number only")
             Thread.sleep(300); tapTag("chat.send")
-            compose.waitUntil(120_000) { exists("42") || exists("returned an empty response") || exists("couldn't") }
+            compose.waitUntil(120_000) { exists("42") || exists("sent an empty answer") || exists("couldn't") }
         }
         ask()
         // A hosted reasoning model sometimes answers with an empty completion — NVIDIA's nemotron did on the fourth
         // run of 2026-09-22, and the app showed exactly what it should: an error card saying "ask again to retry".
         // That is the host's blip, not the app's; the case asks again ONCE, as the card tells a user to, and a second
         // miss fails immediately naming the card rather than timing out.
-        if (!exists("42") && exists("returned an empty response")) ask()
+        if (!exists("42") && exists("sent an empty answer")) ask()
         assertTrue("no answer: " + compose.onAllNodes(hasText("NVIDIA", substring = true) or hasText("OpenRouter", substring = true))
             .fetchSemanticsNodes().joinToString { it.config.toString().take(160) }, exists("42"))
+    }
+
+    /**
+     * The cache gate's second provider (pm, adopted by the maintainer 2026-10-22): two fresh chats × four normal sends, the cache
+     * figure read from each reply's card. A pass is any send 2–4 above 0%. `-e cache_preset grok|openrouter` and
+     * `-e cache_model` pick the setup (default xAI grok-4.3, which routes a chat to one server by x-grok-conv-id).
+     */
+    @Test fun theSecondProviderCachesAChatsNextSends() {
+        val args = InstrumentationRegistry.getArguments()
+        val preset = args.getString("cache_preset") ?: "grok"
+        val model = args.getString("cache_model") ?: "grok-4.3"
+        assumeTrue("no key staged for $preset — run tools/live_cloud_suite.sh", UiTestSeeding.keyFileNames(preset).any { staged(it) })
+        launch(preset, UiTestSeeding.EXTRA_PRESET_MODEL to model, UiTestSeeding.EXTRA_DEVELOPER to true)
+        val questions = listOf(listOf("Why is the sky blue? One sentence.", "And why are sunsets red? One sentence.", "What colour is the sky on Mars? One sentence.", "And at sunset there? One sentence."),
+            listOf("What is the speed of light? One sentence.", "And the speed of sound? One sentence.", "Which is faster, and by how much? One sentence.", "How long does light take from the Sun? One sentence."))
+        val hits = ArrayList<Int>()
+        fun cacheLines() = compose.onAllNodes(hasText("cache", substring = true), useUnmergedTree = true).fetchSemanticsNodes()
+            .mapNotNull { it.config.getOrNull(SemanticsProperties.Text)?.joinToString("") }.filter { "· cache" in it || it.startsWith("cache") }
+        for ((c, chat) in questions.withIndex()) {
+            if (c > 0) { tap("chats"); tap("new chat"); compose.waitUntil(20_000) { tagExists("chat.composer") } }
+            for ((i, q) in chat.withIndex()) {
+                // The card stands under the newest reply only, so wait for ITS line to be a new one.
+                val before = cacheLines().lastOrNull()
+                tapTag("chat.composer"); compose.onAllNodes(hasSetTextAction())[0].performTextInput(q); Thread.sleep(300); tapTag("chat.send")
+                compose.waitUntil(120_000) { !tagExists("chat.stop") && cacheLines().lastOrNull().let { it != null && it != before } }
+                val line = cacheLines().last()
+                android.util.Log.w("teemoon", "[cache-gate] SUMMARY $preset $model chat ${c + 1} send ${i + 1}: $line")
+                if (i > 0) Regex("""cache (\d+)%""").find(line)?.groupValues?.get(1)?.toInt()?.let { hits += it }
+            }
+        }
+        assertTrue("no send 2–4 cached anything on $preset $model: $hits", hits.any { it > 0 })
+    }
+
+    /**
+     * The search chat's cache (pm, 2026-10-22, after the prefix cases in ConsecutiveSendsPrefixTest): one fresh chat that
+     * searches on message 1, then three normal sends; with `-e cache_plain_chat true`, a second chat with a plain message 1
+     * as well. Each send logs the card's figure and every request's cached/prompt tokens, which the card sums into a share.
+     * The counts come from the open chat's view model (test only: the card shows the share alone, as on iOS).
+     */
+    @Test fun aSearchChatCachesItsNextSends() {
+        val args = InstrumentationRegistry.getArguments()
+        val preset = args.getString("cache_preset") ?: "fireworks"
+        val model = args.getString("cache_model") ?: "accounts/fireworks/models/glm-5p3-flash"
+        assumeTrue("no key staged for $preset — run tools/live_cloud_suite.sh", UiTestSeeding.keyFileNames(preset).any { staged(it) })
+        assumeTrue("no ~/.BRAVE_API_KEY staged", staged(".BRAVE_API_KEY"))
+        launch(preset, UiTestSeeding.EXTRA_PRESET_MODEL to model, UiTestSeeding.EXTRA_DEVELOPER to true, UiTestSeeding.EXTRA_GROUNDING to true)
+        val chats = mutableListOf("search" to listOf("search the web: what is the latest stable linux kernel version? one line, cite your source.",
+            "And what was the version before it? One sentence.", "Who maintains the stable series? One sentence.", "How often do stable releases come out? One sentence."))
+        if (args.getString("cache_plain_chat") == "true") chats += "plain" to listOf("Why is the sky blue? One sentence.", "And why are sunsets red? One sentence.")
+        fun cacheLines() = compose.onAllNodes(hasText("cache", substring = true), useUnmergedTree = true).fetchSemanticsNodes()
+            .mapNotNull { it.config.getOrNull(SemanticsProperties.Text)?.joinToString("") }.filter { "· cache" in it || it.startsWith("cache") }
+        /** Every request of the last send: (prompt, cached) as the provider reported them. */
+        fun usage(): List<Pair<Int?, Int?>> {
+            var out: List<Pair<Int?, Int?>> = emptyList()
+            scenario!!.onActivity { a ->
+                @Suppress("RestrictedApi") val store = a.viewModelStore
+                @Suppress("RestrictedApi") val vm = store.keys().mapNotNull { store[it] as? ChatViewModel }.lastOrNull { it.state.value.messages.isNotEmpty() } ?: return@onActivity
+                val f = ChatGeneration::class.java.getDeclaredField("lastPhases").apply { isAccessible = true }
+                @Suppress("UNCHECKED_CAST") val phases = f.get(vm.generation) as List<ai.teemoon.inference.TurnPhase>
+                out = phases.filter { it.kind == ai.teemoon.inference.TurnPhase.Kind.RESPONSE }.map { it.tokens to it.cachedTokens }
+            }
+            return out
+        }
+        for ((c, chat) in chats.withIndex()) {
+            if (c > 0) { tap("chats"); tap("new chat"); compose.waitUntil(20_000) { tagExists("chat.composer") } }
+            for ((i, q) in chat.second.withIndex()) {
+                val before = cacheLines().lastOrNull()
+                tapTag("chat.composer"); compose.onAllNodes(hasSetTextAction())[0].performTextInput(q); Thread.sleep(300); tapTag("chat.send")
+                compose.waitUntil(180_000) { !tagExists("chat.stop") && cacheLines().lastOrNull().let { it != null && it != before } }
+                Thread.sleep(500)
+                val requests = usage()
+                android.util.Log.w("teemoon", "[cache-gate] SUMMARY $preset $model ${chat.first} chat send ${i + 1}: ${cacheLines().last()} · " +
+                    "requests ${requests.size}: " + requests.joinToString { (p, k) -> "${k ?: "-"}/${p ?: "-"}" } +
+                    " · total ${requests.sumOf { it.second ?: 0 }}/${requests.sumOf { it.first ?: 0 }}")
+            }
+        }
     }
 
     /** OpenRouter: seeded from its key, the default is an OPEN-WEIGHT model (0ae4b57), and a real turn answers. */
@@ -159,9 +235,13 @@ class LiveCloudTurnsTest {
     @Test fun theNearAISheetNamesTheModelAndShowsTheReviews() {
         assumeTrue("no .NEAR_AI_API_KEY staged — run tools/live_cloud_suite.sh", staged(".NEAR_AI_API_KEY"))
         launch("nearai")
+        // A cold install's first attestation (quotes, the GPU report, the image lookups) runs past tap()'s 20 s.
+        compose.waitUntil(60_000) { exists("end-to-end encrypted") }
         tap("end-to-end encrypted")
-        compose.waitUntil(60_000) { exists("only it can read this") }
-        val hero = compose.onAllNodes(hasText("only it can read this", substring = true)).fetchSemanticsNodes().joinToString { it.config.toString() }
+        // The hero is "encrypted to <model>"; "— only it can read this" is added only over a reviewed, code-checked
+        // build (TrustVerdict.heroTitle, trust-leaks-wording, cf79270d), so the wait is on the part every state shows.
+        compose.waitUntil(60_000) { exists("encrypted to ") }
+        val hero = compose.onAllNodes(hasText("encrypted to ", substring = true)).fetchSemanticsNodes().joinToString { it.config.toString() }
         assertTrue("the hero names a snapshot hash, not the model: $hero", !Regex("encrypted to [0-9a-f]{12,}").containsMatchIn(hero))
         assertTrue("the hero should name GLM: $hero", hero.contains("encrypted to GLM"))
         tap("expert")
@@ -175,6 +255,7 @@ class LiveCloudTurnsTest {
     @Test fun reverifyRefreshesTheStampAndCopyPutsTheScriptOnTheClipboard() {
         assumeTrue("no .NEAR_AI_API_KEY staged — run tools/live_cloud_suite.sh", staged(".NEAR_AI_API_KEY"))
         launch("nearai")
+        compose.waitUntil(60_000) { exists("end-to-end encrypted") }   // a cold install's first attestation outlasts tap()'s 20 s
         tap("end-to-end encrypted")
         val nonce = Regex("nonce [0-9a-fA-F]{4}…[0-9a-fA-F]{4}")
         fun stamp() = compose.onAllNodes(hasText("nonce ", substring = true)).fetchSemanticsNodes()
@@ -259,8 +340,14 @@ class LiveCloudTurnsTest {
         launch("nearai", UiTestSeeding.EXTRA_PRESET_MODEL to "z-ai/glm-5.3-flash", UiTestSeeding.EXTRA_DEVELOPER to true)
         compose.waitUntil(60_000) { exists("end-to-end encrypted") }
         for ((i, prompt) in listOf("reply with the single word one", "now reply with the single word two").withIndex()) {
+            // the turn started: streaming seen, or already answered — GLM answers in under a second (0.7 s on the AVD,
+            // 2026-11-14), and the stop button could come and go between polls. The developer card sits under the newest
+            // reply only, so a NEW card (its turn's own timings) is the answer; a turn that never happens still fails here.
+            fun card() = compose.onAllNodes(androidx.compose.ui.test.hasAnyAncestor(androidx.compose.ui.test.hasTestTag("chat.debugCard")), useUnmergedTree = true)
+                .fetchSemanticsNodes().joinToString("|") { n -> n.config.getOrNull(androidx.compose.ui.semantics.SemanticsProperties.Text)?.joinToString().orEmpty() }
+            val cardBefore = card()
             type(prompt)
-            compose.waitUntil(15_000) { streaming }
+            compose.waitUntil(15_000) { streaming || (card().isNotEmpty() && card() != cardBefore) }
             compose.waitUntil(180_000) { !streaming }
             Thread.sleep(2_000)
             assertTrue("turn ${i + 1}: the debug card does not stamp E2EE", tagExists("chat.debugCard.e2ee"))

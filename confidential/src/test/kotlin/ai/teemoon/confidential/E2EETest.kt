@@ -3,6 +3,10 @@
 package ai.teemoon.confidential
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.buildJsonObject
@@ -16,6 +20,7 @@ import kotlinx.serialization.json.addJsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.security.SecureRandom
@@ -118,6 +123,33 @@ class RequestBodyEncryptionTest {
         val encSystem = msgs[0]["content"]!!.jsonPrimitive.content; val encUser = msgs[1]["content"]!!.jsonPrimitive.content
         assertNotEquals("You are helpful.", encSystem); assertNotEquals("What is 2+2?", encUser)
         assertEquals("You are helpful.", E2EETestSupport.open(encSystem, m.xPriv)); assertEquals("What is 2+2?", E2EETestSupport.open(encUser, m.xPriv))
+    }
+
+    /**
+     * An image message's `content` is an ARRAY of parts. near's SDK seals it as JSON.stringify(content), encrypted whole
+     * (inference-sdk 4bb1de0, js/src/core/e2ee-chat.ts:271-273). Until 1.1.0 only a string content was sealed, so an
+     * array went out in plain text beside a sealed system prompt — and the body still "changed", so nothing caught it.
+     */
+    @Test fun encryptRequestBody_arrayContentIsSealedWholeAsJSON() {
+        val m = E2EETestSupport.Model(); val session = E2EEPeer(m.edPub)
+        val parts = buildJsonArray {
+            add(buildJsonObject { put("type", "text"); put("text", "what is in this picture?") })
+            add(buildJsonObject { put("type", "image_url"); put("image_url", buildJsonObject { put("url", "data:image/jpeg;base64,/9j/4AAQ") }) })
+        }
+        val body = buildJsonObject { putJsonArray("messages") { add(msg("system", "You are helpful.")); add(buildJsonObject { put("role", "user"); put("content", parts) }) } }
+        val out = String(session.encryptRequestBody(E2EETestSupport.json(body)), Charsets.UTF_8)
+        assertFalse("image parts went out unsealed: $out", out.contains("what is in this picture") || out.contains("base64") || out.contains("image_url"))
+        val user = E2EETestSupport.parse(out.toByteArray())["messages"]!!.jsonArray[1].jsonObject
+        assertEquals(Json.parseToJsonElement(Json.encodeToString(JsonElement.serializer(), parts)), Json.parseToJsonElement(E2EETestSupport.open(user["content"]!!.jsonPrimitive.content, m.xPriv)))
+    }
+
+    /** Fail closed: a `content` that is neither a string nor an array of parts cannot be sealed, so nothing is sent. */
+    @Test fun encryptRequestBody_unsealableContentThrows() {
+        val session = E2EEPeer(E2EETestSupport.Model().edPub)
+        for (bad in listOf<JsonElement>(buildJsonObject { put("text", "hidden?") }, JsonPrimitive(42), JsonPrimitive(true))) {
+            val body = buildJsonObject { putJsonArray("messages") { add(msg("system", "You are helpful.")); add(buildJsonObject { put("role", "user"); put("content", bad) }) } }
+            assertThrows("$bad", E2EEError.EncryptionFailed::class.java) { session.encryptRequestBody(E2EETestSupport.json(body)) }
+        }
     }
 
     @Test fun encryptRequestBody_emptyContent_unchanged() {

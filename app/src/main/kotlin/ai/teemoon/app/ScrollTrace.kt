@@ -42,6 +42,21 @@ object TranscriptTrace {
     }
 }
 
+/**
+ * The composer block on the same clock: which composer drew it (one per screen, so a second id is a second composer),
+ * its top and height in px, and how many photos it holds. The send-motion check (SendMotionTest) reads it after the
+ * send — one composer, the height never growing as the strip folds and the keyboard leaves — instead of polling the
+ * tree, which steps the clock and stalls the keyboard's real-time slide.
+ */
+object ComposerTrace {
+    /** Photos the strip draws right now (the Composer writes it as it composes); 0 once a send has taken them. */
+    @Volatile var stripDrawn = 0
+    fun geometry(id: Int, top: Float, height: Int, photos: Int) {
+        if (!ScrollTraceEnabled.value) return
+        ScrollTraceFile.append("[composertrace] t=${System.nanoTime() / 1e9} id=$id top=$top h=$height photos=$photos drawn=$stripDrawn")
+    }
+}
+
 /** The trace in the app's private files (`scrolltrace.log`), truncated when tracing is enabled; pulled with `run-as`. */
 object ScrollTraceFile {
     private var file: File? = null

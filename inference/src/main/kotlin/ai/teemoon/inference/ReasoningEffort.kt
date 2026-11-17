@@ -1,9 +1,10 @@
-// ports: teemoon/Inference/ReasoningEffort.swift @ 09dcb6e (ReasoningEffort, ReasoningControl)
+// ports: teemoon/Inference/ReasoningEffort.swift @ 0e98aaf1 (ReasoningEffort, ReasoningControl)
 //
 // How long the SAME model on the SAME provider thinks. Never a model or
 // provider switch. Chat sends [FAST] (the maintainer, 2026-10-19, after pm's eval:
 // low lost no objective task; an omitted level let GLM 5.3 overthink into
-// the output cap). Never "none": grok-4.3 at none got the hard maths wrong.
+// the output cap). Never "none" by default (grok-4.3 at none got the hard maths wrong); only developer
+// mode's per-model choice can send it, where the model lists it (ReasoningLevel, docs/REASONING_LEVEL.md upstream).
 package ai.teemoon.inference
 
 import ai.teemoon.providers.LocalServerKind
@@ -23,14 +24,20 @@ enum class ReasoningEffort {
      * [ReasoningControl]'s call (iOS 7cd8c10). Never "none": GLM 5.3 on Fireworks and grok-4.7 reject it, so fast is
      * "low" everywhere a level is sent.
      */
-    fun bodyFields(provider: Provider): Map<String, JsonElement>? {
+    fun bodyFields(provider: Provider): Map<String, JsonElement>? = bodyFields(provider, ReasoningLevel.chosen(provider))
+
+    /** [chosen] is developer mode's level for this model (ReasoningLevel); null sends today's low. */
+    fun bodyFields(provider: Provider, chosen: String?): Map<String, JsonElement>? {
         if (refusalKey(provider) in refused) return null
         val high = this == THINK_HARDER
-        return when (val control = ReasoningControl.current(provider)) {
-            is ReasoningControl.Effort -> mapOf("reasoning_effort" to JsonPrimitive(if (high) "high" else "low")) +
+        val control = ReasoningControl.current(provider)
+        val usable = ReasoningLevel.usable(chosen, control)
+        val level = ReasoningLevel.sent(this, usable)
+        return when (control) {
+            is ReasoningControl.Effort -> mapOf("reasoning_effort" to JsonPrimitive(level)) +
                 (if (high && control.cap != null) mapOf("max_tokens" to JsonPrimitive(control.cap)) else emptyMap())
-            ReasoningControl.OpenRouter -> mapOf("reasoning" to JsonObject(mapOf("effort" to JsonPrimitive(if (high) "high" else "low"))))
-            ReasoningControl.ThinkingSwitch -> mapOf("chat_template_kwargs" to JsonObject(mapOf("enable_thinking" to JsonPrimitive(high))))
+            ReasoningControl.OpenRouter -> mapOf("reasoning" to JsonObject(mapOf("effort" to JsonPrimitive(level))))
+            ReasoningControl.ThinkingSwitch -> mapOf("chat_template_kwargs" to JsonObject(mapOf("enable_thinking" to JsonPrimitive(high || usable == "on"))))
             ReasoningControl.OnDevice, ReasoningControl.None -> null
         }
     }
@@ -53,6 +60,12 @@ enum class ReasoningEffort {
         fun canThinkHarder(control: ReasoningControl, provider: Provider): Boolean =
             control != ReasoningControl.None && refusalKey(provider) !in refused
 
+        /**
+         * The level itself that [fields] (a request's reasoning fields, [bodyFields]) carry: "high", "xhigh", "on"; null
+         * when they carry none. The chip shows it while a Think Harder turn generates (the maintainer 2026-11-14).
+         */
+        fun sentValue(fields: Map<String, JsonElement>?): String? = sentLevel(fields?.let { JsonObject(it).toString() })?.substringAfter(' ')
+
         /** The card's label for a request body: "effort low/high" or "thinking off/on"; null when it sent none. */
         fun sentLevel(bodyJson: String?): String? = runCatching {
             val body = kotlinx.serialization.json.Json.parseToJsonElement(bodyJson ?: return null) as? JsonObject ?: return null
@@ -71,10 +84,7 @@ enum class ReasoningEffort {
          */
         private val refused: MutableSet<String> = java.util.Collections.synchronizedSet(HashSet())
 
-        private fun refusalKey(provider: Provider): String {
-            val host = provider.openAIBaseUrl?.let { runCatching { URI(it).host }.getOrNull() }?.lowercase().orEmpty()
-            return "$host|${provider.model}"
-        }
+        private fun refusalKey(provider: Provider): String = ReasoningLevel.key(provider)
 
         /** True when a 400 names the field ("Invalid reasoning effort.", "unexpected field chat_template_kwargs"). */
         fun isRefusal(status: Int, body: String?): Boolean {
@@ -87,6 +97,8 @@ enum class ReasoningEffort {
         }
 
         fun noteRefused(provider: Provider) { refused += refusalKey(provider) }
+
+        fun wasRefused(provider: Provider): Boolean = refusalKey(provider) in refused
 
         fun forgetRefusals() = refused.clear()
     }

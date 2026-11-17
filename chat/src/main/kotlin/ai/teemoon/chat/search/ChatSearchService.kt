@@ -47,8 +47,14 @@ class ChatSearchService(
         harden(file)
     }
 
-    /** Converges the index onto the store. Safe to call on every launch. */
-    suspend fun reconcile(source: ChatSearchSource) {
+    /**
+     * Converges the index onto the store. Safe to call on every launch. It takes its turn in the hook queue (A8, pm
+     * sweep 2026-11-06): outside it, a delete that landed while it read the store applied first, and then the snapshot
+     * it had read put the message back — searchable until the next launch.
+     */
+    suspend fun reconcile(source: ChatSearchSource) { enqueue { reconcileNow(source) }.join() }
+
+    private suspend fun reconcileNow(source: ChatSearchSource) {
         val index = index ?: return
         try {
             val stats = ChatSearchReconciler(index, log).reconcile(source)
@@ -77,13 +83,14 @@ class ChatSearchService(
      */
     private var tail: Job = Job().also { it.complete() }
 
-    private fun enqueue(work: suspend () -> Unit) {
+    /** Locked: hooks come from any thread, and two that read the same tail ran together, out of order (A8). */
+    private fun enqueue(work: suspend () -> Unit): Job = synchronized(this) {
         val previous = tail
-        tail = scope.launch { previous.join(); work() }
+        scope.launch { previous.join(); work() }.also { tail = it }
     }
 
     /** Joins the hook queue. Tests only — production never needs to wait. */
-    suspend fun drainPendingWork() { tail.join() }
+    suspend fun drainPendingWork() { synchronized(this) { tail }.join() }
 
     /**
      * A message was written or grown. Upserts, so calling it repeatedly while a
@@ -97,11 +104,15 @@ class ChatSearchService(
         enqueue { runCatching { index.index(listOf(record)) } }
     }
 
-    /** Retry truncation deletes the messages after a given turn. */
+    /**
+     * Retry truncation deletes the messages after a given turn; a Think Harder replaces its old reply. Both are deleted
+     * text, so the removal scrubs as a chat delete does: a plain remove left the words in the WAL until some later
+     * checkpoint (1.0.6 audit, developer note; iOS's didDelete has the same shape and is flagged there).
+     */
     fun didDelete(messageIDs: List<String>) {
         val index = index ?: return
         if (messageIDs.isEmpty()) return
-        enqueue { runCatching { index.remove(messageIDs) } }
+        enqueue { runCatching { index.removeDeleted(messageIDs) } }
     }
 
     /** A thread was deleted; the index must drop its rows either way. */

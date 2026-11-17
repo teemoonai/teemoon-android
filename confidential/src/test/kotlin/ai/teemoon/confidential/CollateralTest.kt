@@ -48,10 +48,26 @@ class CollateralTest {
         assertTrue(afterFirst > 0); assertEquals(afterFirst, http.count)
     }
 
+    /**
+     * Never verified without collateral, and keeps the reason. Since near-send-gate-rule (the maintainer 2026-11-06) an Intel
+     * outage is couldn't-check (Unchecked, soft — the send asks), not evidence: it used to be a hard Failed.
+     */
     @Test fun unavailableCollateral_failsClosedWithTheReason() = runTest {
         val verifier = DcapVerifier(IntelPcsCollateralProvider(http = CollateralHttpClient { url -> throw CollateralHttpException(503, URI(url).host, URI(url).path) }), engine = { _, _, _ -> error("must not verify without collateral") })
-        val r = verifier.verify(KitFixtures.quoteHex, KitFixtures.nowSecs) as DcapVerification.Failed
+        val r = verifier.verify(KitFixtures.quoteHex, KitFixtures.nowSecs) as DcapVerification.Unchecked
+        assertTrue(!r.isVerified && !r.isHardFailure)
         assertTrue(r.reason, r.reason.contains("collateral") && r.reason.contains("503"))
         assertNull((DcapVerifier(IntelPcsCollateralProvider(KitFixtures.StubHttp()), engine = { _, _, _ -> error("x") }).verify("zz", 0) as? DcapVerification.Verified))
+    }
+
+    /** iOS e406bb96, the rule itself: Intel down is couldn't-check for a good quote, and changes nothing for a bad one. */
+    @Test fun anOutageIsUncheckedOnlyForAQuoteThatCouldBeChecked() = runTest {
+        for (down in listOf<(String) -> Nothing>({ throw java.net.SocketTimeoutException("timeout") }, { throw java.net.UnknownHostException("no network") },
+                { url -> throw CollateralHttpException(503, URI(url).host, URI(url).path) })) {
+            val verifier = DcapVerifier(IntelPcsCollateralProvider(http = CollateralHttpClient { down(it) }), engine = { _, _, _ -> error("no collateral, no verify") })
+            assertTrue(verifier.verify(KitFixtures.quoteHex, KitFixtures.nowSecs).isUnchecked)
+            for (bad in listOf("zz", "", "00".repeat(64)))
+                assertTrue("quote '${bad.take(8)}…' must stay hard with Intel down", verifier.verify(bad, KitFixtures.nowSecs).isHardFailure)
+        }
     }
 }

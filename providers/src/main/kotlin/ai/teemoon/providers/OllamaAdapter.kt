@@ -161,13 +161,17 @@ object OllamaAdapter {
         val quantization: String? = null,
     )
 
-    private fun showMeta(model: String, root: String, client: OkHttpClient): OllamaModelMeta {
+    /** One model's capabilities, null when the machine didn't answer in time (HomeCapabilityRefresh's recheck, iOS 6218fbf5). */
+    suspend fun capabilities(model: String, baseUrl: String, timeoutSeconds: Long = 4, client: OkHttpClient = defaultClient): ModelCapabilities? =
+        withContext(Dispatchers.IO) { showMeta(model, rootUrl(baseUrl), client, timeoutSeconds).caps }
+
+    private fun showMeta(model: String, root: String, client: OkHttpClient, timeoutSeconds: Long = 10): OllamaModelMeta {
         val body = json.encodeToString(OllamaShowRequest.serializer(), OllamaShowRequest(model))
         val req = Request.Builder()
             .url("$root/api/show")
             .post(body.toRequestBody(jsonMedia))
             .build()
-        val callClient = client.newBuilder().callTimeout(10, TimeUnit.SECONDS).build()
+        val callClient = client.newBuilder().callTimeout(timeoutSeconds, TimeUnit.SECONDS).build()
         val bytes = runCatching {
             callClient.newCall(req).execute().use { resp ->
                 if (!resp.isSuccessful) return OllamaModelMeta(null, "")

@@ -11,6 +11,8 @@ import androidx.compose.ui.semantics.getOrNull
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasTestTag
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.performTextInput
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
@@ -228,7 +230,11 @@ class OnDeviceThinkingJourneyTest {
      */
     @Test fun thePhonesModelSheetSaysNothingLeavesThisPhone() {
         launchOnDevice()
-        compose.onAllNodes(hasTestTag("chat.titleBlock"))[0].performClick()
+        // The click as a semantics action, not an injected touch: the empty chat raises the keyboard as it opens, and a
+        // touch landing mid-IME-animation was lost (send() retries for the same reason) — three runs on the Pixel 10 Pro
+        // never opened the sheet, while a real tap on the same screen does (2026-10-30).
+        compose.waitUntil(20_000) { compose.onAllNodes(hasTestTag("chat.titleBlock")).fetchSemanticsNodes().isNotEmpty() }
+        compose.onAllNodes(hasTestTag("chat.titleBlock"))[0].performSemanticsAction(SemanticsActions.OnClick)
         waitFor("the on-device sheet", 10_000) { screenText().contains("nothing leaves this phone") }
         assertTrue("an on-device sheet offers the expert rung", !screenText().contains("expert"))
     }

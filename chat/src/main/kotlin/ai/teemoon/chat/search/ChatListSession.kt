@@ -4,6 +4,13 @@ package ai.teemoon.chat.search
 /** The chat-list search box survives leaving the list; the app owns one instance (iOS: a shared singleton). */
 class ChatListSearchMemory {
     var query: String = ""
+    /**
+     * android-only: opens of the list that start clean — the import's "show chats", whose new chats an old search
+     * could hide (the emulator import run, 2026-11-06). The list re-keys its search box and scroll on this count.
+     */
+    var freshOpens: Int = 0
+        private set
+    fun openFresh() { query = ""; freshOpens++ }
 }
 
 /**

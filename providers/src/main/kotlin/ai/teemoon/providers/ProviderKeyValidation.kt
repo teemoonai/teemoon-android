@@ -1,4 +1,4 @@
-// ports: teemoon/Providers/ProviderKeyValidator.swift @ v1.0.5 (validate; the URLs and enums are ProviderKeyValidator.kt)
+// ports: teemoon/Providers/ProviderKeyValidator.swift @ v1.1.0 (validate; the URLs and enums are ProviderKeyValidator.kt)
 package ai.teemoon.providers
 
 import kotlinx.coroutines.CancellationException

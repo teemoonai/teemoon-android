@@ -75,8 +75,10 @@ data class ModelBrowserListing(
         /**
          * [tiered] marks a catalogue whose models carry a trust tier (near.ai).
          * [allowsCustomID] offers the typed text as a model id when nothing
-         * matches — NEVER for near.ai, where an unknown id is treated as
-         * own-fleet and would claim an encryption teemoon cannot check.
+         * matches — NEVER for near.ai, where a typed id is a model teemoon
+         * cannot check: near.ai's catalogue, not the user, decides its tier.
+         * [carried]: filters the where sheet brought in (IMAGES.md §4e "Into a provider's models", teemoon-ios
+         * bb2b89cf) — offered and kept on whatever this list offers, so the browser never opens with them gone.
          */
         fun of(
             models: List<KnownModel>,
@@ -84,13 +86,14 @@ data class ModelBrowserListing(
             tiered: Boolean,
             selectedID: String = "",
             allowsCustomID: Boolean = false,
+            carried: Set<ModelBrowserQuery.Filter> = emptySet(),
             tier: (String) -> NearAIModelCatalog.Confidentiality? = { NearAIModelCatalog.confidentiality(it) },
         ): ModelBrowserListing {
             val tierOf: (KnownModel) -> NearAIModelCatalog.Confidentiality? =
                 { if (tiered) tier(it.id) else null }
 
             val offeredSorts = sorts(models)
-            val offeredFilters = filters(models, tiered, tierOf)
+            val offeredFilters = ModelBrowserQuery.Filter.entries.filter { it in filters(models, tiered, tierOf) || it in carried }
             val sort = if (query.sort in offeredSorts) query.sort else ModelBrowserQuery.Sort.RECOMMENDED
             val filters = query.filters intersect offeredFilters.toSet()
 
@@ -105,13 +108,11 @@ data class ModelBrowserListing(
             val sections = when {
                 flat -> listOf(Section("all", null, ordered.map { row(it, tiered) }))
                 // TRUST IS THE RESTING STRUCTURE for near.ai: what teemoon can
-                // seal, then what near.ai attests elsewhere, then plain proxies.
-                // The tag is left off the rows because the header above says it.
-                tiered -> listOf(
-                    NearAIModelCatalog.Confidentiality.TEE_OWN,
-                    NearAIModelCatalog.Confidentiality.TEE_THIRD_PARTY,
-                    NearAIModelCatalog.Confidentiality.PROXIED,
-                ).mapNotNull { want ->
+                // seal, then what near.ai attests elsewhere, then what the
+                // catalogue has not yet tiered, then plain proxies. The tag is
+                // left off the rows because the header above says it. One order
+                // with ordered(), so no tier can match no section (iOS 94488f2).
+                tiered -> NearAIModelCatalog.Confidentiality.displayOrder.mapNotNull { want ->
                     val rows = ordered.filter { tierOf(it) == want }
                     if (rows.isEmpty()) null
                     else Section(want.name, want.label, rows.map { row(it, showsTier = false) })

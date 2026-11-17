@@ -1,4 +1,4 @@
-// ports: teemoonTests/TurnPhasesTests.swift @ c76f3bd (+ aMissingFigureReadsByHost of 6fdcb43), teemoonTests/GenerationTransportTests.swift @ cef6ad8 (LateReplySignatureTests)
+// ports: teemoonTests/TurnPhasesTests.swift @ c76f3bd (+ aMissingFigureReadsByHost of 6fdcb43), teemoonTests/GenerationTransportTests.swift @ v1.1.0 (LateReplySignatureTests)
 // Pins for the 1.0.6 phase timings (TurnPhase): the engine times every request and tool round for every
 // transport alike, and the card's line reads as offsets from the send.
 package ai.teemoon.inference

@@ -201,4 +201,78 @@ class ProviderCredentialsTest {
         s.credentials.setCredential("", saved.id)
         assertTrue(s.credentials.presetsWithoutKey().any { it.id == Provider.fireworks.id })
     }
+
+    /**
+     * The maintainer's Pixel, 2026-11-11 (the image flow's "around 600ms lag on every click"): Perfetto put 213
+     * main-thread binder calls to keystore2 in 9 s — the where sheet read every provider's key as it drew (whether there is
+     * one, and the key itself to find its saved list). What drawing needs is kept per provider — yes/no and the list's
+     * scope, never the key (as KeyPresence, 2026-11-07) — read once, and moved by a save or a delete.
+     */
+    @Test fun drawingReadsKeyFactsOnceAndNeverHoldsTheKey() {
+        var decrypts = 0
+        val inner = InMemoryAesCipher()
+        val counting = object : SecretCipher {
+            override fun encrypt(plain: ByteArray) = inner.encrypt(plain)
+            override fun decrypt(blob: ByteArray): ByteArray { decrypts++; return inner.decrypt(blob) }
+        }
+        val keystore = Keystore(File(tmp.root, "keys-${UUID.randomUUID()}"), counting)
+        val p = provider(endpoint("facts"))
+        val creds = ProviderCredentials(keystore, { listOf(p) })
+        creds.scopeOf = { LiveCatalogStore.KeyScope("scope-of-" + it.length) }
+        creds.setCredential("sk-secret-1", p.id)
+        val first = creds.facts(p)
+        assertTrue(first.byID && first.forBrowsing)
+        assertEquals(LiveCatalogStore.KeyScope("scope-of-11"), first.browseScope)
+        val afterFill = decrypts
+        repeat(10) { creds.facts(p) }
+        // the composer's gate asks on every return to the chat: the same sealed answer, no Keystore round trip
+        repeat(5) { assertTrue(creds.hasCredential(p)) }
+        assertEquals("the Keystore was asked again", afterFill, decrypts)
+        assertFalse("the key is held", first.toString().contains("sk-secret"))
+        creds.setCredential("sk-longer-secret-2", p.id)
+        assertEquals("a save moves the facts", LiveCatalogStore.KeyScope("scope-of-18"), creds.facts(p).browseScope)
+        creds.setCredential("", p.id)
+        assertFalse("a delete moves the facts", creds.facts(p).byID)
+    }
+    @Test fun warmingAtStartLeavesTheFirstDrawNoKeystoreRead() {
+        var decrypts = 0
+        val inner = InMemoryAesCipher()
+        val counting = object : SecretCipher {
+            override fun encrypt(plain: ByteArray) = inner.encrypt(plain)
+            override fun decrypt(blob: ByteArray): ByteArray { decrypts++; return inner.decrypt(blob) }
+        }
+        val a = provider(endpoint("warm-a"))
+        val b = provider(endpoint("warm-b"))
+        val creds = ProviderCredentials(Keystore(File(tmp.root, "keys-${UUID.randomUUID()}"), counting), { listOf(a, b) })
+        creds.setCredential("sk-a", a.id)
+        creds.warm(listOf(a, b))
+        val afterWarm = decrypts
+        // the first where open after a launch draws every row: the facts are already there
+        assertTrue(creds.facts(a).byID)
+        assertFalse(creds.facts(b).byID)
+        assertEquals("the first draw asked the Keystore", afterWarm, decrypts)
+    }
+
+    @Test fun aKeyWrittenWhileTheWarmReadsIsNotLostToIt() {
+        val p = provider(endpoint("warm-race"))
+        lateinit var creds: ProviderCredentials
+        var deleteMidRead = false
+        val inner = InMemoryAesCipher()
+        val racing = object : SecretCipher {
+            override fun encrypt(plain: ByteArray) = inner.encrypt(plain)
+            override fun decrypt(blob: ByteArray): ByteArray {
+                val plain = inner.decrypt(blob)
+                // the user deletes the key on the main thread while the start-up warm is mid-read
+                if (deleteMidRead) { deleteMidRead = false; creds.setCredential("", p.id) }
+                return plain
+            }
+        }
+        creds = ProviderCredentials(Keystore(File(tmp.root, "keys-${UUID.randomUUID()}"), racing), { listOf(p) })
+        creds.scopeOf = { LiveCatalogStore.KeyScope("scope-of-" + it.length) }
+        creds.setCredential("sk-gone", p.id)
+        deleteMidRead = true
+        creds.warm(listOf(p))
+        val after = creds.facts(p)
+        assertFalse("the warm kept what it read before the delete", after.byID || after.forBrowsing || after.browseScope == LiveCatalogStore.KeyScope("scope-of-7"))
+    }
 }

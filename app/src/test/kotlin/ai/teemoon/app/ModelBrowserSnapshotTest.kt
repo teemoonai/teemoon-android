@@ -11,6 +11,7 @@ import ai.teemoon.providers.NearAIModelCatalog
 import androidx.compose.material3.Surface
 import app.cash.paparazzi.DeviceConfig
 import app.cash.paparazzi.Paparazzi
+import org.junit.After
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -18,6 +19,10 @@ import org.junit.Test
 class ModelBrowserSnapshotTest {
     @get:Rule val paparazzi = Paparazzi(deviceConfig = DeviceConfig.PIXEL_5.copy(screenWidth = 320, screenHeight = 900, density = com.android.resources.Density.MEDIUM))
     @Before fun offline() { NearAIModelCatalog.resetTierCache(); NearAIModelCatalog.endpointDirectory = EndpointDirectory(fetch = { null }) }
+    // near.ai drawn with its tier list loaded, as recorded: the flag is process-wide, and these goldens passed or failed
+    // by whether an earlier suite in the same JVM had recorded tiers (as DesignSnapshotTest's did, 2026-11-01).
+    @Before fun tierListSeen() { NearAIModelCatalog.tierListSeenOverride = true }
+    @After fun tierListFollows() { NearAIModelCatalog.tierListSeenOverride = null }
 
     private val rows = listOf(
         KnownModel("zai-org/GLM-5.1-FP8", "GLM 5.1", "z-ai", "\$1.40/\$4.40", contextWindow = "1M", isNew = true),
@@ -35,7 +40,8 @@ class ModelBrowserSnapshotTest {
     }
     /** Nothing saved and the fetch failed: say so, and offer the retry (b2aeee9) — not an empty list. */
     @Test fun browser_loadFailed_offersRetry() {
-        paparazzi.snapshot { TeemoonTheme { Surface { ModelBrowserScreen(ModelBrowserDoor(liveLoader = { null }), onSelect = {}, onCancel = {}) } } }
+        // the failed state as the loader leaves it, without racing the loader for the frame (initialLoadFailed)
+        paparazzi.snapshot { TeemoonTheme { Surface { ModelBrowserScreen(ModelBrowserDoor(), onSelect = {}, onCancel = {}, initialLoadFailed = true) } } }
     }
     /** OpenRouter's card: who can serve the model, with the zero-data-retention badge and only the fields the list reported. */
     @Test fun detail_openRouter_providers() {
@@ -49,7 +55,7 @@ class ModelBrowserSnapshotTest {
                 latencyMilliseconds = 2085.5, throughputTokensPerSecond = 37.2, supportsImplicitCaching = true),
             ModelOffer("Azure", "azure/us", price = "\$2.50/\$20.00", contextTokens = 1_050_000, uptimePercent = 99.99, isZeroDataRetention = true),
         )
-        paparazzi.snapshot { TeemoonTheme { Surface { ModelDetailScreen(m, confidentiality = null, onCopyID = {}, onBack = {}, offersLoader = { offers }) } } }
+        paparazzi.snapshot { TeemoonTheme { Surface { ModelDetailScreen(m, confidentiality = null, onCopyID = {}, onBack = {}, initialOffers = offers) } } }
     }
     /** NVIDIA's free tier (iOS b7edacb, 96d801e): no per-token price, and the card says "free", not "no published price". */
     @Test fun detail_nvidiaFreeTier() {

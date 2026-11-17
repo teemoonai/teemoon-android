@@ -1,4 +1,4 @@
-// ports: teemoon/Views/CodeBlock.swift @ v1.0.1, teemoon/Views/Chat/SelfVerifyScriptCard.swift @ v1.0.1 (the card and its
+// ports: teemoon/Views/CodeBlock.swift @ v1.0.1, teemoon/Views/Chat/SelfVerifyScriptCard.swift @ 8c524172 (the card and its
 //        comment/string highlighter and line-number gutter), teemoon/Views/MoonPhase.swift @ v1.0.1, teemoon/Views/Haptics.swift @ v1.0.1
 package ai.teemoon.app
 
@@ -112,18 +112,37 @@ fun SelfVerifyScriptCard(script: String, onCopy: (String) -> Unit, modifier: Mod
     var copied by remember { mutableStateOf(false) }
     val mono = MaterialTheme.typography.labelSmall.copy(fontFamily = FontFamily.Monospace)
     Column(modifier.fillMaxWidth().background(codeBG, RoundedCornerShape(12.dp))) {
-        Row(Modifier.fillMaxWidth().background(codeBarBG, RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)).padding(horizontal = 12.dp, vertical = 6.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            // Filename · language tag · filled copy pill (green when copied), as SelfVerifyScriptCard.header draws them.
-            TerminalGlyph(Color(0xFFADB5C4))
-            Text("teemoon_verify.py", style = mono, color = Color(0xFFADB5C4), modifier = Modifier.weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.MiddleEllipsis)
+        val bar = Modifier.fillMaxWidth().background(codeBarBG, RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp)).padding(horizontal = 12.dp, vertical = 6.dp)
+        // Filename · language tag · filled copy pill (green when copied), as SelfVerifyScriptCard.header draws them.
+        val fileName: @Composable (Modifier) -> Unit = { m -> Text("teemoon_verify.py", style = mono, color = Color(0xFFADB5C4), modifier = m, maxLines = 1, overflow = TextOverflow.MiddleEllipsis) }
+        val languageTag: @Composable () -> Unit = {
             Text("shell · python", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium), color = Color(0xFF99A3B5), maxLines = 1,
                 modifier = Modifier.clip(CircleShape).background(Color.White.copy(alpha = 0.07f)).padding(horizontal = 6.dp, vertical = 2.dp))
-            Spacer(Modifier.weight(0.01f))   // the filename outranks the spacer (iOS layoutPriority 1 over Spacer(minLength: 8))
+        }
+        val copyButton: @Composable () -> Unit = {
             val pill = if (copied) TrustTone.OK.color() else Color(0xFF8CB8FF)
             Row(Modifier.clip(CircleShape).background(if (copied) pill.copy(alpha = 0.22f) else Color.White.copy(alpha = 0.10f)).clickable { onCopy(script); copied = true }.padding(horizontal = 10.dp, vertical = 5.dp),
                 horizontalArrangement = Arrangement.spacedBy(5.dp), verticalAlignment = Alignment.CenterVertically) {
                 if (copied) Text("✓", style = MaterialTheme.typography.labelSmall, color = pill) else CopyGlyph(pill, 12.dp)
                 Text(if (copied) "copied" else "copy", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.SemiBold), color = pill, maxLines = 1)
+            }
+        }
+        // At accessibility sizes one line is wider than the phone (iOS measured 528pt in a 361pt column at AX5, which
+        // widened the whole sheet): stack it (iOS 8c524172). Compose squeezes rather than widens, so here the filename
+        // collapsed to "te…y" and the copy pill met the card's edge at 200%.
+        if (isAccessibilitySize()) {
+            Column(bar, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) { TerminalGlyph(Color(0xFFADB5C4)); fileName(Modifier) }
+                languageTag()
+                copyButton()
+            }
+        } else {
+            Row(bar, verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                TerminalGlyph(Color(0xFFADB5C4))
+                fileName(Modifier.weight(1f, fill = false))
+                languageTag()
+                Spacer(Modifier.weight(0.01f))   // the filename outranks the spacer (iOS layoutPriority 1 over Spacer(minLength: 8))
+                copyButton()
             }
         }
         HorizontalDivider(color = Color.Black.copy(alpha = 0.5f))

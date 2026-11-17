@@ -6,11 +6,13 @@ package ai.teemoon.app
 // touched: a ported policy with a JVM suite is not a tested feature.
 
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.semantics.getOrNull
 import android.content.Intent
 import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.isDialog
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onRoot
 import androidx.compose.ui.test.swipeDown
@@ -129,6 +131,7 @@ class UserJourneysTest {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK); putExtra(UiTestSeeding.EXTRA_FLAG, true)
             putExtra(UiTestSeeding.EXTRA_FRESH_STORE, true)   // every journey starts from an empty store, as a fresh install would
             putExtra(UiTestSeeding.EXTRA_AVAILABLE_MB, 8_000)   // and on a phone with room for the recommended model
+            putExtra(UiTestSeeding.EXTRA_RAM_GB, 8)   // over every floor (LocalMemory.belowFloor), so the AVD heroes it as a phone would
             extras.forEach { (k, v) -> when (v) { is String -> putExtra(k, v); is Boolean -> putExtra(k, v); is Int -> putExtra(k, v) } }
         }
         scenario?.close(); scenario = ActivityScenario.launch(intent)
@@ -180,15 +183,37 @@ class UserJourneysTest {
         assertTrue("the deleted chat is still listed", !exists("remember this one"))
     }
 
-    /** An attesting place whose attestation is degraded: the first send ASKS, and cancel keeps the draft. */
+    /** An attesting place whose attestation is degraded: the first send ASKS, says nothing was sent, and "don't send" keeps the draft (iOS f600e4e). */
     @Test fun theSendGateAsksWhenAttestationIsDegraded() {
         keyFile(".NEAR_AI_API_KEY", "uitest-near-key")
         launch(UiTestSeeding.EXTRA_PRESETS to "nearai", UiTestSeeding.EXTRA_ATTESTATION to "degraded")
         tapTag("chat.composer"); field(0).performTextInput("hello"); Thread.sleep(300); tapTag("chat.send")
         compose.waitUntil(15_000) { exists("retry verification") }; golden("gate.ask")
-        assertTrue("the gate offers no cancel", exists("cancel"))
-        tap("cancel")
-        assertTrue("cancel lost the draft", compose.onAllNodes(hasText("hello")).fetchSemanticsNodes().isNotEmpty())
+        assertTrue("the question does not say nothing was sent", exists(E2EESendChoice.UNAVAILABLE_MESSAGE))
+        assertTrue("the gate offers no way out", exists("don't send"))
+        tap("don't send")
+        compose.waitUntil(5_000) { !exists("retry verification") }
+        assertTrue("don't send sent", !tagExists("chat.stop"))
+        assertTrue("don't send lost the draft", compose.onAllNodes(hasText("hello")).fetchSemanticsNodes().isNotEmpty())
+    }
+
+    /**
+     * Re-verify on the send question (iOS retryE2EEAndGenerate, fb0fff68; the maintainer 2026-11-07, "1.1 should match"):
+     * the check runs again and, still degraded, the question comes back — the message is not dropped by a re-verify, and
+     * "don't send" then keeps the draft. It used to close the alert and leave nothing to answer.
+     */
+    @Test fun reverifyBringsTheSendQuestionBack() {
+        keyFile(".NEAR_AI_API_KEY", "uitest-near-key")
+        launch(UiTestSeeding.EXTRA_PRESETS to "nearai", UiTestSeeding.EXTRA_ATTESTATION to "degraded")
+        tapTag("chat.composer"); field(0).performTextInput("hello"); Thread.sleep(300); tapTag("chat.send")
+        compose.waitUntil(15_000) { exists("retry verification") }
+        tap("retry verification")
+        compose.waitUntil(15_000) { exists("retry verification") }
+        assertTrue("the question came back without its words", exists(E2EESendChoice.UNAVAILABLE_MESSAGE))
+        assertTrue("a re-verify sent", !tagExists("chat.stop"))
+        tap("don't send")
+        compose.waitUntil(5_000) { !exists("retry verification") }
+        assertTrue("the draft was lost", compose.onAllNodes(hasText("hello")).fetchSemanticsNodes().isNotEmpty())
     }
 
     /** The merged text of the where sheet's row for [preset] (`where.preset.<name>`), or null when the row is not on screen. */
@@ -255,6 +280,22 @@ class UserJourneysTest {
     /** The LAST match: under a sheet the chat's own "chats" button is still in the tree, ahead of the sheet's row. */
     private fun tapLast(label: String) { compose.waitUntil(20_000) { exists(label) }; tap(label, index = compose.onAllNodes(hasText(label, substring = true) or hasContentDescription(label)).fetchSemanticsNodes().size - 1) }
 
+    /**
+     * IMAGES.md §4d @ teemoon-ios 5722f76d (the maintainer 2026-11-11): on a model that can't see images, "+" still opens the
+     * attach sheet, which says so and offers "choose an image-capable model" — that opens the where sheet on "reads
+     * images". No note in the composer, no alert.
+     */
+    @Test fun plusOnAModelThatCantSeeSaysSoInTheAttachSheet() {
+        launch(UiTestSeeding.EXTRA_LOCAL_ENDPOINT to server.baseUrl, UiTestSeeding.EXTRA_LOCAL_MODEL to "fake-model")
+        tapTag("chat.attach")
+        compose.waitUntil(5_000) { tagExists("chat.attachSheet.cantSee") }
+        assertTrue("the reason came as an alert", compose.onAllNodes(isDialog()).fetchSemanticsNodes().isEmpty())
+        tapTag("chat.attachSheet.chooseModel")
+        compose.waitUntil(5_000) { tagExists("where.filter.control") }
+        assertTrue("the sheet did not open on reads images", exists(ai.teemoon.providers.ModelBrowserQuery.Filter.VISION.label))
+        assertTrue("a note was left in the composer", !tagExists("chat.imageNote"))
+    }
+
     /** B1: send, reply, send again — the second message gets its own reply in the same thread, both on the wire as one conversation. */
     @Test fun aSecondSendGetsASecondReplyInTheSameThread() {
         launch(UiTestSeeding.EXTRA_LOCAL_ENDPOINT to server.baseUrl, UiTestSeeding.EXTRA_LOCAL_MODEL to "fake-model")
@@ -303,11 +344,12 @@ class UserJourneysTest {
         launch(UiTestSeeding.EXTRA_LOCAL_ENDPOINT to server.baseUrl, UiTestSeeding.EXTRA_LOCAL_MODEL to "fake-model")
         keepingSettings {
         tap("settings"); tapLast("chats")
-        // the footer since 1.0.6 (b00f98b); the test waited on the old "use {{datetime}}" one and timed out before typing
+        // UI audit #10 (1.1.0): the prompt is a row ("default") that opens its own screen with the editor and the footer
+        tap("system prompt")
         compose.waitUntil(10_000) { exists("{{date}} is replaced") }
         val promptField = sheetField(0)
         promptField.performTextClearance(); promptField.performTextInput("speak like a lighthouse keeper. now: {{datetime}}"); Thread.sleep(500)
-        tap("back"); tap(A11yLabels.CLOSE_SETTINGS)
+        tap("back"); tap("back"); tap(A11yLabels.CLOSE_SETTINGS)
         send("hello keeper"); waitForReply()
         val body = server.bodies.last()
         assertTrue("the system prompt from settings did not reach the wire: ${body.take(300)}", body.contains("speak like a lighthouse keeper"))
@@ -465,6 +507,36 @@ class UserJourneysTest {
         assertTrue("the stored key was lost to a refused save", appState.credentials.credential(appState.providers.value.first()).isNotEmpty())
     }
 
+    /**
+     * the maintainer on the Pixel, 2026-11-06 (FormOpener): settings › cloud keys › edit, then cancel, returns to cloud keys at
+     * its own height — not the where sheet at half height with a judder behind the push.
+     */
+    @Test fun cancellingAnEditFromCloudKeysReturnsToCloudKeys() {
+        InstrumentationRegistry.getInstrumentation().uiAutomation.executeShellCommand("am force-stop org.chromium.webview_shell").close()
+        keyFile(".FIREWORKS_API_KEY", "uitest-fireworks-key")
+        launch(UiTestSeeding.EXTRA_PRESETS to "fireworks")
+        tap("settings"); compose.waitUntil(5_000) { exists("appearance") }
+        tapLast("places & keys"); tap("cloud keys")
+        tap("edit"); compose.waitUntil(5_000) { exists("cloud key") && exists("save") }
+        // "saved" is cloud keys' own header, so the form's "save" is no test of having left it: its "cancel" is
+        tap("cancel"); compose.waitUntil(5_000) { !exists("cancel") }
+        assertFalse("cancel landed on the where sheet", exists("ready now"))
+        assertTrue("cancel did not return to cloud keys", exists("add cloud key") && exists("edit"))
+        golden("keys.cancel-returns-to-cloud-keys", settleMs = 1_200)
+    }
+
+    /**
+     * The emulator import run (2026-11-06): the import opened inside settings at half height, "choose file…" below the
+     * fold. It is its own full-height sheet over settings › chats (v9), with "choose file…" on screen.
+     */
+    @Test fun theImportOpensFullHeightWithChooseFileOnScreen() {
+        launch(*local())
+        tap("settings"); compose.waitUntil(5_000) { exists("appearance") }
+        tapLast("chats"); tapTag("chats.import"); compose.waitUntil(5_000) { exists(ImportCopy.CHOOSE_FILE) }
+        golden("import.full-height-sheet", settleMs = 1_200)
+        compose.onAllNodes(hasText(ImportCopy.CHOOSE_FILE))[0].assertIsDisplayed()
+    }
+
     /** I4 (part): the activity is recreated on a nested settings screen and comes back on that screen, not the chat. */
     @Test fun aRecreatedActivityComesBackOnTheSameScreen() {
         launch(*local())
@@ -541,6 +613,12 @@ class UserJourneysTest {
         compose.waitUntil(5_000) { exists("verification failed") || countOf("sending blocked") > 1 }
         assertFalse("the hard block offered a way to send anyway", exists("send anyway"))
         assertFalse("a send went out under a hard block", tagExists("chat.stop"))
+        // iOS f600e4e: the hard block names its way out, and taking it keeps the draft.
+        if (exists("verification failed")) {
+            assertTrue("the hard block has no visible way out", exists("don't send"))
+            tap("don't send")
+            assertTrue("don't send lost the draft", compose.onAllNodes(hasText("should-not-leave")).fetchSemanticsNodes().isNotEmpty())
+        }
     }
 
     /**
@@ -663,9 +741,11 @@ class UserJourneysTest {
         assertTrue("the prompt is not in the transcript", exists("hello anyway"))
     }
 
-    /** A7: first run through "use a cloud api": the picker → near.ai → paste the key → save ends in the chat, the chip naming near.ai's model. */
+    /** A7: first run through "use a cloud api": no welcome line, the picker → near.ai → paste the key → save ends in the chat, the chip naming near.ai's model. */
     @Test fun firstRunThroughACloudKeyEndsInTheChat() {
         launch()
+        // No first-run welcome line (the maintainer 2026-11-08, "remove it"): the "choose where" chip is the prompt.
+        assertFalse("the removed welcome line is back", tagExists("chat.welcome"))
         tapTag("chat.whereChip"); compose.waitUntil(10_000) { exists("start here") }
         tap("use a cloud api")
         compose.waitUntil(10_000) { tagExists("cloudKey.preset.near.ai") }
@@ -847,14 +927,14 @@ class UserJourneysTest {
             // system back pops the color and size pages to appearance — not past it (it skipped to settings until 2026-10-04)
             tap("color"); tap("teal"); back()
             compose.waitUntil(5_000) { exists("teal") && exists("width") }
-            tap("size"); tap("large"); back()
-            compose.waitUntil(5_000) { exists("large") && exists("width") }
+            tap("size"); tap("xlarge"); back()
+            compose.waitUntil(5_000) { exists("xlarge") && exists("width") }
             tap("width"); tap("expanded")
             compose.waitUntil(5_000) { exists("expanded") }
             launch(*local())
             tap("settings"); tap("appearance")
-            compose.waitUntil(5_000) { exists("teal") && exists("large") && exists("expanded") }
-            assertEquals(AppTintColor.TEAL, appState.settings.appTintColor); assertEquals(AppFontSize.LARGE, appState.settings.appFontSize)
+            compose.waitUntil(5_000) { exists("teal") && exists("xlarge") && exists("expanded") }
+            assertEquals(AppTintColor.TEAL, appState.settings.appTintColor); assertEquals(AppFontSize.XLARGE, appState.settings.appFontSize)
             assertEquals(AppFontWidth.EXPANDED, appState.settings.appFontWidth)
         }
     }
@@ -1170,7 +1250,7 @@ class UserJourneysTest {
         compose.waitUntil(10_000) { !exists("Paragraph 5:") }
         val threads = runBlocking { ChatRepository(ChatDatabase.get(ctx).chatDao()).threads().first() }
         val id = threads.first { t -> t.title?.contains("notified question") == true }.id
-        TurnService.open(ctx, id).send()
+        TurnService.open(ctx, id, TurnService.resultRequestCode(id)).send()
         compose.waitUntil(20_000) { exists("the notified question") && exists("Paragraph 5:") }
     }
 

@@ -86,6 +86,16 @@ import android.util.Log
  * built here instead and passed through CompositionLocals. No DI framework: the
  * object graph is small and a framework adds audit surface for nothing (§3).
  */
+/**
+ * Whether this app's last process ended to the OS's low-memory killer (ApplicationExitInfo.REASON_LOW_MEMORY, Android
+ * 11+). Android 10 cannot say, so nothing there counts as a kill (PhoneImageLedger.onLaunch).
+ */
+private fun lastExitWasLowMemory(context: Context): Boolean =
+    if (android.os.Build.VERSION.SDK_INT < 30) false else runCatching {
+        context.getSystemService(android.app.ActivityManager::class.java)
+            .getHistoricalProcessExitReasons(context.packageName, 0, 1).firstOrNull()?.reason == android.app.ApplicationExitInfo.REASON_LOW_MEMORY
+    }.getOrDefault(false)
+
 class AppState(context: Context, dao: ChatDao? = null) {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -96,6 +106,8 @@ class AppState(context: Context, dao: ChatDao? = null) {
     /** Provider API keys: AES-GCM under an Android Keystore master key, one file per endpoint account. */
     private val keystore = Keystore(File(context.filesDir, "keys"), AndroidKeystoreCipher())
     val credentials = ProviderCredentials(keystore, { _providers.value })
+        // the where sheet finds saved lists by scope, keys unopened; read when called (catalogStore is declared below)
+        .also { it.scopeOf = { key -> catalogStore.scopeOf(key) } }
     // every key the app holds, for the debug copy path: a header carrying one is masked whatever its name
     // each chat's provider routing id: HMAC under a per-install Keystore key, stable across relaunches (iOS ead8674)
     init { ai.teemoon.inference.SessionAffinity.keyedMac = ai.teemoon.providers.androidKeystoreHmac() }
@@ -108,6 +120,9 @@ class AppState(context: Context, dao: ChatDao? = null) {
      * step would go if one were ever needed.
      */
     val search = ChatSearchService(scope, log = { Log.w("teemoon", it) })
+
+    /** Importing another app's chats (Settings → chats): app-level so an import outlives the screen and a rotation. */
+    val chatImport = ChatImportRunner()
 
     /** In-flight server-side Ollama pulls; app-level so a download outlives the sheet. Mutates on Main, as iOS does. */
     val downloads = OllamaDownloadCenter(scope)
@@ -127,7 +142,7 @@ class AppState(context: Context, dao: ChatDao? = null) {
     private val log: (String) -> Unit = { Log.w("teemoon", it) }
 
     /** User preferences (iOS AppSettings) over SharedPreferences. */
-    val settings = AppSettings(object : Prefs {
+    private val settingsPrefs: Prefs = object : Prefs {
         private val sp = context.getSharedPreferences("teemoon-settings", Context.MODE_PRIVATE)
         override fun getString(key: String) = sp.getString(key, null)
         override fun putString(key: String, value: String) { sp.edit().putString(key, value).apply() }
@@ -135,7 +150,15 @@ class AppState(context: Context, dao: ChatDao? = null) {
         override fun putBoolean(key: String, value: Boolean) { sp.edit().putBoolean(key, value).apply() }
         override fun getInt(key: String) = if (sp.contains(key)) sp.getInt(key, 0) else null
         override fun putInt(key: String, value: Int) { sp.edit().putInt(key, value).apply() }
-    }, log)
+    }
+    val settings = AppSettings(settingsPrefs, log)
+    // Developer mode's reasoning level per model, read by the transport per request (ReasoningLevel.chooser).
+    init { ai.teemoon.inference.ReasoningLevel.chooser = settings::chosenReasoningLevel }
+    /**
+     * IMAGES.md §4b (the maintainer 2026-11-12, run time): the most memory this app has seen free here, and the phone models
+     * whose image turn the OS killed — read at launch, where a turn still marked in flight is a kill.
+     */
+    val phoneImages = ai.teemoon.app.imaging.PhoneImageLedger(settingsPrefs).also { it.onLaunch(lowMemoryKill = lastExitWasLowMemory(context)) }
     private val _developerMode = MutableStateFlow(false)
     val developerMode: StateFlow<Boolean> = _developerMode.asStateFlow()
     fun setDeveloperMode(on: Boolean) { settings.developerModeEnabled = on; _developerMode.value = on }
@@ -154,7 +177,11 @@ class AppState(context: Context, dao: ChatDao? = null) {
     val session = ConfidentialSession(scope, { selected }, credentialFor = ::credentialFor,
         // The fetcher logs through the app log (iOS: its os.Logger lines) — silent, a gateway leg that answered nothing
         // usable left no trace on a device where the same fetch worked from the JVM (2026-09-24).
-        services = ConfidentialSession.Services(fetchRecord = AttestationService.recordFetcher(log = log), verifyDcap = { dcap.verify(it) }, verifyNras = { payload, nonce -> nras.verify(payload, nonce) }, verifyTls = { url -> tls.verify(url) }), warn = log)
+        services = ConfidentialSession.Services(fetchRecord = AttestationService.recordFetcher(log = log),
+            // near.ai's PUBLIC tier list, never with a key (iOS VerdictDeadline.publicTierList @ 83b8d527): the verdict
+            // waits on the tier, and a keyless or failed launch fetch left it unknown for 24 h
+            fetchTiers = { selected?.let { catalogStore.refresh(it, apiKey = "", maxAgeMs = 0) != null } ?: false },
+            verifyDcap = { dcap.verify(it) }, verifyNras = { payload, nonce -> nras.verify(payload, nonce) }, verifyTls = { url -> tls.verify(url) }), warn = log)
     private val nras = NrasService(log = log)
     private val tls = TlsAttestationVerifier(log = log)
 
@@ -197,10 +224,32 @@ class AppState(context: Context, dao: ChatDao? = null) {
         }
         // No seed: an empty list is first run (iOS has no fixture either). The device scripts add the fixture server by url.
         heal()
+        followCapabilities()
         _developerMode.value = settings.developerModeEnabled
         _groundingEnabled.value = settings.braveGroundingEnabled
         settings.incrementNumberOfVisits()
         session.refreshAttestation()
+        // the where sheet's key facts, read now and off the main thread rather than in its first frame
+        scope.launch(Dispatchers.IO) { credentials.warm(_providers.value) }
+        // free memory at launch counts toward this phone's image ceiling (PhoneImageLedger: the most seen)
+        scope.launch(Dispatchers.IO) { availableMB() }
+    }
+
+    /**
+     * Equipped capabilities follow each server's saved list (iOS a851981, followCapabilities): once now — a list saved
+     * before this ran is already newer than the rows — then on every list recorded.
+     */
+    private fun followCapabilities() {
+        catalogStore.onRecorded = { provider, models -> scope.launch(Dispatchers.Main) { adoptCapabilities(models, provider.id) } }
+        for (p in _providers.value) adoptCapabilities(catalogStore.models(p, browseCredential(p)), p.id)
+    }
+
+    /** [ConfigStore.adoptCapabilities], and the active model of that server: a fresh list rewrites what it can do. */
+    internal fun adoptCapabilities(models: List<KnownModel>, serverID: String) {
+        val fresh = store.adoptCapabilities(models, serverID)
+        val p = _providers.value.firstOrNull { it.id == serverID } ?: return
+        val caps = fresh[p.model] ?: return
+        if (p.modelCapabilities != caps) { _providers.value = _providers.value.map { if (it.id == serverID) it.copy(modelCapabilities = caps) else it }; persist() }
     }
 
     /** The launch read of providers.json: a problem the user must SEE, never an empty list that looks like a first run. */
@@ -312,18 +361,23 @@ class AppState(context: Context, dao: ChatDao? = null) {
         if (p != null && before.isNotEmpty() && before != apiKey.trim()) catalogStore.forget(p.endpoint)
     }
 
-    fun hasKey(p: Provider): Boolean = credentials.credential(p).isNotEmpty()
+    /** Drawn per row: a yes/no kept by ProviderCredentials.facts, never a Keystore read per frame. */
+    fun hasKey(p: Provider): Boolean = credentials.facts(p).byID
     fun credentialFor(p: Provider): String = credentials.credential(p)
 
     /** The stored Brave key, or null when unset. */
     fun braveKey(): String? = keystore.load(BRAVE_ACCOUNT)?.trim()?.takeIf { it.isNotEmpty() }
     /** The key a turn may ground with: the toggle AND a key, as iOS's AppSettings.groundingAPIKey. */
     fun groundingKey(): String? = settings.groundingAPIKey(braveKey())
-    fun hasBraveKey(): Boolean = braveKey() != null
+    /** Asked by the web chip on every recomposition: a yes/no kept by KeyPresence, never a Keystore decrypt on the main thread. */
+    private val braveKeyPresence = ai.teemoon.providers.KeyPresence(keystore, BRAVE_ACCOUNT)
+    fun hasBraveKey(): Boolean = braveKeyPresence.has()
+    /** A Brave key is stored and the web chip is off: an on-device turn then sends no search tool (iOS 8494cdb9). */
+    fun searchKeyTurnedOff(): Boolean = settings.searchKeyTurnedOff(hasBraveKey())
     /** Stores (or clears, when blank) the Brave Search key and turns grounding on with it (iOS connectBraveGrounding). Returns the failure message, or null. */
     fun setBraveKey(apiKey: String): String? = runCatching {
         val trimmed = apiKey.trim()
-        if (trimmed.isEmpty()) keystore.delete(BRAVE_ACCOUNT) else keystore.save(trimmed, BRAVE_ACCOUNT)
+        if (trimmed.isEmpty()) braveKeyPresence.delete() else braveKeyPresence.save(trimmed)
         setGroundingEnabled(trimmed.isNotEmpty())
     }.exceptionOrNull()?.message
 
@@ -382,6 +436,62 @@ class AppState(context: Context, dao: ChatDao? = null) {
     fun reasoningControl(p: Provider): ReasoningControl = ReasoningControl.resolve(p, firstSendKind.kind(p),
         catalogStore.allModels(p.endpoint).firstOrNull { it.id == p.model }?.samplingParameters)
 
+    /** A model on a setup, for the model page's reasoning menu (iOS ReasoningLevel.Setup): the setup moved to that model. */
+    fun reasoningSetup(p: Provider, model: String = p.model): ai.teemoon.inference.ReasoningLevel.Setup =
+        p.withModel(model).let { ai.teemoon.inference.ReasoningLevel.Setup(it, reasoningControl(it)) }
+
+    /** The levels page's model: its setup, and the pick stored under it. A pick bumps [reasoningPicks]. */
+    fun reasoningChoice(p: Provider, model: String = p.model): ReasoningChoice = reasoningSetup(p, model).let { setup ->
+        ReasoningChoice(setup, stored = { settings.storedReasoningLevel(setup.provider) }, pick = { settings.setReasoningLevel(it, setup.provider); _reasoningPicks.value += 1 })
+    }
+
+    /** Bumped on every pick, so the chip, the bar and the levels page re-read the stored level. */
+    private val _reasoningPicks = MutableStateFlow(0)
+    val reasoningPicks: StateFlow<Int> = _reasoningPicks.asStateFlow()
+
+    /** The chip's level, the where sheet's bar and the levels page for [p] (ReasoningUi); nothing with developer mode off. */
+    fun reasoningUi(p: Provider?, developerMode: Boolean): ReasoningUi {
+        if (p == null || p.model.isEmpty() || !developerMode) return ReasoningUi.NONE
+        val setup = reasoningSetup(p)
+        val offered = catalogStore.allModels(p.endpoint).firstOrNull { it.id == p.model }?.reasoningEfforts.orEmpty()
+        return ReasoningUi.of(setup, developerMode, settings.storedReasoningLevel(setup.provider), offered, WhereProviderPresentation.modelLabel(p))
+    }
+
+    /**
+     * IMAGES.md §4: whether this provider's model takes images — its saved catalogue row says so (near.ai/xAI
+     * input_modalities, OpenRouter architecture, Ollama capabilities, Fireworks supports_image_input). Unknown is no.
+     * The on-device model: E2B, where its vision file is on the phone.
+     */
+    fun canSeeImages(p: Provider): Boolean =
+        if (p.isLocal) {
+            // IMAGES.md §4b: the general Gemma 4 bundles carry the vision encoder; an NPU-only bundle does not, so a Tensor
+            // phone's image turns run the general file when it is downloaded too (the maintainer 2026-10-26, (a)). E2B only, on in
+            // 1.1.0 (LocalModelCatalog.readsImages); each image turn then checks memory (LiteRTTransport visionLoadMB, LocalModel.imageNeedMB on its path).
+            LocalModelCatalog.readsImages(p.localModelID) && p.localModelID?.let { localStorage.ref(it, socModel) }?.seesImages == true &&
+                localModelOf(p)?.let(::phoneImagesFit) == true
+        } else ai.teemoon.app.imaging.ImageModelChoice.serverReads(
+            catalogStore.allModels(p.endpoint).firstOrNull { it.id == p.model }?.capabilities,
+            p.modelCapabilities ?: store.capabilities(p.id, p.model))
+
+    /**
+     * the maintainer 2026-10-26 (a): the equipped on-device model is an NPU bundle alone, so images need the general file as a
+     * second download — the composer offers it ("use images on this phone?", wording on the review page, held).
+     */
+    fun localImagesNeedSecondDownload(p: Provider): Boolean =
+        p.isLocal && LocalModelCatalog.readsImages(p.localModelID) && p.localModelID?.let { localStorage.ref(it, socModel) }?.imagesNeedSecondDownload == true
+
+    /**
+     * The second download: the general file of the equipped model, beside its NPU bundle — through the same download
+     * flow and mobile-data question as any model. Nothing is re-selected; text stays on the NPU.
+     */
+    fun startImageModelDownload(p: Provider) {
+        val general = p.localModelID?.let { id -> LocalModelCatalog.all.firstOrNull { it.id == id } } ?: return
+        if (localStorage.isInstalled(general)) return
+        _pendingCellularDownload.value = CellularDownloadRequest.resolve(
+            general, pathIsExpensive = network.isMobileData, pathIsConstrained = network.isConstrained,
+        ) { m, net -> localDownloads.start(m, network = net) }
+    }
+
     /** The first send to an unclassified self-hosted server asks once whether it is Ollama (iOS 5f015a9). */
     val firstSendKind = FirstSendKindProbe(storedKind = ::storedKind,
         isOllama = { base -> OllamaAdapter.isOllama(base, timeoutMs = FirstSendKindProbe.TIMEOUT_MS) },
@@ -403,7 +513,8 @@ class AppState(context: Context, dao: ChatDao? = null) {
         val home = HashMap<String, WhereGetPolicy.HomeInfo>()
         for (p in _providers.value) homeProbe.info(p)?.let { home[p.id] = WhereGetPolicy.HomeInfo(it.kind, it.modelCount, it.warm) }
         return WhereGetPolicy(filter, _providers.value, network.isSatisfied.value, home, ::credentialFor, ::credentialForEndpoint,
-            catalogCount = { catalogStore.count(it, browseCredential(it)) }, catalog = localCatalog,
+            catalogCount = { p -> credentials.facts(p).browseScope?.let { catalogStore.count(p, it) } }, catalog = localCatalog,
+            keyPresent = { credentials.facts(it).forBrowsing },
             deviceFileMissing = { m -> m.fileName != m.generalFileName && !localStorage.isInstalled(m) })
     }
 
@@ -438,7 +549,10 @@ class AppState(context: Context, dao: ChatDao? = null) {
      * waits on a LAN box that may be asleep, and the counts should not queue behind it.
      */
     fun refreshCatalogues() {
-        scope.launch { catalogStore.refreshAll(_providers.value, maxAgeMs = 86_400_000L, credential = ::browseCredential) }
+        scope.launch {
+            val providers = _providers.value
+            catalogStore.refreshAll(providers, maxAgeMs = 86_400_000L, credential = ai.teemoon.providers.refreshKeys(providers, Dispatchers.IO, ::browseCredential))
+        }
     }
 
     private var retiredHealStarted = false
@@ -464,10 +578,21 @@ class AppState(context: Context, dao: ChatDao? = null) {
         }
     }
 
+    private val homeCapabilities = ai.teemoon.providers.HomeCapabilityRefresh()
+
+    /** Before a photo to [p] is refused: its home Ollama machine asked about that one model, unless read this hour (iOS 6218fbf5). */
+    suspend fun recheckHomeImages(p: Provider): Boolean =
+        homeCapabilities.recheckBeforeRefusing(p, kind = homeProbe.info(p)?.kind ?: storedKind(p), adopt = { m, id -> adoptCapabilities(m, id) })
+
     /** Seed from the persisted probe, probe each machine once, then fold what they serve into the equipped lists. */
     fun refreshHome() {
         homeProbe.seed(_providers.value, ::servedModels, ::storedKind)
-        scope.launch { homeProbe.refresh(_providers.value, ::credentialFor); syncHomeEquipped() }
+        scope.launch {
+            val home = _providers.value.filter { WhereLocality.of(it) == WhereLocality.HOME }
+            homeProbe.refresh(home, ai.teemoon.providers.refreshKeys(home, Dispatchers.IO, ::credentialFor)); syncHomeEquipped()
+            // what each Ollama model can do, kept on its row (iOS a15f0cec): the "· images" marker and the paperclip's offer
+            homeCapabilities.refresh(_providers.value, kind = { homeProbe.info(it)?.kind ?: storedKind(it) }, adopt = { m, id -> adoptCapabilities(m, id) })
+        }
         refreshCatalogues()
     }
 
@@ -500,6 +625,8 @@ class AppState(context: Context, dao: ChatDao? = null) {
             try {
                 OllamaAdapter.deleteModel(row.modelID, base)
                 homeProbe.forget(row.modelID, row.provider)
+                // a probe that landed between the row going and the server's answer re-equipped it from the pre-delete list
+                syncHomeEquipped()
                 ProviderRecents.forgetModel(store, row.modelID, row.provider)
             } catch (e: Exception) {
                 providerStore.updateProvider(row.provider)
@@ -514,6 +641,18 @@ class AppState(context: Context, dao: ChatDao? = null) {
         ModelCapabilities.fromCapabilitySet(model.capabilities)?.let { updated = updated.copy(modelCapabilities = it) }
         val id = if (_providers.value.any { it.id == updated.id }) { providerStore.updateProvider(updated); updated.id } else providerStore.addProvider(updated)
         select(id)
+    }
+
+    /**
+     * The where filter's number (IMAGES.md §4e): how many of this setup's saved models pass [filters] by the browser's
+     * own predicate, over the same saved list and tier the browser reads — so the "k of n" on a row is what the browser
+     * shows when the row opens it. null with no saved list, never 0, as the policy's catalogCount.
+     */
+    fun listCount(p: Provider, filters: Set<ai.teemoon.providers.ModelBrowserQuery.Filter>): Int? {
+        val scope = credentials.facts(p).browseScope ?: return null
+        val models = catalogStore.models(p, scope).takeIf { it.isNotEmpty() } ?: return null
+        val tiered = WhereProviderPresentation.showsConfidentialityTags(p)
+        return models.count { m -> ai.teemoon.providers.ModelBrowserListing.satisfies(m, filters) { if (tiered) NearAIModelCatalog.confidentiality(it.id) else null } }
     }
 
     /**
@@ -572,6 +711,11 @@ class AppState(context: Context, dao: ChatDao? = null) {
         // jobs starts it, moves its progress bar, or stops it. Collected on Main, which DownloadService requires.
         val appContext = context.applicationContext
         scope.launch { localDownloads.jobs.collect { jobs -> DownloadService.reflect(appContext, jobs.values) } }
+        // LiteRT's caches moved beside the model in 1.1.0 (EngineCache): the ones 1.0.6 left in the app's cache
+        // directory are orphans now — up to ~1.7 GB that no delete would ever reach. Swept once per launch; cheap.
+        scope.launch(kotlinx.coroutines.Dispatchers.IO) {
+            context.cacheDir.listFiles()?.filter { it.isFile && ai.teemoon.ondevice.EngineCache.isStaleAppCacheFile(it.name) }?.forEach { it.delete() }
+        }
     }
     // The factory picks the accelerator and PROVES it decodes before accepting it (BackendLadder / BackendMemo).
     // Device facts are read here, not there, so the ladder stays testable off-device. The directory Backend.NPU lists
@@ -589,6 +733,7 @@ class AppState(context: Context, dao: ChatDao? = null) {
             if (id != null) { localStorage.markNpuUnusable(id, reason); refreshLocalRunnable(); log("[litert] NPU bundle marked unusable for $id: $reason") }
             else log("[litert] NPU bundle refused at $path and no catalog model owns it: $reason")
         },
+        loadEvents = EngineLoadObserver.shared,
     )
     private val activityManager = context.getSystemService(ActivityManager::class.java)
     /** Debug-only (UiTestSeeding.EXTRA_AVAILABLE_MB): what the get section is told is free; null reads the device. */
@@ -597,15 +742,60 @@ class AppState(context: Context, dao: ChatDao? = null) {
     @Volatile var uiTestScriptedReply: String? = null
     /** The get section's figure — the device's, unless a journey pinned it. The load gate always reads the device. */
     fun availableMBForUi(): Int = uiTestAvailableMB ?: availableMB()
-    /** Memory this process may still allocate, in MB — availMem less the low-memory threshold. 0 when the API is silent. */
-    fun availableMB(): Int = runCatching { val info = ActivityManager.MemoryInfo(); activityManager.getMemoryInfo(info); ((info.availMem - info.threshold) / (1024 * 1024)).toInt().coerceAtLeast(0) }.getOrDefault(0)
+    /**
+     * What the load gate compares with peak + headroom, in MB: `availMem`, the system's available memory, NOT less the
+     * low-memory threshold. The threshold is where lmkd starts killing CACHED background apps — a load that crosses it
+     * makes the system do exactly that, which is how it is meant to free memory — and on recent Pixels it is large, so
+     * subtracting it refused phones that run the model (docs/ANDROID_NATIVE.md, 2026-10-30). 0 when the API is silent.
+     */
+    fun availableMB(): Int = runCatching { val info = ActivityManager.MemoryInfo(); activityManager.getMemoryInfo(info); (info.availMem / (1024 * 1024)).toInt().coerceAtLeast(0) }.getOrDefault(0)
+        .also { phoneImages.sawAvailable(it) }   // the ceiling counts the most this app has seen free here
+
+    /** This phone's ceiling for images on a phone model (PhoneImageMemory.ceilingMB): totalMem less the reserve, or the most seen free. */
+    fun phoneCeilingMB(): Int = ai.teemoon.providers.PhoneImageMemory.ceilingMB((totalMemBytes() / (1024 * 1024)).toInt(), phoneImages.highestAvailMB)
+
+    /** Whether a phone model's images can ever fit this phone: its need within the ceiling, and no kill remembered here. */
+    fun phoneImagesFit(m: ai.teemoon.providers.LocalModel): Boolean =
+        m.imageNeedMB(imagePathFor(m))?.let { need -> ai.teemoon.providers.PhoneImageMemory.fits(need, loadHeadroomMB(m.id), phoneCeilingMB()) && !phoneImages.killed(m.id) } ?: false
+
+    /**
+     * The path [m]'s image turns take on this phone (ImagePath): its NPU bundle when that reads images and is (or would be)
+     * the download here, else the GPU where it reads images right (BackendLadder.readsImagesOnGpu), else the CPU.
+     */
+    fun imagePathFor(m: ai.teemoon.providers.LocalModel, ref: ai.teemoon.providers.LocalModelStorage.LocalRef? = null): ai.teemoon.providers.ImagePath =
+        ai.teemoon.providers.ImagePath.of(
+            npuReadsImages = ref?.let { it.requiresNpu && it.npuSeesImages } ?: (LocalModelCatalog.npuBundle(m, socModel)?.seesImages == true),
+            gpuReadsImages = ai.teemoon.ondevice.BackendLadder.readsImagesOnGpu(socModel))
+
+    private fun localModelOf(p: Provider) = p.localModelID?.let { id -> LocalModelCatalog.all.firstOrNull { it.id == id } }
+
+    /**
+     * IMAGES.md §4b: a phone model this phone can never give the memory images need, or whose image turn the OS killed
+     * here — listed under reads images with the permanent caption, refused at send with the permanent line.
+     */
+    fun imagesRefused(p: Provider): Boolean =
+        p.isLocal && LocalModelCatalog.imagesOnDevice && localModelOf(p)?.let { it.readsImages && !phoneImagesFit(it) } == true
+    /** Debug-only (UiTestSeeding.EXTRA_RAM_GB): the phone's RAM a journey says it has; null reads the device. */
+    @Volatile var uiTestTotalBytes: Long? = null
+    /** The phone's total RAM in bytes (MemoryInfo.totalMem), which the "may not fit" floor reads. 0 when silent. */
+    fun totalMemBytes(): Long = uiTestTotalBytes ?: runCatching { val info = ActivityManager.MemoryInfo(); activityManager.getMemoryInfo(info); info.totalMem }.getOrDefault(0L)
     val engineCache = LocalEngineCache(engineFactory, memoryCheck = { need ->
-        // Decline-to-start beats dying mid-answer. 0 means the API is unavailable — don't block on a number we couldn't read.
-        val available = availableMB(); if (available > 0 && available < need) throw LocalInferenceError.InsufficientMemory(need, available)
+        // Decline-to-start beats dying mid-answer, with one second look after ~2 s (LoadMemoryGate). 0 means the API is
+        // unavailable — don't block on a number we couldn't read.
+        LoadMemoryGate.check(need, read = ::availableMB)
     }, log = log)
+    /** The load gate's headroom for [modelID] on this phone: none at or above its RAM floor (LocalMemory.androidHeadroomMB). */
+    fun loadHeadroomMB(modelID: String): Int =
+        LocalModelCatalog.all.firstOrNull { it.id == modelID }?.let { LocalMemory.androidHeadroomMB(it, totalMemBytes()) } ?: LocalMemory.headroomMB
     /** Releases loaded weights when the system asks for memory back (TeemoonApplication.onTrimMemory). */
     /** Deleting a chat, or all of them, drops every kept on-device conversation (LocalEngineCache.forgetKeptConversations). */
     fun forgetKeptConversations() = engineCache.forgetKeptConversations()
+
+    /**
+     * The chats with a live view model, by thread: a turn outlives its screen, so deleting a chat from the list must
+     * reach the one still answering (A4, pm sweep 2026-11-06). Filled at creation, emptied by onCleared.
+     */
+    val openChats = java.util.concurrent.ConcurrentHashMap<String, ChatViewModel>()
 
     fun evictEngines(trimLevel: Int? = null) { trimLevel?.let { log("[litert] trim memory level $it") }; engineCache.evictAll() }
 
@@ -627,8 +817,10 @@ class AppState(context: Context, dao: ChatDao? = null) {
                 log("[litert] warm-up skipped: ${if (ai.teemoon.inference.LocalGenerationGate.shared.isBusy) "a turn is loading it" else "the app is in the background"}"); return@launch
             }
             log("[litert] warm-up: ${java.io.File(ref.bundleFile).name}")
+            // an NPU bundle that reads images warms with its reader, so the first picture needs no rebuild (LocalWarmUpPolicy)
+            val vision = LocalWarmUpPolicy.withImageReader(ref) && LocalModelCatalog.readsImages(ref.id)
             runCatching { engineCache.engine(ref.bundleFile, ref.contextTokens ?: LiteRTTransport.DEFAULT_CONTEXT_TOKENS,
-                ref.sizeMB, LocalMemory.headroomMB, ref.requiresNpu) }
+                ref.sizeMB, loadHeadroomMB(ref.id), ref.requiresNpu, vision = vision) }
                 .onFailure { log("[litert] warm-up declined: ${it.message}") }
             // the app left while it built: the trim that evicts engines has already fired, so this load gives it back
             if (BackgroundWarmUp.shouldEvictAfterBuild(BackgroundWarmUp.isForeground(), LocalGenerationGate.shared.isBusy)) {
@@ -642,10 +834,14 @@ class AppState(context: Context, dao: ChatDao? = null) {
 
     /**
      * android-only: the equipped local model's KV window AS THIS DEVICE RUNS IT — an NPU bundle's is compiled in
-     * (4096 on Tensor), the general bundle takes the transport's default. Sizes the search payload; null for a cloud model.
+     * (4096 on Tensor), the general bundle takes the transport's default — 4096 on the CPU rung, which the factory reads
+     * from the ladder and its memo (BackendLadder.contextTokens). Sizes the search payload; null for a cloud model.
      */
     fun localContextTokens(provider: Provider): Int? =
-        provider.localModelID?.let { localStorage.ref(it, socModel)?.contextTokens ?: LiteRTTransport.DEFAULT_CONTEXT_TOKENS }
+        provider.localModelID?.let { id ->
+            val ref = localStorage.ref(id, socModel) ?: return@let LiteRTTransport.DEFAULT_CONTEXT_TOKENS
+            engineFactory.contextTokensFor(ref.bundleFile, ref.contextTokens ?: LiteRTTransport.DEFAULT_CONTEXT_TOKENS, ref.requiresNpu)
+        }
 
     /** ChatGeneration+Stream.resolveLanguageModel: a local place runs LiteRT, anything else the HTTP transport. */
     fun transportFor(endpoint: String, model: String, context: TeeContext?, events: StreamCallbacks, effort: ReasoningEffort? = null, affinityID: String? = null): GenerationTransport {
@@ -656,12 +852,19 @@ class AppState(context: Context, dao: ChatDao? = null) {
         if (localID != null) {
             // Build.SOC_MODEL picks this chip's NPU bundle when one is downloaded; the general bundle otherwise.
             val ref = localStorage.ref(localID, socModel) ?: throw LlmError(LlmError.Source.Provider(place.name),
-                "${place.name} isn't downloaded on this device. Open where to download it.")
-            return LiteRTTransport(ref.bundleFile, ref.sizeMB, cache = engineCache, events = events, headroomMB = LocalMemory.headroomMB, backendLabel = engineFactory.backendLabel, requireNpu = ref.requiresNpu,
+                "${place.name} isn't downloaded on this phone. download it from where.")
+            return LiteRTTransport(ref.bundleFile, ref.sizeMB, cache = engineCache, events = events, headroomMB = loadHeadroomMB(ref.id), backendLabel = engineFactory.backendLabel, requireNpu = ref.requiresNpu,
+                // a Tensor phone's image turns: the general file beside the NPU bundle, when downloaded (the maintainer 2026-10-26, (a))
+                imageModelPath = ref.imageBundleFile, imageSizeMB = ref.imageSizeMB ?: ref.sizeMB,
+                // the memory check before an image turn (option c): what a vision load takes from availMem + this headroom
+                visionLoadMB = LocalModelCatalog.all.firstOrNull { it.id == ref.id }?.let { m -> m.imageNeedMB(imagePathFor(m, ref)) },
+                modelName = LocalModelCatalog.all.firstOrNull { it.id == ref.id }?.displayName?.lowercase() ?: "this model",
+                // the in-flight mark: a kill mid image turn is found at the next launch and refused from then on
+                onImageTurn = { begins -> if (begins) phoneImages.beginImageTurn(ref.id) else phoneImages.endImageTurn() },
                 // an NPU bundle's window is compiled in; the general bundle takes the transport's default
                 contextTokens = ref.contextTokens ?: LiteRTTransport.DEFAULT_CONTEXT_TOKENS, log = log,
                 // Think Harder on device: LiteRT's thinking on (ReasoningControl.OnDevice, iOS 7cd8c10)
-                thinking = effort == ReasoningEffort.THINK_HARDER)
+                thinking = effort?.let { ai.teemoon.inference.ReasoningLevel.thinksOnDevice(it, settings.chosenReasoningLevel(place)) } ?: false)
         }
         return OpenAiTransport(endpoint, model, apiKey = place?.let(::credentialFor), authHeaderName = place?.authHeaderName,
             teeContext = context, extraParams = place?.extraParams ?: emptyMap(), providerName = place?.name ?: endpoint,
@@ -784,4 +987,5 @@ private class FileAuditIndexStore(private val dir: File) : AuditIndex.Store {
     override fun touch(fetchedAtMs: Long) {
         runCatching { dir.mkdirs(); File(dir, "fetched-at.tmp").apply { writeText(fetchedAtMs.toString()); renameTo(stampFile) } }
     }
+    override fun clear() { runCatching { indexFile.delete(); stampFile.delete(); etagFile.delete() } }
 }

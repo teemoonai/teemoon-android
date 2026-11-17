@@ -39,6 +39,10 @@ interface ChatDao {
     @Query("UPDATE threads SET title = :title WHERE id = :id")
     suspend fun setTitle(id: String, title: String)
 
+    /** A chat is named once, by its first question; a title already there (an imported chat's own) stays. */
+    @Query("UPDATE threads SET title = :title WHERE id = :id AND (title IS NULL OR title = '')")
+    suspend fun setTitleIfNone(id: String, title: String)
+
     @Query("DELETE FROM threads WHERE id = :id")
     suspend fun deleteThread(id: String)
 
@@ -54,6 +58,10 @@ interface ChatDao {
 
     @Query("DELETE FROM messages WHERE id IN (:ids)")
     suspend fun deleteMessages(ids: List<String>)
+
+    /** SentBeforeConfirmed.settle: every row still marked [from] takes [to]. Returns how many changed. */
+    @Query("UPDATE messages SET sentBeforeConfirmed = :to WHERE sentBeforeConfirmed = :from")
+    suspend fun rewriteSentBeforeConfirmed(from: String, to: String?): Int
 
     @Query("UPDATE messages SET timestamp = :timestamp WHERE id = :id")
     suspend fun setTimestamp(id: String, timestamp: Long)
@@ -82,6 +90,48 @@ interface ChatDao {
 
     @Query("SELECT * FROM messages WHERE id IN (:ids)")
     suspend fun messagesByIds(ids: List<String>): List<MessageEntity>
+
+    @Query("SELECT EXISTS(SELECT 1 FROM threads WHERE id = :id)")
+    suspend fun threadExists(id: String): Boolean
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertMessages(messages: List<MessageEntity>)
+
+    /**
+     * An imported chat (chat.imports): the thread and every message, or none of them. ABORT, not REPLACE: the writer
+     * checked the thread is not here, and a clash would be a bug to surface, never a row to overwrite.
+     */
+    @Transaction
+    suspend fun insertChat(thread: ThreadEntity, messages: List<MessageEntity>) {
+        insertThread(thread)
+        insertMessages(messages)
+    }
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertThread(thread: ThreadEntity)
+
+    // MARK: images (IMAGES.md §1). Rows go with their message by ON DELETE CASCADE; files go by the store's sweep.
+
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertAttachments(attachments: List<AttachmentEntity>)
+
+    @Query("SELECT * FROM attachments WHERE message_id IN (:messageIds) ORDER BY message_id, idx")
+    suspend fun attachmentsFor(messageIds: List<String>): List<AttachmentEntity>
+
+    @Query("SELECT * FROM attachments WHERE message_id IN (SELECT id FROM messages WHERE threadId = :threadId) ORDER BY message_id, idx")
+    fun observeAttachments(threadId: String): Flow<List<AttachmentEntity>>
+
+    /** Every file a row still names: what the sweep keeps. */
+    @Query("SELECT path FROM attachments")
+    suspend fun attachmentPaths(): List<String>
+
+    /** An imported chat with its images: the thread, every message and every attachment row, or none of them. */
+    @Transaction
+    suspend fun insertChat(thread: ThreadEntity, messages: List<MessageEntity>, attachments: List<AttachmentEntity>) {
+        insertThread(thread)
+        insertMessages(messages)
+        if (attachments.isNotEmpty()) insertAttachments(attachments)
+    }
 
     @Transaction
     suspend fun startThread(thread: ThreadEntity, first: MessageEntity) {

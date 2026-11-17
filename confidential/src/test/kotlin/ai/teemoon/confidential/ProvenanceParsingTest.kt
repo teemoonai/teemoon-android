@@ -4,6 +4,7 @@
 package ai.teemoon.confidential
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -123,4 +124,18 @@ services:
         assertEquals("nearai/compose-manager", ProvenanceParsing.githubRepo("nearaidev/compose-manager-launcher"))
         assertEquals("nearai/cloud-api", ProvenanceParsing.githubRepo("nearaidev/cloud-api"))
     }
+
+    /**
+     * Android-only (main-thread profile on the Pixel 10 Pro, 2026-11-07): the trust ladder classifies every image row
+     * against the same compose YAML, and each call re-ran the regex over the whole manifest — 7.7 s of main-thread time
+     * across one chat open, verification and a send. A manifest's refs are parsed once and handed back as they are.
+     */
+    @Test fun aManifestIsParsedOnce() {
+        val yaml = "services:\n  a:\n    image: nearaidev/a@sha256:${"a".repeat(64)}\n  b:\n    image: ghcr.io/x/b:1.2\n"
+        assertSame(ProvenanceParsing.imageRefs(yaml), ProvenanceParsing.imageRefs(String(yaml.toCharArray())))
+        assertSame(ProvenanceParsing.tagPinnedImageRefs(yaml), ProvenanceParsing.tagPinnedImageRefs(String(yaml.toCharArray())))
+        val other = yaml.replace("a".repeat(64), "b".repeat(64))
+        assertEquals("b".repeat(64), ProvenanceParsing.imageRefs(other).single().digest)
+    }
 }
+

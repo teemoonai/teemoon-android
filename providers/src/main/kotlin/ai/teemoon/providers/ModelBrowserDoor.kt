@@ -1,4 +1,4 @@
-// ports: teemoon/Presentation/ModelBrowserDoor.swift @ v1.0.5 (the value, browsing, encryptedPicker; no equipped
+// ports: teemoon/Presentation/ModelBrowserDoor.swift @ v1.0.6 (the value, browsing, encryptedPicker; no equipped
 //        set — iOS added one in d7a30c9 and took it out again in bf7a86e)
 package ai.teemoon.providers
 

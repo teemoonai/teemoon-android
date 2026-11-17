@@ -226,6 +226,23 @@ class AddEditProviderModel(
     val recommendedModels: List<KnownModel>
         get() = if (browsablePreset?.defaultModelRule != null) fetchedModels.firstOrNull { it.id == model }?.let { listOf(it) } ?: emptyList() else fetchedModels.take(3)
     val recommendedModelID: String? get() = browsablePreset?.defaultModelRule?.resolve(fetchedModels)
+
+    /**
+     * The model rows the form lists (IMAGES.md §4e "Into a provider's models", teemoon-ios bb2b89cf): opened from a
+     * filtered where sheet, only the models that pass its filters by the browser's own predicate — the first few, or
+     * all of them. With no filter, as before: the recommended few, or all.
+     */
+    fun shownModels(showAll: Boolean, filters: Set<ModelBrowserQuery.Filter>): List<KnownModel> {
+        if (filters.isEmpty()) return if (showAll) fetchedModels else recommendedModels
+        val passing = fetchedModels.filter { ModelBrowserListing.satisfies(it, filters, ::tierOf) }
+        return if (showAll) passing else (recommendedModels.filter { it in passing } + passing).distinct().take(3)
+    }
+
+    /** How many models "all N models" names: those that pass [filters]. */
+    fun modelCount(filters: Set<ModelBrowserQuery.Filter>): Int =
+        if (filters.isEmpty()) fetchedModels.size else fetchedModels.count { ModelBrowserListing.satisfies(it, filters, ::tierOf) }
+
+    private fun tierOf(m: KnownModel): NearAIModelCatalog.Confidentiality? = if (showsInlineTiers) NearAIModelCatalog.confidentiality(m.id) else null
     val showsInlineTiers: Boolean get() = Provider.isNearAIHost(fullEndpointHost)
 
     fun failureMessage(kind: EndpointModelCatalog.FailureKind): String = EndpointProbe.failureMessage(kind)
@@ -237,8 +254,18 @@ class AddEditProviderModel(
         name = next; autoLabel = next
     }
 
+    /**
+     * The newest probe's number. A probe applies its answer only while it is still the newest AND the form still holds
+     * the endpoint and key it asked with: an answer for the endpoint the user just edited away from filled the new
+     * endpoint's form with the old one's list and model, and save then paired them (pm's state-machine sweep,
+     * 2026-11-06, tier 3; iOS has the same race).
+     */
+    private var probeRun = 0
+
     suspend fun probe(select: String? = null, userInitiated: Boolean = false) {
         val base = probeBaseURL ?: return
+        val run = ++probeRun; val askedKey = apiKey
+        fun current() = run == probeRun && probeBaseURL == base && apiKey == askedKey
         try {
             val preset = Provider.presets.firstOrNull { Provider.presetMatchKey(it.endpoint) == Provider.presetMatchKey(fullEndpoint) }
             val request = EndpointProbe.Request(
@@ -247,8 +274,10 @@ class AddEditProviderModel(
                 existingModels = fetchedModels, defaultModelRule = preset?.defaultModelRule, keyValidationEndpoint = preset?.keyValidationEndpoint)
             if (EndpointProbe.needsNetwork(request)) onAnimatedChange { conn = ConnState.Testing }
             val result = EndpointProbe.run(request, probeCatalog)
-            onAnimatedChange { applyProbe(result) }
-        } finally { hasProbed = true }
+            if (current()) onAnimatedChange { applyProbe(result) }
+            // a key edit starts no probe of its own: a dropped answer must not leave "testing" spinning
+            else if (run == probeRun && conn == ConnState.Testing) onAnimatedChange { conn = ConnState.Idle }
+        } finally { if (current()) hasProbed = true }
     }
 
     private fun applyProbe(result: EndpointProbe.Result) {

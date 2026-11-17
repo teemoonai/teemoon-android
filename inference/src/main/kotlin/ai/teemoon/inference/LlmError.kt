@@ -1,5 +1,5 @@
-// ports: teemoon/Inference/LLMError.swift @ v1.0.4 (the error, its fields, providerMessage, groundingMessage),
-//        teemoon/Inference/StreamDebugHelpers.swift @ v1.0.5 (apiErrorMessage + ProblemDetails; the pretty-printers are ToolCallDebugFormat)
+// ports: teemoon/Inference/LLMError.swift @ v1.1.0 (the error, its fields, providerMessage, groundingMessage),
+//        teemoon/Inference/StreamDebugHelpers.swift @ v1.1.0 (apiErrorMessage + ProblemDetails; the pretty-printers are ToolCallDebugFormat)
 package ai.teemoon.inference
 
 import kotlinx.serialization.json.Json
@@ -52,14 +52,14 @@ class LlmError(
     companion object {
         /** iOS LLMError.providerMessage: the user-facing line for a bare HTTP status. */
         fun providerMessage(httpStatus: Int, provider: String): String = when (httpStatus) {
-            401 -> "$provider rejected the request (HTTP 401). Your API key may be invalid or missing."
-            402 -> "$provider has no credits (or the balance is too low) (HTTP 402). Add credits, then retry."
-            403 -> "$provider denied access (HTTP 403). Your API key may not have permission for this model."
-            404 -> "$provider endpoint not found (HTTP 404). Check the provider URL in Settings."
-            422 -> "$provider rejected the request format (HTTP 422). The model name may be invalid."
-            429 -> "$provider rate limit reached (HTTP 429). Try again in a moment."
-            in 500..599 -> "$provider server error (HTTP $httpStatus). The service may be temporarily unavailable."
-            else -> "$provider returned an error (HTTP $httpStatus)."
+            401 -> "$provider rejected the request (http 401). your api key may be invalid or missing."
+            402 -> "$provider has no credits, or the balance is too low (http 402). add credits, then retry."
+            403 -> "$provider denied access (http 403). your api key may not have permission for this model."
+            404 -> "$provider endpoint not found (http 404). check the server address in settings → places & keys."
+            422 -> "$provider rejected the request format (http 422). the model name may be invalid."
+            429 -> "$provider rate limit reached (http 429). try again in a moment."
+            in 500..599 -> "$provider server error (http $httpStatus). the service may be down for a moment."
+            else -> "$provider returned an error (http $httpStatus)."
         }
 
         /**
@@ -81,7 +81,7 @@ class LlmError(
                 ((e as? JsonObject)?.get("msg") as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotEmpty() }?.let { parts += it }
             }
             if (parts.isEmpty()) return providerMessage(httpStatus, provider)
-            return "$provider (HTTP $httpStatus): " + parts.joinToString(" — ")
+            return "$provider (http $httpStatus): " + parts.joinToString(" — ")
         }
 
         /**
@@ -94,8 +94,8 @@ class LlmError(
         fun problemDetailsMessage(json: JsonObject, httpStatus: Int, provider: String): String? {
             if (json["error"] != null) return null
             val detail = (json["detail"] as? JsonPrimitive)?.takeIf { it.isString }?.content?.takeIf { it.isNotEmpty() } ?: return null
-            if (httpStatus == 404 && detail.startsWith("Function ")) return "$provider does not serve this model on your account (HTTP 404). Pick another model in where."
-            return "$provider (HTTP $httpStatus): $detail"
+            if (httpStatus == 404 && detail.startsWith("Function ")) return "$provider doesn't serve this model on your account (http 404). pick another model in where."
+            return "$provider (http $httpStatus): $detail"
         }
 
         /**
@@ -104,13 +104,13 @@ class LlmError(
          * error (HTTP 422)" and was retried three times a turn (2026-09-17, a 16-character key on the Pixel).
          */
         fun groundingMessage(httpStatus: Int, responseBody: String = ""): String = when {
-            httpStatus == 401 -> "Brave web search failed (HTTP 401). Check your Brave API key in Settings → Search."
-            httpStatus == 402 -> "Brave web search failed (HTTP 402). Your Brave API subscription has run out of credits."
-            httpStatus == 403 -> "Brave web search denied (HTTP 403). Your API key may not have access to this endpoint."
-            httpStatus == 429 -> "Brave web search rate limit reached (HTTP 429). Try again in a moment."
-            braveTokenInvalid(responseBody) -> "Brave web search rejected the API key (HTTP $httpStatus): " +
-                (braveErrorDetail(responseBody) ?: "the subscription token is invalid.") + " Check your Brave API key in Settings → Search."
-            else -> "Brave web search returned an error (HTTP $httpStatus)" + (braveErrorDetail(responseBody)?.let { ": $it" } ?: ".")
+            httpStatus == 401 -> "brave web search failed (http 401). check your brave api key in settings → search."
+            httpStatus == 402 -> "brave web search failed (http 402). your brave api subscription has run out of credits."
+            httpStatus == 403 -> "brave web search denied (http 403). your api key may not have access to this endpoint."
+            httpStatus == 429 -> "brave web search rate limit reached (http 429). try again in a moment."
+            braveTokenInvalid(responseBody) -> "brave web search rejected the api key (http $httpStatus): " +
+                (braveErrorDetail(responseBody) ?: "the key isn't valid.") + " check your brave api key in settings → search."
+            else -> "brave web search returned an error (http $httpStatus)" + (braveErrorDetail(responseBody)?.let { ": $it" } ?: ".")
         }
 
         /** `error.code == SUBSCRIPTION_TOKEN_INVALID`: Brave could not parse the key at all. Nothing to retry. */

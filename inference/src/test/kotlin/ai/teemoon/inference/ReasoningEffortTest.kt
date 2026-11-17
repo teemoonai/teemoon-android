@@ -162,6 +162,27 @@ class ReasoningEffortTest {
         }
     }
 
+    /**
+     * With no pick — what AppSettings hands over with developer mode off, whatever is stored — the body on the wire is
+     * byte-identical to the 1.0.x send's low, whether the transport asks a chooser or not (pm 2026-11-13; iOS asserts the
+     * same). The control: a pick does change the bytes.
+     */
+    @Test fun withNoPickTheBodyIsTheSameBytesWhateverTheChooser() {
+        try {
+            for (url in listOf("https://api.fireworks.ai/inference/v1/chat/completions", "https://cloud-api.near.ai/v1/chat/completions",
+                    "https://openrouter.ai/api/v1/chat/completions", "https://integrate.api.nvidia.com/v1/chat/completions")) {
+                val p = provider(url)
+                if ("openrouter" in url) ReasoningControl.note(ReasoningControl.OpenRouter, p)
+                ReasoningLevel.chooser = { null }
+                val today = bodyOf(p, ReasoningEffort.For(ReasoningEffort.FAST, p))
+                ReasoningLevel.chooser = { _ -> null }
+                assertEquals(url, today, bodyOf(p, ReasoningEffort.For(ReasoningEffort.FAST, p)))
+                ReasoningLevel.chooser = { if ("nvidia" in url) "on" else "high" }
+                assertTrue("$url: a pick reaches the wire", today != bodyOf(p, ReasoningEffort.For(ReasoningEffort.FAST, p)))
+            }
+        } finally { ReasoningLevel.chooser = { null } }
+    }
+
     /** A set effort lands in the body after the provider's extras, the pass after a tool result alike; NVIDIA gets its switch. */
     @Test fun aSetEffortReachesTheBody() {
         val fw = provider("https://api.fireworks.ai/inference/v1/chat/completions")

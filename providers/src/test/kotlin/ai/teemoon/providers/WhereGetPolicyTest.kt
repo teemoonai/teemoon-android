@@ -1,4 +1,5 @@
 // ports: teemoonTests/WhereGetPolicyTests.swift @ v1.0.4
+// ports: teemoonTests/WhereGetPolicyTests.swift @ f3773d9 (the memory-fit tests)
 package ai.teemoon.providers
 
 import org.junit.Assert.assertEquals
@@ -219,22 +220,70 @@ class WhereGetPolicyTest {
         assertEquals(WhereGetPolicy.RowDestruction.UNEQUIP_CLOUD, p.destruction(Provider.grok))
     }
 
-    @Test fun exceedsAvailableMemoryIgnoresUnknownBudget() {
-        assertFalse(LocalMemory.exceedsAvailable(sizeMB = 3000, availableMB = 0))
-        assertTrue(LocalMemory.exceedsAvailable(sizeMB = 3000, availableMB = 2000))
-        assertFalse(LocalMemory.exceedsAvailable(sizeMB = 1000, availableMB = 2000))
+    /**
+     * The "may not fit" label and the start-here hero read total RAM against the model's floor, never free memory: an
+     * 8 GB Pixel 8a that runs E2B was told it may not fit (Test Lab, 2026-10-30). Total memory as phones report it: an
+     * "8 GB" phone about 7.5 GiB, a "6 GB" one about 5.6, a "4 GB" one (Galaxy A15) about 3.7. (iOS f3773d9)
+     */
+    @Test fun theFitLabelIsTheRAMFloorNotFreeMemory() {
+        fun gib(g: Double) = (g * 1_073_741_824).toLong()
+        val e2b = LocalModelCatalog.all.first { it.fileName == "gemma-4-E2B-it.litertlm" }
+        val e4b = LocalModelCatalog.all.first { it.fileName == "gemma-4-E4B-it.litertlm" }
+        assertEquals(8, LocalMemory.marketedRAMGB(gib(7.5))); assertEquals(6, LocalMemory.marketedRAMGB(gib(5.6))); assertEquals(4, LocalMemory.marketedRAMGB(gib(3.7)))
+        assertFalse(LocalMemory.belowFloor(e2b, gib(7.5)))   // Pixel 8a, Pixel 10 Pro
+        assertFalse(LocalMemory.belowFloor(e2b, gib(5.6)))   // 6 GB
+        assertTrue(LocalMemory.belowFloor(e2b, gib(3.7)))    // 4 GB, Galaxy A15
+        assertFalse(LocalMemory.belowFloor(e4b, gib(7.5)))
+        assertTrue(LocalMemory.belowFloor(e4b, gib(5.6)))
+        assertFalse("an unread total never warns", LocalMemory.belowFloor(e2b, 0))
+        // The Tensor bundle is the same model as this device downloads it: the floor travels with it.
+        assertEquals(e2b.minRAMGB, e2b.forDevice("Tensor G5").minRAMGB)
     }
 
     @Test fun recommendedPhoneModelDoesNotHeroADownloadThatWouldFail() {
         val model = LocalModelCatalog.all[0]
-        assertEquals(model, WhereGetPolicy.recommendedPhoneModel(LocalModelCatalog.all, availableMB = 0))
-        assertNull(WhereGetPolicy.recommendedPhoneModel(LocalModelCatalog.all, availableMB = model.sizeMB))
-        assertEquals(
-            model,
-            WhereGetPolicy.recommendedPhoneModel(
-                LocalModelCatalog.all, availableMB = model.sizeMB + LocalMemory.headroomMB,
-            ),
-        )
+        assertEquals(model, WhereGetPolicy.recommendedPhoneModel(LocalModelCatalog.all, totalBytes = (7.5 * 1_073_741_824).toLong()))
+        assertNull(WhereGetPolicy.recommendedPhoneModel(LocalModelCatalog.all, totalBytes = (3.7 * 1_073_741_824).toLong()))
+        assertEquals(model, WhereGetPolicy.recommendedPhoneModel(LocalModelCatalog.all, totalBytes = 0))
+    }
+
+    /** The load gate asks for the measured peak plus headroom; until a model's peak is measured, its file size. */
+    @Test fun theLoadGateUsesThePeakOnceMeasured() {
+        assertEquals(2980, LocalMemory.loadNeedMB(sizeMB = 2468, peakFootprintMB = null))
+        assertEquals(2012, LocalMemory.loadNeedMB(sizeMB = 2468, peakFootprintMB = 1500))
+        assertTrue("a peak was set: update the floor check", LocalModelCatalog.all.all { it.peakFootprintMB == null })
+    }
+
+    /**
+     * Android-only (pm 2026-10-30): the Pixel 8a's figures, read on Test Lab (matrix 9000657022189770859, akita API 35):
+     * totalMem 7558 MB, availMem 2645 MB at launch and 3399 MB before the load, threshold 216 MB. The old label compared
+     * the 2468 MB download with 2645 − 216 = 2429 MB and said "may not fit"; the floor rule reads 8 GB and says nothing.
+     * The load gate passes on availMem before the load. The Pixel 6a (6 GB, bluejay API 32) is over E2B's floor too:
+     * it ran the vision turns with 612 MB still available.
+     */
+    @Test fun thePixel8aPassesTheLabelAndTheLoadGate() {
+        val e2b = LocalModelCatalog.all.first { it.fileName == "gemma-4-E2B-it.litertlm" }
+        val mb = 1024L * 1024
+        val totalMem = 7558 * mb; val availAtLaunchMB = 2645; val availBeforeLoadMB = 3399; val thresholdMB = 216
+        assertFalse("8 GB is over E2B's floor", LocalMemory.belowFloor(e2b, totalMem))
+        assertTrue("the old label tripped on the 8a at launch", e2b.sizeMB > availAtLaunchMB - thresholdMB)
+        assertTrue("the gate lets the 8a load", availBeforeLoadMB >= LocalMemory.loadNeedMB(e2b.sizeMB, e2b.peakFootprintMB))
+        assertFalse("6 GB (Pixel 6a, 5580 MB) is over E2B's floor", LocalMemory.belowFloor(e2b, 5580 * mb))
+    }
+
+    /**
+     * Android-only (pm 2026-10-30): at or above the floor the gate asks the file size alone, below it file size + 512.
+     * Test Lab's figures (2026-10-30): availMem at launch 2645 MB (Pixel 8a, 7558 MB) and 2539 MB (Pixel 6a, 5580 MB)
+     * now clear E2B's 2468 MB; a 4 GB phone (3.7 GiB) still asks 2980.
+     */
+    @Test fun atOrAboveTheFloorTheGateAsksTheFileSizeAlone() {
+        val e2b = LocalModelCatalog.all.first { it.fileName == "gemma-4-E2B-it.litertlm" }
+        val mb = 1024L * 1024
+        fun need(totalBytes: Long) = e2b.sizeMB + LocalMemory.androidHeadroomMB(e2b, totalBytes)
+        assertEquals(2468, need(7558 * mb)); assertTrue("the 8a at launch", 2645 >= need(7558 * mb))
+        assertEquals(2468, need(5580 * mb)); assertTrue("the 6a at launch", 2539 >= need(5580 * mb))
+        assertEquals(2980, need((3.7 * 1_073_741_824).toLong()))
+        assertEquals("an unread total keeps the headroom", 2980, need(0))
     }
 
     /**
@@ -244,7 +293,7 @@ class WhereGetPolicyTest {
      */
     @Test fun theStartHereCardHeroesTheFileThisDeviceDownloads() {
         val device = LocalModelCatalog.forDevice("Tensor G5")
-        val hero = WhereGetPolicy.recommendedPhoneModel(device, availableMB = 0)!!
+        val hero = WhereGetPolicy.recommendedPhoneModel(device, totalBytes = 0)!!
         assertEquals(device[0].fileName, hero.fileName)
         assertTrue("a Tensor phone must hero the Tensor bundle, not ${hero.fileName}", hero.fileName.contains("Tensor_G5"))
         assertEquals(device[0].sizeMB, hero.sizeMB)
@@ -328,6 +377,10 @@ class WhereGetPolicyTest {
                 ?.contains("not end-to-end encrypted") == true,
         )
         NearAIModelCatalog.resetTierCache()
+        // near.ai's tier list seen, as on a phone that has loaded it: unseen, the flagship's id reads unknown and claims
+        // nothing (iOS ea19232). It passed only when an earlier test in the JVM had recorded a tier list.
+        NearAIModelCatalog.tierListSeenOverride = true
+        try {
         val confidential = Provider.nearAI
         assertTrue(ProviderCapability.END_TO_END_ENCRYPTION in confidential.capabilities)
         assertTrue(
@@ -338,6 +391,7 @@ class WhereGetPolicyTest {
             policy(providers = listOf(confidential)).readyCaption(confidential)
                 ?.contains("not end-to-end encrypted") == true,
         )
+        } finally { NearAIModelCatalog.tierListSeenOverride = null }
     }
 
     @Test fun isWarmIsNilWhenUnmeasuredAndFalseWhenCold() {
@@ -367,16 +421,24 @@ class WhereGetPolicyTest {
         assertNull(identified.isWarm(provider = Provider.grok, modelID = "x"))
     }
 
-    @Test fun warnsUnencryptedNearIsProxiedOnly() {
+    /**
+     * Review item where-near-unencrypted-muted (the maintainer 2026-11-07): a near.ai model that isn't end-to-end
+     * encrypted (the proxied or third-party tier) is an ordinary choice, so its caption is the muted secondary, not
+     * orange. Orange stays for a missing download and a failed pull. The trust chip's colours are unchanged.
+     */
+    @Test fun aCaptionWarnsOnlyForAMissingDownloadOrAFailedPull() {
         NearAIModelCatalog.resetTierCache()
-        assertFalse(policy(providers = listOf(Provider.nearAI)).warnsUnencryptedNear(Provider.nearAI))
         val proxied = Provider(
             id = UUID.randomUUID().toString(),
             name = "near.ai",
             endpoint = "https://cloud-api.near.ai/v1/chat/completions",
             model = "anthropic/claude-opus-4-6",
         )
-        assertTrue(policy(providers = listOf(proxied)).warnsUnencryptedNear(proxied))
-        assertFalse(policy(providers = listOf(Provider.grok)).warnsUnencryptedNear(Provider.grok))
+        val p = policy(providers = listOf(proxied, Provider.nearAI, Provider.grok))
+        assertFalse("a proxied near.ai model is an ordinary choice", p.captionWarns(proxied, missingDownload = false, pullFailed = false))
+        assertFalse(p.captionWarns(Provider.nearAI, missingDownload = false, pullFailed = false))
+        assertFalse(p.captionWarns(Provider.grok, missingDownload = false, pullFailed = false))
+        assertTrue(p.captionWarns(Provider.grok, missingDownload = true, pullFailed = false))
+        assertTrue(p.captionWarns(Provider.grok, missingDownload = false, pullFailed = true))
     }
 }

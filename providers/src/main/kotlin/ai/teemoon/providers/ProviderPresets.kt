@@ -3,7 +3,7 @@
 //        the KnownModel tables are KnownModelNearAI.kt). The four presets themselves are Provider.presets.
 // ports: teemoon/Providers/Provider+Presets.swift @ v1.0.4 (open-weight default rules for fireworks/openrouter/nvidia,
 //        defaultModelRule through matchingPreset, nvidia's 40-per-minute caption). keyValidationEndpoint's OpenRouter
-//        case @ v1.0.5.
+//        case @ v1.1.0.
 package ai.teemoon.providers
 
 import java.net.URI

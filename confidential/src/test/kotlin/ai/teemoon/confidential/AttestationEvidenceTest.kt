@@ -86,7 +86,9 @@ class AttestationEvidenceTest {
         val a = ref("nearaidev/cloud-api").copy(sourceRepo = "https://github.com/nearai/private-ml-sdk")
         val b = ref("nearaidev/mesh", 'b').copy(sourceRepo = "https://github.com/nearai/dstack")
         val s = summary(imageProvenance = ManifestProvenance.AllVerified(listOf(a, b), emptyList()))
-        assertEquals("2 image(s) → nearai/dstack, nearai/private-ml-sdk", s.provenanceEvidence)
+        assertEquals("2 images → nearai/dstack, nearai/private-ml-sdk", s.provenanceEvidence)
+        // one is "1 image", never "image(s)" (pm, 2026-11-06)
+        assertEquals("1 image", counted(1, "image")); assertEquals("3 third-party sidecars", counted(3, "third-party sidecar"))
     }
 
     @Test fun gatewayTrustAloneIsIndeterminateNotGreen() {

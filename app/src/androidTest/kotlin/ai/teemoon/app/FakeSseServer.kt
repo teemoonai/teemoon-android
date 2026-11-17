@@ -52,6 +52,8 @@ class FakeSseServer(private val lines: Int = 6, private val delayMs: Long = 4,
     private val braveRejects: Boolean = false,
     /** Answer as an Ollama server too: /api/version, /api/tags, /api/show, /api/ps, /api/delete, /api/pull, /api/generate. */
     private val ollama: Boolean = false,
+    /** Ollama mode: /api/show reports `vision`, so the app lets a photo go to the model (HomeCapabilityRefresh). */
+    private val ollamaVision: Boolean = false,
     /**
      * Serve model files as [rangedBytes] of [rangedPattern], slowly (16 KB every 100 ms), honouring `Range: bytes=N-`
      * with a 206: the kill-and-resume journey (G2) needs a transfer it can interrupt and a host that resumes it.
@@ -198,7 +200,7 @@ class FakeSseServer(private val lines: Int = 6, private val delayMs: Long = 4,
         when {
             path.startsWith("/api/version") -> json(out, """{"version":"0.12.0"}""")
             path.startsWith("/api/tags") -> json(out, """{"models":[${ollamaModels.joinToString(",") { """{"name":"$it","model":"$it","size":1000000,"details":{"family":"llama","parameter_size":"1B","quantization_level":"Q4_K_M"}}""" }}]}""")
-            path.startsWith("/api/show") -> json(out, """{"capabilities":["completion"]}""")
+            path.startsWith("/api/show") -> json(out, if (ollamaVision) """{"capabilities":["completion","vision"]}""" else """{"capabilities":["completion"]}""")
             path.startsWith("/api/ps") -> json(out, """{"models":[${ollamaWarm.joinToString(",") { """{"name":"$it","model":"$it"}""" }}]}""")
             path.startsWith("/api/generate") -> { if (ollamaWarmsOnGenerate) name?.let { ollamaWarm.add(it) }; json(out, """{"done":true}""") }
             path.startsWith("/api/delete") -> if (ollamaDeleteFails) json(out, """{"error":"permission denied"}""", 500) else { name?.let { ollamaModels.remove(it); ollamaWarm.remove(it) }; json(out, "{}") }

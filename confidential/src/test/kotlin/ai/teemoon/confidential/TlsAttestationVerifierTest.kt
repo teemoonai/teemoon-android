@@ -1,6 +1,7 @@
-// ports: teemoonTests/TLSAttestationVerifierTests.swift @ b34d1ec — all eight, over the kit's tls class (a live
+// ports: teemoonTests/TLSAttestationVerifierTests.swift @ v1.1.0 — all eight, over the kit's tls class (a live
 //        include_tls_fingerprint=true exchange from a near.ai model host, that connection's certificate, and the
-//        outcome production answered per case) + android-only: the probe end to end over the seam.
+//        outcome production answered per case; tls.json re-emitted at iOS a09537fe: the throwaway certificate is now
+//        failed) + android-only: the probe end to end over the seam, and the unbuildable probe address (ee5d1b51).
 package ai.teemoon.confidential
 
 import kotlinx.coroutines.runBlocking
@@ -92,5 +93,19 @@ class TlsAttestationVerifierTest {
         assertTrue(down is TlsAttestation.Inconclusive)
         val missing = TlsAttestationVerifier(TlsProbe { TlsProbeResult(200, "{}".toByteArray(), TlsKit.certDer) }).verify("https://x/v1")
         assertTrue(missing.reason!!.contains("missing"))
+        // near-gate-nvidia-tls-split (iOS ee5d1b51): near.ai's answer without the TLS fields is evidence, not an outage
+        assertTrue("$missing", missing is TlsAttestation.Failed && missing.isHardFailure)
+    }
+
+    /**
+     * android-only, iOS ee5d1b51's URLComponents branch: an address teemoon can't build is teemoon's own fault — soft,
+     * with the approved line, and nothing goes on the wire.
+     */
+    @Test fun anUnbuildableProbeAddress_asksWithTheFaultLine() = runBlocking {
+        var probed = 0
+        val r = TlsAttestationVerifier(TlsProbe { probed++; throw IOException("unreachable") }).verify("not a url")
+        assertEquals(TlsAttestation.Inconclusive(NrasVerification.TEEMOON_FAULT), r)
+        assertEquals("this check failed inside teemoon, so it proves nothing.", r.reason)
+        assertFalse(r.isHardFailure); assertEquals(0, probed)
     }
 }

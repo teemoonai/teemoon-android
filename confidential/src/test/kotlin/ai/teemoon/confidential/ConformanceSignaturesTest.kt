@@ -1,4 +1,4 @@
-// ports: teemoonTests/ConformanceVectorsSignatures.swift @ 39d3ff2 (the consuming half: vectorsReproduceUnderProduction and
+// ports: teemoonTests/ConformanceVectorsSignatures.swift @ v1.1.0 (the consuming half: vectorsReproduceUnderProduction and
 //        iosAgreesWithTheSDK as androidAgreesWithTheSDK; minting the vectors is iOS's, never here)
 //
 // Per-response signature vectors (conformance/vendor/signatures.json, kit 0.5.0), built in teemoon-ios from three real

@@ -1,5 +1,5 @@
-// ports: teemoon/Confidential/DCAPVerifier.swift @ 9722921 (DCAPVerifier; the value types are in DcapVerification.kt)
-//        teemoon/Confidential/DCAPService.swift @ 9722921 (DCAPService)
+// ports: teemoon/Confidential/DCAPVerifier.swift @ v1.0.6 (DCAPVerifier; the value types are in DcapVerification.kt)
+//        teemoon/Confidential/DCAPService.swift @ v1.0.6 (DCAPService)
 //
 // Real Intel TDX quote verification via Phala's dcap-qvl (the exact library
 // near.ai's own verifier uses), through the vendored Android binding. This
@@ -11,6 +11,8 @@
 // only, so JVM tests drive DcapVerifier with a fake engine, and the kit's
 // quotes class is proved against the real engine on the managed device.
 package ai.teemoon.confidential
+
+import kotlinx.coroutines.withContext
 
 /** One verified quote as dcap-qvl reports it. */
 data class DcapVerifiedQuote(val status: String, val mrConfigIdHex: String, val reportDataHex: String)
@@ -39,21 +41,52 @@ class DcapVerifier(
     private val log: (String) -> Unit = {},
 ) {
     /** Verifies a hex-encoded TDX quote at [nowSecs] (the attestation's fetch time / a trusted time). */
-    suspend fun verify(quoteHex: String, nowSecs: Long): DcapVerification {
+    /** Main-safe: the parse and the native check run on [VerifyWork], never the caller's thread. */
+    suspend fun verify(quoteHex: String, nowSecs: Long): DcapVerification = withContext(VerifyWork.dispatcher) { verifyHere(quoteHex, nowSecs) }
+
+    private suspend fun verifyHere(quoteHex: String, nowSecs: Long): DcapVerification {
         val rawQuote = quoteHex.removePrefix("0x").hexToBytesOrNull() ?: return DcapVerification.Failed("quote hex undecodable")
-        val collateralJson = try { collateral.collateralJson(rawQuote) } catch (e: Exception) {
-            // Fail-closed, but keep the specific reason for the UI/logs.
+        // A cancel stays a cancel: `catch (e: Exception)` turned it into Failed — a hard verdict — and the check ran
+        // on (pm sweep 2026-11-06).
+        val collateralJson = try { collateral.collateralJson(rawQuote) } catch (e: kotlin.coroutines.cancellation.CancellationException) { throw e } catch (e: Exception) {
             log("[dcap] collateral unavailable: $e")
-            return DcapVerification.Failed("collateral: ${e.message ?: e}")
+            return collateralUnavailable(e)
         }
         return try {
             val report = engine.verify(rawQuote, collateralJson, nowSecs)
             log("[dcap] verified — tcb=${report.status}")
             DcapVerification.Verified(DcapTcbStatus.fromRaw(report.status), report.mrConfigIdHex, report.reportDataHex)
+        } catch (e: kotlin.coroutines.cancellation.CancellationException) {
+            throw e
         } catch (e: Exception) {
             log("[dcap] verification failed: $e")
             DcapVerification.Failed(e.message ?: e.toString())
         }
+    }
+
+    companion object {
+        /**
+         * What a quote's verdict is when its collateral couldn't be had. Only an outage or an unreadable PCS answer is
+         * "couldn't check" (soft); a quote that can't be parsed, one missing its PCK chain, and anything unrecognised
+         * are evidence and stay hard (near-send-gate-rule, the maintainer 2026-11-06; iOS DCAPVerifier.couldntCheck).
+         */
+        fun collateralUnavailable(e: Exception): DcapVerification =
+            if (couldntCheck(e)) DcapVerification.Unchecked("collateral: ${e.message ?: e}") else DcapVerification.Failed("collateral: ${e.message ?: e}")
+
+        internal fun couldntCheck(e: Exception): Boolean = when (e) {
+            is java.io.IOException -> true
+            // the maintainer 2026-11-06: a 404/400/422 on a request built from the quote's own fields (the TCB info by FMSPC, the
+            // PCK CRL by CA) is evidence against the quote — Intel doesn't know this platform, or the quote named it
+            // wrong. Everything else — those statuses on what Intel serves everyone (QE identity, the root CRL), no
+            // response, 401/403/408/429, 5xx — is outside our control: an outage, never a block. Aligned with iOS's
+            // sendgate.json status list when it lands.
+            is CollateralHttpException -> !(e.status in setOf(404, 400, 422) && quoteFieldsRequest(e.path))
+            is CollateralException.MissingHeader, is CollateralException.MalformedResponse -> true
+            else -> false   // QuoteMissingPckChain, QuoteUnreadable, anything unknown
+        }
+
+        /** The collateral requests built from the quote's own fields: the TCB info by FMSPC and the PCK CRL by CA. */
+        private fun quoteFieldsRequest(path: String) = path.endsWith("/tcb") || path.endsWith("/pckcrl")
     }
 }
 
@@ -69,18 +102,28 @@ class DcapService(collateral: CollateralProvider, engine: DcapQvlEngine = Androi
     private val verifier = DcapVerifier(collateral, engine, log)
 
     /** [nowSecs] defaults to the record's fetch time — collateral is fetched fresh, so that time is inside its validity window. */
-    suspend fun verify(record: AttestationRecord, nowSecs: Long? = null): RecordDcapVerification {
+    /** Main-safe: teemoon's own quote checks and dcap-qvl run on [VerifyWork]. */
+    suspend fun verify(record: AttestationRecord, nowSecs: Long? = null): RecordDcapVerification = withContext(VerifyWork.dispatcher) { verifyHere(record, nowSecs) }
+
+    private suspend fun verifyHere(record: AttestationRecord, nowSecs: Long? = null): RecordDcapVerification {
         val now = nowSecs ?: record.fetchedAt.epochSecond
         return RecordDcapVerification(
-            gateway = verifyQuote(record.intelQuote, "gateway", record.quoteVerification, now),
-            model = verifyQuote(record.modelIntelQuote, "model", record.modelQuoteVerification, now),
-            gpu = verifyQuote(record.gpuIntelQuote, "gpu", record.gpuQuoteVerification, now))
+            gateway = verifyQuote(record.intelQuote, "gateway", record.quoteVerification, now, record.gatewayAdvertisedReportData),
+            model = verifyQuote(record.modelIntelQuote, "model", record.modelQuoteVerification, now, record.modelAdvertisedReportData),
+            gpu = verifyQuote(record.gpuIntelQuote, "gpu", record.gpuQuoteVerification, now, record.gpuAdvertisedReportData),
+            manager = verifyQuote(record.managerQuote, "compose-manager", null, now))
     }
 
-    private suspend fun verifyQuote(quoteHex: String?, label: String, crossCheck: TdxVerificationResult?, nowSecs: Long): DcapVerification? {
+    private suspend fun verifyQuote(quoteHex: String?, label: String, crossCheck: TdxVerificationResult?, nowSecs: Long, advertised: String? = null): DcapVerification? {
         if (quoteHex.isNullOrEmpty()) return null
+        // teemoon's own evidence first (S37 B1/B2): it must not wait on Intel answering, nor lean on dcap-qvl's policy
+        QuoteChecks.failure(quoteHex, advertised)?.let { why -> log("[dcap] $label quote failed teemoon's own check: $why"); return DcapVerification.Failed(why) }
         val outcome = verifier.verify(quoteHex, nowSecs)
         val verified = outcome as? DcapVerification.Verified ?: run { log("[dcap] $label quote failed: $outcome"); return outcome }
+        if (!QuoteChecks.advertisedMatches(advertised, verified.reportDataHex)) {
+            log("[dcap] $label advertised report_data is not the verified quote's")
+            return DcapVerification.Failed(QuoteChecks.REPORT_DATA_DISAGREES)
+        }
         // Cross-check tripwire: the Kotlin parser and dcap-qvl must agree on the measurements. A disagreement means one of them
         // is wrong about security-critical bytes — fail the quote and say so.
         crossCheck?.measurements?.let { m ->

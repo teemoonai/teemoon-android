@@ -8,12 +8,15 @@
 //        aSwitchDropsCancelledVerifierHandles)
 //        teemoonTests/AppStateTests.swift @ ebc9bdb (MissingDirectHostReasonTests: theReasonNamesTheDirectoryNotTheServer,
 //        aFailedFetchIsRetriedAfterTheInterval)
-//        ConfidentialSession+Verifiers.swift @ v1.0.5 has no iOS test for the kept verdict; aSealedSessionIsVerifyingUntilProvenanceSettles pins it
+//        ConfidentialSession+Verifiers.swift @ v1.1.0 has no iOS test for the kept verdict; aSealedSessionIsVerifyingUntilProvenanceSettles pins it
 //        NOT ported: liveFetchSkipsPreviewAndDesignTourNotOrdinaryLaunches (Xcode process flags),
 //        canSeal_tracksTheDerivedPeer (TEEContext / E2EEPeer — the E2EE row), chatViewModelDelegatesToTheSession
 //        (the app's ViewModel is a human row).
 package ai.teemoon.confidential
 
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.jsonObject
 import ai.teemoon.confidential.AttestationFixtures.verification
 import ai.teemoon.providers.LocalModelCatalog
 import ai.teemoon.providers.NearAIModelCatalog
@@ -54,6 +57,9 @@ private class Store(var active: Provider? = null) {
 }
 
 class ConfidentialSessionTest {
+    /** Models near.ai set up with its list loaded: see [ai.teemoon.providers.NearAIModelCatalog.tierListSeen] (iOS ea19232). */
+    init { ai.teemoon.providers.NearAIModelCatalog.recordTiers(mapOf("nearai/tier-list-seen-by-tests" to ai.teemoon.providers.NearAIModelCatalog.Confidentiality.TEE_OWN)) }
+
 
     @Before fun offline() {
         NearAIModelCatalog.resetTierCache()
@@ -80,6 +86,9 @@ class ConfidentialSessionTest {
         val preview = AttestationRecord.preview
         return Store(Provider.nearAI.copy(id = preview.providerID, model = preview.model ?: Provider.nearAI.model))
     }
+
+    /** A real pass names at least one image: a pass over none reads as incomplete (aPassOverNoImagesIsNotAPass). */
+    private val oneImageVerified = ManifestProvenance.AllVerified(listOf(ImageRef("nearaidev/cloud-api", "a".repeat(64))), emptyList())
 
     private fun nearProvider(model: String = "zai-org/GLM-5.1-FP8") =
         Provider(id = "p-near", name = "near.ai", endpoint = "https://completions.near.ai/v1", model = model)
@@ -180,6 +189,95 @@ class ConfidentialSessionTest {
 
     // MARK: - Regression guards for the near.ai SDK comparison's refuted findings (1.0.6, audit). Negative claims,
     // re-confirmed: a send never rides an unsettled DCAP verdict, and a Revoked TCB blocks.
+
+    /**
+     * The trust scope over the GPU node's report (NearTrustScope): audit's live report binds and changes nothing; its
+     * action log bent by one byte is a hard break that blocks, like a DCAP hard failure; no action log is soft and
+     * never degrades.
+     */
+    @Test fun aBentActionLogBlocksAndAMissingOneDoesNot() = runTest {
+        fun res(n: String) = kotlinx.serialization.json.Json.parseToJsonElement(javaClass.getResource("/fixtures/nearai-trust/$n")!!.readText()).jsonObject
+        val report = res("glm-5-3-flash-gpu04-5f7ebd85-2026-10-30T2241Z.json")
+        val nonce = res("expected.json").getValue("request_nonce_sent").jsonPrimitive.content
+        val cm = report.getValue("compose_manager_attestation").jsonObject
+        val manager = RecordDcapVerification(manager = DcapVerification.Verified(DcapTcbStatus.UP_TO_DATE, "", ""))
+        fun record(r: kotlinx.serialization.json.JsonObject) = AttestationRecord.preview.copy(gpuNodeReport = r, gpuNonce = nonce, gpuIntelQuote = report.getValue("intel_quote").jsonPrimitive.content)
+        fun sessionOver(r: kotlinx.serialization.json.JsonObject) = session(this, storeMatchingPreviewRecord()).also { it.attestation = record(r); it.dcapVerification = manager }
+
+        val clean = session(this, storeMatchingPreviewRecord()).also { it.attestation = AttestationRecord.preview }
+        val live = sessionOver(report)
+        assertEquals(NearTrustScope.Severity.NONE, live.nearScope?.severity)
+        assertEquals(clean.attestationState, live.attestationState)
+
+        val actions = cm.getValue("actions").jsonArray
+        val first = actions[0].jsonObject
+        val bent = kotlinx.serialization.json.JsonObject(first + ("timestamp" to kotlinx.serialization.json.JsonPrimitive(first.getValue("timestamp").jsonPrimitive.content.replaceFirst('2', '3'))))
+        val broken = sessionOver(kotlinx.serialization.json.JsonObject(report + ("compose_manager_attestation" to kotlinx.serialization.json.JsonObject(cm + ("actions" to kotlinx.serialization.json.JsonArray(listOf(bent) + actions.drop(1)))))))
+        assertEquals(AttestationState.DEGRADED, broken.attestationState)
+        assertTrue(broken.degradeIsHardFailure)
+        assertFalse(broken.e2eeBindingIntact)
+        assertEquals(NearTrustScope.ACTION_LOG_BROKEN, broken.e2eeDegradedReason)
+
+        val missing = sessionOver(kotlinx.serialization.json.JsonObject(report - "compose_manager_attestation"))
+        assertEquals(NearTrustScope.Severity.SOFT, missing.nearScope?.severity)
+        assertEquals(clean.attestationState, missing.attestationState)
+    }
+
+    /**
+     * (c) through the session: once the manager quote's DCAP verdict binds the log, each running (commit, file) is
+     * fetched; a file that hashes to anything else than the log says is the recipe line, hard. The fake serves "x" for
+     * every file, so every fetched pair mismatches.
+     */
+    @Test fun aRunningComposeFileThatDoesNotMatchItsLogBlocks() = runTest {
+        fun res(n: String) = kotlinx.serialization.json.Json.parseToJsonElement(javaClass.getResource("/fixtures/nearai-trust/$n")!!.readText()).jsonObject
+        val report = res("glm-5-3-flash-gpu04-5f7ebd85-2026-10-30T2241Z.json")
+        val nonce = res("expected.json").getValue("request_nonce_sent").jsonPrimitive.content
+        val asked = ArrayList<String>()
+        // the compose-file work runs off the main thread (ProvenanceOffMainTest): here on the test's own scheduler
+        ProvenanceService.default = ProvenanceService(http = { url, _ -> asked += url; ProvenanceResponse(200, emptyMap(), "x".toByteArray()) }, upgradeAttempted = HashSet(), sleepMs = {},
+            io = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler))
+        val record = AttestationRecord.preview.copy(gpuNodeReport = report, gpuNonce = nonce, gpuIntelQuote = report.getValue("intel_quote").jsonPrimitive.content)
+        val manager = RecordDcapVerification(manager = DcapVerification.Verified(DcapTcbStatus.UP_TO_DATE, "", ""))
+        val s = session(this, storeMatchingPreviewRecord(), services = ConfidentialSession.Services(skipLiveAttestation = true, verifyDcap = { manager }))
+        s.attestation = record
+        s.verifyDcap(record)
+        advanceUntilIdle()
+        assertTrue("only near.ai's compose-files repo is asked", asked.isNotEmpty() && asked.all { it.startsWith("https://raw.githubusercontent.com/nearai/cvm-compose-files/") })
+        // rule A: every newest whole file first, then the reported pairs up to the cap — each asked once. With bodies
+        // that don't hash, every whole file is services unknown: 16 rows, 4 of them unknown (as iOS's offline run).
+        val scope = s.nearScope!!
+        assertEquals(16, scope.runningServices.size); assertEquals(4, scope.runningServices.count { it.service == "" })
+        val want = (scope.wholeFileSources.map { it.commit to it.file } + ComposeFiles.toFetch(scope.runningServices)).toSet()
+        assertEquals(want.map { ComposeFiles.url(it.first, it.second) }.toSet(), asked.toSet())
+        assertEquals("each asked once", asked.toSet().size, asked.size)
+        assertEquals(AttestationState.DEGRADED, s.attestationState)
+        assertTrue(s.degradeIsHardFailure)
+        assertEquals(NearTrustScope.RECIPE_UNVERIFIED, s.e2eeDegradedReason)
+    }
+
+    /**
+     * Trust scope (c)'s compose files are a check still running (iOS: TrustScope.run awaits the pairs and their bodies, and
+     * verdictsPending counts trustScopeTask until then): a send in that window waits or asks, and a mark made in it does
+     * not settle. Android did not count them — no ask, no mark, before a mismatch turned the scope hard.
+     */
+    @Test fun runningComposeFilesArePending() = runTest {
+        fun res(n: String) = kotlinx.serialization.json.Json.parseToJsonElement(javaClass.getResource("/fixtures/nearai-trust/$n")!!.readText()).jsonObject
+        val report = res("glm-5-3-flash-gpu04-5f7ebd85-2026-10-30T2241Z.json")
+        val nonce = res("expected.json").getValue("request_nonce_sent").jsonPrimitive.content
+        val github = kotlinx.coroutines.CompletableDeferred<Unit>()
+        ProvenanceService.default = ProvenanceService(http = { _, _ -> github.await(); ProvenanceResponse(200, emptyMap(), "x".toByteArray()) },
+            upgradeAttempted = HashSet(), sleepMs = {}, io = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler))
+        val record = AttestationRecord.preview.copy(gpuNodeReport = report, gpuNonce = nonce, gpuIntelQuote = report.getValue("intel_quote").jsonPrimitive.content)
+        val manager = RecordDcapVerification(manager = DcapVerification.Verified(DcapTcbStatus.UP_TO_DATE, "", ""))
+        val s = session(this, storeMatchingPreviewRecord(), services = ConfidentialSession.Services(skipLiveAttestation = true, verifyDcap = { manager }))
+        s.attestation = record
+        s.verifyDcap(record)
+        advanceUntilIdle()
+        assertTrue("the compose files are still being fetched: a check still running", s.verdictsPending)
+        github.complete(Unit); advanceUntilIdle()
+        assertFalse(s.verdictsPending)
+        assertTrue("the mismatch they found blocks", s.degradeIsHardFailure)
+    }
 
     /** DCAP in flight holds the send; when it lands Revoked, the gate the caller re-reads is BLOCK. */
     @Test fun aDcapVerdictInFlightHoldsTheSend_andRevokedBlocks() = runTest {
@@ -317,7 +415,7 @@ class ConfidentialSessionTest {
         assertTrue(s.attestationFetchFailed); assertTrue(s.directHostMissing)
         assertEquals("near.ai lists no confidential host for this model yet.", s.e2eeDegradedReason)
         s.directHostMissing = false
-        assertEquals("Could not reach the attestation server.", s.e2eeDegradedReason)
+        assertEquals("couldn't reach the attestation server.", s.e2eeDegradedReason)
     }
 
     /** The pre-send staleness check retries a failed fetch — at most once a minute. */
@@ -339,6 +437,72 @@ class ConfidentialSessionTest {
         assertEquals(now, s.attestationAttemptedAt)
     }
 
+    /**
+     * T5 (pm sweep 2026-11-06): "no confidential endpoint" is one refresh's answer, not the session's. It was cleared
+     * only on a switch, so a later refresh of the same model that FAILED (here the directory lookup throws) still read
+     * NONE — "ordinary model, nothing to verify" — where DEGRADED was meant.
+     */
+    @Test fun aFailedRefreshAfterANoEndpointAnswerDegrades() = runTest {
+        val s = session(this, Store(nearProvider()), services = ConfidentialSession.Services(
+            directBase = { throw IOException("directory unreachable") }, fetchRecord = { _, _, _, _, _ -> error("not reached") }))
+        advanceUntilIdle()
+        // An earlier refresh's answer, as the tier race leaves it (noDirectHostDegradesOwnFleet…: the only way in).
+        s.noConfidentialEndpoint = true; s.attestationFetchFailed = false
+        assertEquals(AttestationState.NONE, s.attestationState)
+        s.refreshAttestation(); advanceUntilIdle()
+        assertTrue(s.attestationFetchFailed)
+        assertEquals(AttestationState.DEGRADED, s.attestationState)
+    }
+
+    /**
+     * pm sweep 2026-11-06 (Android-only): a verifier that throws must answer. With no catch the job ended with no
+     * verdict, so the check read pending forever (sends refused as "still running") — or the throw reached the scope.
+     * DCAP answers Failed (fail-closed, as an unreachable collateral already does); NRAS and TLS answer Inconclusive.
+     */
+    @Test fun aVerifierThatThrowsStillAnswers() = runTest {
+        val store = storeMatchingPreviewRecord()
+        val s = session(this, store, ConfidentialSession.Services(skipLiveAttestation = true, directBase = { "https://x/v1" },
+            verifyDcap = { error("parser bug") }, verifyNras = { _, _ -> error("parser bug") }, verifyTls = { error("parser bug") }))
+        val record = AttestationRecord.preview.copy(nvidiaPayload = "{}")
+        s.lastRequestUsedE2EE = true
+        s.adopt(record, store.active!!)
+        advanceUntilIdle()
+        assertFalse(s.verdictsPending)
+        assertTrue(s.gpuAttestation is NrasVerification.Inconclusive)
+        assertTrue(s.tlsAttestation is TlsAttestation.Inconclusive)
+        // near-send-gate-rule (the maintainer 2026-11-06) reverses trust-verifier-error's "DCAP hard": our bug is not evidence, so
+        // every throw is couldn't-check and the send asks; one fixed reason, the raw message log-only
+        assertTrue(s.dcapVerification?.hasUnchecked == true && s.dcapVerification?.hasHardFailure == false)
+        assertEquals(TrustSendPolicy.CONFIRM, s.sendPolicy)
+        assertEquals(ConfidentialSession.VERIFIER_ERROR, (s.gpuAttestation as NrasVerification.Inconclusive).reason)
+        assertEquals(ConfidentialSession.VERIFIER_ERROR, (s.tlsAttestation as TlsAttestation.Inconclusive).reason)
+        assertFalse(s.dcapVerification.toString().contains("parser bug"))
+        // trust-hardware-fail-lines 1 (the maintainer 2026-11-06): our bug is not the hardware's — the hero's cause says so
+        assertEquals(ConfidentialSession.VERIFIER_BROKE, s.e2eeDegradedReason)
+        assertEquals("a hardware check broke inside teemoon.", ConfidentialSession.VERIFIER_BROKE)
+    }
+
+    /**
+     * trust-stale-record (the maintainer 2026-11-06): a record past ATTESTATION_MAX_AGE_SECONDS whose refetch failed is no longer
+     * vouched for — SOFT degraded with the existing "couldn't reach the attestation server.", never green forever.
+     * Younger, or with the refetch still to come, it stands.
+     */
+    @Test fun aStaleRecordWhoseRefetchFailedIsSoftDegraded() = runTest {
+        val now = Instant.parse("2026-11-06T12:00:00Z")
+        val store = storeMatchingPreviewRecord()
+        val s = session(this, store, ConfidentialSession.Services(skipLiveAttestation = true, now = { now }))
+        s.lastRequestUsedE2EE = true
+        s.attestation = AttestationRecord.preview.copy(fetchedAt = now.minusSeconds(ConfidentialSession.ATTESTATION_MAX_AGE_SECONDS + 1))
+        assertEquals("the refetch is still to come", AttestationState.OK, s.attestationState)
+        s.attestationFetchFailed = true
+        assertEquals(AttestationState.DEGRADED, s.attestationState)
+        assertFalse(s.degradeIsHardFailure)
+        assertEquals(TrustSendPolicy.CONFIRM, s.sendPolicy)
+        assertEquals("couldn't reach the attestation server.", s.e2eeDegradedReason)
+        s.attestation = AttestationRecord.preview.copy(fetchedAt = now.minusSeconds(ConfidentialSession.ATTESTATION_MAX_AGE_SECONDS - 1))
+        assertEquals("young enough: a failed refetch is not news yet", AttestationState.OK, s.attestationState)
+    }
+
     /** Every mutation bumps `changes`, so a collector re-reads the snapshot exactly when the state moved — no polling. */
     @Test fun changes_bumpOnEveryMutation() = runTest {
         val s = session(this, storeMatchingPreviewRecord())
@@ -347,6 +511,10 @@ class ConfidentialSessionTest {
         s.gpuAttestation = NrasVerification.Verified; s.tlsAttestation = TlsAttestation.NotPerformed; assertEquals(before + 3, s.changes.value)
         s.beginRequest(expectingE2EE = true); assertTrue(s.changes.value >= before + 4)
         s.finishTurn(isE2EEActive = true, error = null, verification = ResponseVerification.Verified("0xabc")); assertTrue(s.changes.value >= before + 6)
+        // pm sweep 2026-11-06: a failed fetch is a mutation too — the chip moves to DEGRADED on it, and with no bump
+        // the screen kept the last state until something else changed.
+        val atFail = s.changes.value
+        s.attestationFetchFailed = true; assertEquals(atFail + 1, s.changes.value)
     }
 
     /** The UITEST_SEED_ATTESTATION door answers the verdict itself, and clearing it gives the real computation back. */
@@ -476,7 +644,7 @@ class ConfidentialSessionTest {
         assertEquals(AttestationState.VERIFYING, s.attestationState)
         assertEquals("in-flight provenance never gates a send", TrustSendPolicy.ALLOW, s.sendPolicy)
 
-        answer.complete(ManifestProvenance.AllVerified(emptyList(), emptyList()))
+        answer.complete(oneImageVerified)
         advanceUntilIdle()
         assertTrue(s.provenanceSettled)
         assertEquals(AttestationState.OK, s.attestationState)
@@ -491,6 +659,101 @@ class ConfidentialSessionTest {
         assertTrue("the verified verdict survives a transient re-sweep", s.imageProvenance is ManifestProvenance.AllVerified)
         assertTrue(s.provenanceSettled)
         assertEquals(AttestationState.OK, s.attestationState)
+    }
+
+    /**
+     * T1 (pm sweep 2026-11-06): a hard-block-capable verdict that has not answered is not a pass. With a sealed record
+     * and DCAP, NRAS or TLS still in flight, the chip is VERIFYING, not OK — OK said "end-to-end encrypted" and
+     * "confirmed by Intel and NVIDIA" before either had answered. The send gate is unchanged: prepareTurn settles.
+     */
+    @Test fun aSealedSessionIsVerifyingWhileAHardVerdictIsInFlight() = runTest {
+        val dcap = CompletableDeferred<RecordDcapVerification>()
+        val s = session(this, storeMatchingPreviewRecord(),
+            ConfidentialSession.Services(skipLiveAttestation = true, fetchModelLayerManifest = null, verifyDcap = { dcap.await() }))
+        s.attestation = AttestationRecord.preview
+        assertEquals("precondition: the preview record verifies", AttestationState.OK, s.attestationState)
+        s.verifyDcap(AttestationRecord.preview)
+        yield()
+        assertTrue(s.verdictsPending)
+        assertEquals(AttestationState.VERIFYING, s.attestationState)
+        dcap.complete(RecordDcapVerification(gateway = DcapVerification.Verified(DcapTcbStatus.UP_TO_DATE, "00", "")))
+        advanceUntilIdle()
+        assertFalse(s.verdictsPending)
+        assertEquals(AttestationState.OK, s.attestationState)
+    }
+
+    /**
+     * T2 (pm sweep 2026-11-06; iOS provenanceKey, with its T2 commit): an inconclusive re-check keeps the last verdict
+     * only for the same record. A re-verify that lands on another node must not show the old node's digests.
+     */
+    @Test fun anInconclusiveRecheckOnAnotherNodeKeepsNothing() = runTest {
+        var answer = CompletableDeferred<ManifestProvenance>()
+        val s = session(this, storeMatchingPreviewRecord(),
+            ConfidentialSession.Services(skipLiveAttestation = true, fetchModelLayerManifest = null, verifyManifests = { answer.await() }))
+        val nodeA = AttestationRecord.preview.copy(composeManifest = "image: nearaidev/cloud-api@sha256:${"a".repeat(64)}")
+        s.attestation = nodeA
+        s.verifyImageProvenance(nodeA)
+        answer.complete(ManifestProvenance.AllVerified(listOf(ImageRef("nearaidev/cloud-api", "a".repeat(64))), emptyList()))
+        advanceUntilIdle()
+        assertTrue(s.imageProvenance is ManifestProvenance.AllVerified)
+
+        val transient = ManifestProvenance.Incomplete(emptyList(),
+            listOf(ProvenanceFailure(ImageRef("nearaidev/cloud-api", "b".repeat(64)), ImageProvenance.Unverified(ImageProvenance.Reason.FetchTransient("HTTP 403")))), emptyList())
+        val nodeB = AttestationRecord.preview.copy(composeManifest = "image: nearaidev/cloud-api@sha256:${"b".repeat(64)}")
+        answer = CompletableDeferred()
+        s.attestation = nodeB
+        s.verifyImageProvenance(nodeB)
+        answer.complete(transient)
+        advanceUntilIdle()
+        assertNull("node A's verdict is not node B's", s.imageProvenance)
+        assertTrue(s.provenanceSettled)
+
+        // the same record again: an inconclusive pass still keeps its own last verdict (iOS fbedb79)
+        answer = CompletableDeferred(); s.verifyImageProvenance(nodeB)
+        answer.complete(ManifestProvenance.AllVerified(listOf(ImageRef("nearaidev/cloud-api", "b".repeat(64))), emptyList())); advanceUntilIdle()
+        answer = CompletableDeferred(); s.verifyImageProvenance(nodeB); answer.complete(transient); advanceUntilIdle()
+        assertTrue(s.imageProvenance is ManifestProvenance.AllVerified)
+    }
+
+    /**
+     * T2 (pm 2026-11-06): a pass over zero images vouches for nothing. ProvenanceService never returns one (no near.ai
+     * image is Incomplete, fail-closed), but whatever reaches the session reads it the same way, never as a pass.
+     */
+    @Test fun aPassOverNoImagesIsNotAPass() = runTest {
+        val s = session(this, storeMatchingPreviewRecord(), ConfidentialSession.Services(skipLiveAttestation = true, fetchModelLayerManifest = null,
+            verifyManifests = { ManifestProvenance.AllVerified(emptyList(), listOf(ImageRef("redis", "c".repeat(64)))) }))
+        val record = AttestationRecord.preview.copy(composeManifest = "image: redis@sha256:${"c".repeat(64)}")
+        s.attestation = record
+        s.verifyImageProvenance(record)
+        advanceUntilIdle()
+        assertEquals(ManifestProvenance.Incomplete(emptyList(), emptyList(), listOf(ImageRef("redis", "c".repeat(64)))), s.imageProvenance)
+    }
+
+    /**
+     * T2b (iOS ProvenanceCarryOverTests.aRateLimitedFirstPassDoesNotReadVerified): the FIRST provenance pass on a
+     * record is inconclusive (GitHub 403/429, the network). There is no earlier verdict to keep, so provenance stays
+     * null but settled, and the state fell through to OK — a green hero while no image was checked. Approved fix
+     * (trust-provenance-unchecked, the maintainer 2026-11-06): the session says so; the chip is unchanged, and since S30 the
+     * send asks "couldn't confirm near.ai's software".
+     */
+    @Test fun aRateLimitedFirstPassDoesNotReadVerified() = runTest {
+        val s = session(this, storeMatchingPreviewRecord(), ConfidentialSession.Services(skipLiveAttestation = true, fetchModelLayerManifest = null,
+            verifyManifests = { ManifestProvenance.Incomplete(emptyList(), listOf(ProvenanceFailure(ImageRef("nearaidev/cloud-api", "a".repeat(64)),
+                ImageProvenance.Unverified(ImageProvenance.Reason.FetchTransient("HTTP 429")))), emptyList()) }))
+        val record = AttestationRecord.preview   // its own manifest, so the code identity holds: only provenance is in question
+        s.attestation = record; s.lastRequestUsedE2EE = true
+        s.dcapVerification = RecordDcapVerification(gateway = DcapVerification.Verified(DcapTcbStatus.UP_TO_DATE, "01", ""))
+        s.verifyImageProvenance(record); advanceUntilIdle()
+        assertTrue("precondition: a pass ran, settled with no verdict", s.provenanceSettled && s.imageProvenance == null)
+        assertNotEquals("precondition: the code identity holds", false, record.codeIdentityVerified)
+        // trust-provenance-unchecked (the maintainer 2026-11-06): the seal is fine, so the chip and the send are unchanged; the
+        // session says no image was checked, and the trust screen shows it (TrustPresentationTest).
+        assertTrue("no image was checked: said so", s.provenanceUnchecked)
+        // S30 (the maintainer 2026-11-07, "Have that case also ask the question"; iOS 38647a07): the send now asks first
+        assertEquals(TrustSendPolicy.CONFIRM, s.sendPolicy)
+        // a second pass that GitHub also refuses keeps saying so
+        s.verifyImageProvenance(record); advanceUntilIdle()
+        assertTrue(s.provenanceUnchecked)
     }
 
     /** A cancelled pass finishing late must not mark a newer one settled. */
@@ -508,8 +771,81 @@ class ConfidentialSessionTest {
         advanceUntilIdle()
         assertFalse("the second pass is still running", s.provenanceSettled)
         assertEquals(AttestationState.VERIFYING, s.attestationState)
-        second.complete(ManifestProvenance.AllVerified(emptyList(), emptyList())); advanceUntilIdle()
+        second.complete(oneImageVerified); advanceUntilIdle()
         assertTrue(s.provenanceSettled)
+    }
+
+    /**
+     * pm's ruling on the NVIDIA/TLS split (2026-11-06, honesty, no new words): a check that stopped on teemoon's own
+     * fault never names an outage as the reason — the hero says the approved fault line, as the row does. An outage
+     * keeps its own words.
+     */
+    @Test fun aTeemoonFaultIsNeverCalledAnOutage() = runTest {
+        val s = session(this, storeMatchingPreviewRecord())
+        s.attestation = AttestationRecord.preview
+        s.gpuAttestation = NrasVerification.Inconclusive(NrasVerification.TEEMOON_FAULT)
+        assertEquals(ConfidentialSession.VERIFIER_ERROR, s.e2eeDegradedReason)
+        s.gpuAttestation = NrasVerification.Inconclusive("NVIDIA attestation service unreachable")
+        assertEquals("nvidia gpu attestation couldn't be completed (service unreachable).", s.e2eeDegradedReason)
+        s.gpuAttestation = NrasVerification.Verified
+        s.tlsAttestation = TlsAttestation.Inconclusive(NrasVerification.TEEMOON_FAULT)
+        assertEquals(ConfidentialSession.VERIFIER_ERROR, s.e2eeDegradedReason)
+        s.tlsAttestation = TlsAttestation.Inconclusive("TLS attestation request failed")
+        assertEquals("teemoon couldn't check the model node's tls certificate (unreachable).", s.e2eeDegradedReason)
+    }
+
+    /**
+     * F2, found by iOS's TLA+ trust model (2026-11-06): a record with no GPU evidence after one with it cancelled the
+     * NVIDIA check but kept its handle, so the cancelled job — which never answers — read as a verdict still pending,
+     * and the chat said "verifying" forever.
+     */
+    @Test fun aRecordWithoutGpuEvidenceEndsTheNvidiaWait() = runTest {
+        val nras = CompletableDeferred<NrasVerification>()
+        val s = session(this, storeMatchingPreviewRecord(), ConfidentialSession.Services(skipLiveAttestation = true, verifyNras = { _, _ -> nras.await() }))
+        s.attestation = AttestationRecord.preview
+        s.verifyGpu(AttestationRecord.preview.copy(nvidiaPayload = "{\"evidence\":1}")); yield()
+        assertTrue("the first record's check is running", s.verdictsPending)
+        s.verifyGpu(AttestationRecord.preview.copy(nvidiaPayload = null)); advanceUntilIdle()
+        assertFalse("a record with no GPU evidence still waits on NVIDIA", s.verdictsPending)
+    }
+
+    /**
+     * Shipped 1.0.6 let this through (audit's F1 addendum, 2026-11-06): an unpublished-only image skipped the ask while the
+     * binding ignored a model-recipe hash mismatch — sendPolicy ALLOW under a HARD_BLOCK chip. 1.1.0 must block it.
+     */
+    @Test fun anUnpublishedImageBesideARecipeHashMismatchBlocks() = runTest {
+        val s = session(this, storeMatchingPreviewRecord())
+        s.attestation = AttestationRecord.preview
+        s.imageProvenance = ManifestProvenance.Incomplete(emptyList(), listOf(ProvenanceFailure(ImageRef("nearaidev/compose-manager-launcher", "d".repeat(64)),
+            ImageProvenance.Unverified(ImageProvenance.Reason.FetchFailed("GitHub attestations HTTP 404")))), emptyList())
+        s.modelLayerVerification = ModelLayerVerification.HASH_MISMATCH
+        assertTrue(s.degradeIsHardFailure)
+        assertEquals(TrustSendPolicy.BLOCK, s.sendPolicy)
+    }
+
+    /**
+     * sentBeforeConfirmed, the trust side (reply-machine.json sentBeforeConfirmedResolution): a record a reply went out on
+     * while its hard verdicts were pending reports how they settled — pass, hardFail, or unsettled for an outage — and a
+     * held E2EE count is added only on a pass.
+     */
+    @Test fun aRecordSentOnWhilePendingSaysHowItSettled() = runTest {
+        for ((verdict, want) in listOf<Pair<TlsAttestation, String>>(TlsAttestation.Verified to "pass", TlsAttestation.Failed("fingerprint mismatch") to "hardFail",
+            TlsAttestation.Inconclusive("probe unreachable") to "unsettled")) {
+            val tls = CompletableDeferred<TlsAttestation>()
+            val s = session(this, storeMatchingPreviewRecord(), ConfidentialSession.Services(skipLiveAttestation = true, directBase = { "https://model.example" }, verifyTls = { tls.await() }))
+            s.attestation = AttestationRecord.preview
+            s.dcapVerification = RecordDcapVerification(gateway = DcapVerification.Verified(DcapTcbStatus.UP_TO_DATE, "01", ""))
+            s.gpuAttestation = NrasVerification.Verified
+            s.verifyTls(Provider.nearAI.copy(id = AttestationRecord.preview.providerID, model = AttestationRecord.preview.model ?: Provider.nearAI.model)); yield()
+            val settled = ArrayList<Pair<String, String>>(); s.onRecordSettled = { k, o -> settled += k to o }
+            val mark = s.sentBeforeConfirmedMark(sealed = true)!!
+            val before = s.e2eeMessageCount
+            s.recordRequestOutcome(isE2EEActive = true, error = null)
+            assertEquals("held while pending", before, s.e2eeMessageCount)
+            tls.complete(verdict); advanceUntilIdle()
+            assertEquals(listOf(mark.removePrefix("pending|") to want), settled)
+            assertEquals("counted only on a pass", if (want == "pass") before + 2 else before, s.e2eeMessageCount)
+        }
     }
 
     /** A transient outage of the GPU/TLS verifier degrades fail-closed but is NOT a hard break; a genuine negative verdict is. */
@@ -555,6 +891,57 @@ class ConfidentialSessionTest {
         assertFalse(s.requiresE2EEConfirmation)                       // no modal
         assertFalse(s.degradeIsHardFailure)
         assertTrue(s.e2eeDegradedReason!!.contains("still sealed"))
+    }
+
+    /**
+     * The audit's F1 pair has two guards, and each must hold alone (audit mutation pass on 05c07fa: either could be
+     * deleted with every test green, because the other caught the same send). Guard one: a recipe-hash mismatch is never
+     * an intact binding, whatever the provenance — so the unpublished-image exemption cannot start from it.
+     */
+    @Test fun aRecipeHashMismatchIsNeverAnIntactBinding_evenBesideAnUnpublishedImage() = runTest {
+        val s = session(this, storeMatchingPreviewRecord())
+        s.attestation = AttestationRecord.preview
+        s.imageProvenance = ManifestProvenance.Incomplete(emptyList(), listOf(ProvenanceFailure(ImageRef("nearaidev/compose-manager-launcher", "d".repeat(64)),
+            ImageProvenance.Unverified(ImageProvenance.Reason.FetchFailed("GitHub attestations HTTP 404")))), emptyList())
+        s.modelLayerVerification = ModelLayerVerification.HASH_MISMATCH
+        assertFalse("a hash mismatch binds nothing", s.e2eeBindingIntact)
+        assertFalse(s.unpublishedOnlyButE2EEIntact)
+        assertTrue(s.degradeIsHardFailure)
+        assertTrue(s.requiresE2EEConfirmation)
+    }
+
+    /**
+     * Guard two: a hard failure the binding check does not read — plaintext already went out ([lastRequestUsedE2EE]
+     * false) — still asks beside an unpublished image. The binding stays intact here, so only the gate's own
+     * `!degradeIsHardFailure` clause stands between this state and an unasked send.
+     */
+    @Test fun aHardFailureTheBindingDoesNotSeeStillAsksBesideAnUnpublishedImage() = runTest {
+        val s = session(this, storeMatchingPreviewRecord())
+        s.attestation = AttestationRecord.preview
+        s.imageProvenance = ManifestProvenance.Incomplete(emptyList(), listOf(ProvenanceFailure(ImageRef("nearaidev/compose-manager-launcher", "d".repeat(64)),
+            ImageProvenance.Unverified(ImageProvenance.Reason.FetchFailed("GitHub attestations HTTP 404")))), emptyList())
+        s.lastRequestUsedE2EE = false
+        assertTrue("the binding check does not read lastRequestUsedE2EE", s.unpublishedOnlyButE2EEIntact)
+        assertTrue(s.degradeIsHardFailure)
+        assertTrue("a hard failure asks, unpublished image or not", s.requiresE2EEConfirmation)
+    }
+
+    /**
+     * iOS d3ca003b: with an unpublished-only image (which asks nothing at the gate) the hero read "encrypted — one image
+     * unpublished" while DCAP was still running. The pending check comes first: verifying until the hard verdicts
+     * answer, then the unpublished state as before.
+     */
+    @Test fun anUnpublishedImageStillWaitsForTheHardVerdicts() = runTest {
+        val dcap = CompletableDeferred<RecordDcapVerification>()
+        val s = session(this, storeMatchingPreviewRecord(), ConfidentialSession.Services(skipLiveAttestation = true, fetchModelLayerManifest = null, verifyDcap = { dcap.await() }))
+        s.attestation = AttestationRecord.preview
+        s.imageProvenance = ManifestProvenance.Incomplete(emptyList(), listOf(ProvenanceFailure(ImageRef("nearaidev/compose-manager-launcher", "d".repeat(64)),
+            ImageProvenance.Unverified(ImageProvenance.Reason.FetchFailed("GitHub attestations HTTP 404")))), emptyList())
+        s.verifyDcap(AttestationRecord.preview); yield()
+        assertEquals(AttestationState.VERIFYING, s.attestationState)
+        dcap.complete(RecordDcapVerification(gateway = DcapVerification.Verified(DcapTcbStatus.UP_TO_DATE, "01", ""))); advanceUntilIdle()
+        assertEquals(AttestationState.DEGRADED, s.attestationState)
+        assertTrue(s.unpublishedOnlyButE2EEIntact)
     }
 
     /** A bad Sigstore / identity failure is not "unpublished" — still confirm. */
@@ -654,7 +1041,7 @@ class ConfidentialSessionTest {
             fetchedAt = Instant.now(), providerID = provider.id, model = provider.model)
         s.attestation = record
         assertEquals(AttestationState.DEGRADED, s.attestationState)
-        assertEquals("The model's encryption key is unavailable.", s.e2eeDegradedReason)
+        assertEquals("the model's encryption key is unavailable.", s.e2eeDegradedReason)
         assertNotEquals(TrustSendPolicy.ALLOW, s.sendPolicy)
     }
 
@@ -685,7 +1072,7 @@ class ConfidentialSessionTest {
         assertNull(s.attestation)
         assertTrue(s.attestationFetchFailed)
         assertEquals(AttestationState.DEGRADED, s.attestationState)
-        assertEquals("Could not reach the attestation server.", s.e2eeDegradedReason)
+        assertEquals("couldn't reach the attestation server.", s.e2eeDegradedReason)
         assertEquals(TrustSendPolicy.CONFIRM, s.sendPolicy)
         assertTrue(warnings.any { it.contains("not ported") })
     }
@@ -737,7 +1124,7 @@ class ConfidentialSessionTest {
             verifyDcap = { dcapCalls++; RecordDcapVerification(gateway = DcapVerification.Verified(DcapTcbStatus.UP_TO_DATE, "01", "")) },
             verifyNras = { _, _ -> NrasVerification.Verified },
             verifyTls = { tlsCalls++; TlsAttestation.Verified },
-            verifyManifests = { ManifestProvenance.AllVerified(emptyList(), emptyList()) },
+            verifyManifests = { oneImageVerified },
             fetchModelLayerManifest = null,   // the layer fetch is exercised by ProvenanceServiceTest; here the seam is absent
         )
         val s = session(this, store, services)
@@ -750,12 +1137,13 @@ class ConfidentialSessionTest {
         assertTrue(s.imageProvenance is ManifestProvenance.AllVerified)
 
         // The user switches models while a fetch is in flight: the record that
-        // comes back was fetched FOR 5.2 and must not show for 5.3 — the read
+        // comes back was fetched FOR 5.2 and must not show for 5.3 Flash — the read
         // gate refuses it even though no refresh has re-stamped the context yet.
+        // (Both own fleet: z-ai/glm-5.3 is attested third-party since iOS 5b40a389.)
         var fetchedFor: String? = null
         store.update(nearProvider("z-ai/glm-5.2"))
         val slow = ConfidentialSession.Services(directBase = { "https://x/v1" }, fetchRecord = { _, _, model, providerID, _ ->
-            fetchedFor = model; store.update(store.active!!.copy(model = "z-ai/glm-5.3")); preview.copy(providerID = providerID, model = model)
+            fetchedFor = model; store.update(store.active!!.copy(model = "z-ai/glm-5.3-flash")); preview.copy(providerID = providerID, model = model)
         })
         val s2 = session(this, store, slow)
         advanceUntilIdle()
@@ -767,6 +1155,80 @@ class ConfidentialSessionTest {
         assertNotNull(s2.attestation)
     }
 
+    /**
+     * T4 (pm sweep 2026-11-06): the TLS check asked the directory a second time. A lookup that answered for the fetch
+     * and not for the check wrote NotPerformed ("no direct host — not applicable"): the TLS section vanished and the
+     * chip went green with the connection never checked. The check now probes the host the record was fetched from.
+     */
+    @Test fun theTlsCheckProbesTheHostTheRecordCameFrom() = runTest {
+        val host = "https://glm-5-1.completions.near.ai/v1"
+        var lookups = 0
+        val probed = ArrayList<String>()
+        val services = ConfidentialSession.Services(
+            directBase = { if (lookups++ == 0) host else null },
+            fetchRecord = { _, _, model, providerID, _ -> AttestationRecord.preview.copy(providerID = providerID, model = model) },
+            verifyDcap = { RecordDcapVerification(gateway = DcapVerification.Verified(DcapTcbStatus.UP_TO_DATE, "01", "")) },
+            verifyTls = { probed += it; TlsAttestation.Verified },
+            verifyManifests = { oneImageVerified },
+            fetchModelLayerManifest = null,
+        )
+        val s = session(this, Store(nearProvider()), services)
+        advanceUntilIdle()
+        assertEquals(listOf(host), probed)
+        assertEquals(TlsAttestation.Verified, s.tlsAttestation)
+    }
+
+    /** T4: a cancelled TLS job must not write NotPerformed over the next one's verdict. */
+    @Test fun aCancelledTlsCheckWritesNothing() = runTest {
+        val gate = CompletableDeferred<String?>()
+        var first = true
+        val services = ConfidentialSession.Services(skipLiveAttestation = true,
+            // a lookup that does not check for cancellation (the directory's own fetch), so it returns after the cancel
+            directBase = { if (first) { first = false; kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { gate.await() } } else "https://x/v1" },
+            verifyTls = { TlsAttestation.Verified })
+        val store = storeMatchingPreviewRecord()
+        val s = session(this, store, services)
+        s.verifyTls(store.active!!)
+        runCurrent()
+        s.verifyTls(store.active!!)   // replaces the first, which is parked in its lookup
+        advanceUntilIdle()
+        assertEquals(TlsAttestation.Verified, s.tlsAttestation)
+        gate.complete(null)           // the cancelled lookup returns "no host" late
+        advanceUntilIdle()
+        assertEquals(TlsAttestation.Verified, s.tlsAttestation)
+    }
+
+    /**
+     * T3 (pm sweep 2026-11-06): a turn's outcome belongs to the place it was sent to. Switching mid-stream from A to B
+     * gave B "E2EE used", its counts and its verified responses — evidence B never earned.
+     */
+    @Test fun aTurnFinishingAfterASwitchCreditsNothingToTheNewProvider() = runTest {
+        val a = nearProvider()
+        val store = Store(a)
+        val s = session(this, store)
+        val b = nearProvider("z-ai/glm-5.3")
+        store.update(b)
+        s.finishTurn(isE2EEActive = true, error = null, verification = ResponseVerification.Verified("0xA"), place = a)
+        assertNull("B never sent anything", s.lastRequestUsedE2EE)
+        assertEquals(0, s.e2eeMessageCount)
+        assertEquals(0, s.verifiedResponseCount)
+        // the same provider still selected: booked as before
+        store.update(a)
+        s.finishTurn(isE2EEActive = true, error = null, verification = ResponseVerification.Verified("0xA"), place = a)
+        assertEquals(true, s.lastRequestUsedE2EE); assertEquals(1, s.verifiedResponseCount)
+    }
+
+    /** T3: prepareTurn for a place that is no longer selected opens nothing on the new one (and gives no context to seal with). */
+    @Test fun prepareTurnForAPlaceNoLongerSelectedOpensNothing() = runTest {
+        val store = storeMatchingPreviewRecord()
+        val s = session(this, store)
+        s.attestation = AttestationRecord.preview
+        val sentTo = store.active!!
+        store.update(Provider.nearAI.copy(id = "other", model = "z-ai/glm-5.3"))
+        assertNull(s.prepareTurn(sentTo))
+        assertNull("no request opened on the provider now selected", s.lastRequestUsedE2EE)
+    }
+
     @Test fun requestOutcomeRecordsE2eeAndTheFailureReason() = runTest {
         val s = session(this, Store(null))
         s.beginRequest(expectingE2EE = true)
@@ -774,7 +1236,7 @@ class ConfidentialSessionTest {
         s.recordRequestOutcome(isE2EEActive = true, error = null)
         assertEquals(2, s.e2eeMessageCount)
         s.recordRequestOutcome(isE2EEActive = false, error = ConfidentialSession.RequestError(421, "rejected"))
-        assertEquals("Server rejected request (HTTP 421)", s.lastE2EEFailReason)
+        assertEquals("the server rejected the request (http 421).", s.lastE2EEFailReason)
         s.recordRequestOutcome(isE2EEActive = null, error = ConfidentialSession.RequestError(null, "network down"))
         assertEquals("network down", s.lastE2EEFailReason)
         s.finishTurn(isE2EEActive = true, error = null, verification = ResponseVerification.Verified("0xA"))

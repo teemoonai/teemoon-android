@@ -20,6 +20,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -57,26 +58,12 @@ fun WebSearchOffer(
     check: suspend (String) -> BraveWebSearchTool.KeyCheckResult = { BraveWebSearchTool.checkKey(it) },
     modifier: Modifier = Modifier,
 ) {
-    var key by remember { mutableStateOf("") }
-    var result by remember { mutableStateOf<BraveWebSearchTool.KeyCheckResult?>(null) }
-    var checking by remember { mutableStateOf(false) }
-    var accepted by remember { mutableStateOf(false) }
+    val latestAccepted = rememberUpdatedState(onKeyAccepted)
+    val run = remember { KeyOfferRun(verify = { check(it) }, onAccepted = { latestAccepted.value(it) }) }
+    val key = run.key; val result = run.result; val checking = run.checking; val accepted = run.accepted
     val scope = rememberCoroutineScope()
     val uriHandler = LocalUriHandler.current
     val clipboard = LocalClipboard.current
-
-    fun runCheck() {
-        scope.launch {
-            checking = true
-            val outcome = check(key)
-            result = outcome
-            checking = false
-            if (outcome.kind != BraveWebSearchTool.KeyCheck.VALID) return@launch
-            accepted = true
-            delay(1700)   // long enough to read "accepted", short enough that the re-ask feels like a consequence
-            onKeyAccepted(key)
-        }
-    }
 
     Card(modifier.fillMaxWidth().testTag("chat.webOffer")) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -99,8 +86,7 @@ fun WebSearchOffer(
                 TextButton(onClick = {
                     scope.launch {
                         val pasted = clipboard.getClipEntry()?.clipData?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.text?.toString() ?: return@launch
-                        key = pasted.trim()
-                        runCheck()
+                        run.check(pasted.trim())
                     }
                 }, modifier = Modifier.testTag("chat.webOffer.paste")) { Text("paste") }
             }
@@ -110,9 +96,9 @@ fun WebSearchOffer(
                     CircularProgressIndicator(Modifier.size(12.dp), strokeWidth = 2.dp)
                     Text("checking with brave…", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
-                result != null && result!!.kind != BraveWebSearchTool.KeyCheck.VALID -> Text(
-                    KeyCheckCopy.message(result!!), style = MaterialTheme.typography.bodySmall,
-                    color = if (result!!.kind == BraveWebSearchTool.KeyCheck.REJECTED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
+                result != null && result.kind != BraveWebSearchTool.KeyCheck.VALID -> Text(
+                    KeyCheckCopy.message(result), style = MaterialTheme.typography.bodySmall,
+                    color = if (result.kind == BraveWebSearchTool.KeyCheck.REJECTED) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurfaceVariant)
             }
             Text("privacy: brave sees only the search terms, never your conversation.", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
@@ -121,3 +107,37 @@ fun WebSearchOffer(
 
 /** Enough of a key to recognise it, never enough to reuse it. */
 fun maskedKey(key: String): String = if (key.length > 8) "${key.take(4)}…${key.takeLast(4)}" else "••••"
+
+/**
+ * One key check at a time, each answering for its own key (pm sweep 2026-11-06). The card's state read the key field
+ * 1.7 s after key A's VALID — by then key B, pasted meanwhile and never accepted by Brave, was the one saved — and a
+ * second VALID handed a key over twice. A check that a newer one superseded writes nothing; an accepted key is handed
+ * over once, and only if it is still the one on the card after the pause.
+ */
+internal class KeyOfferRun(
+    private val verify: suspend (String) -> BraveWebSearchTool.KeyCheckResult,
+    private val onAccepted: (String) -> Unit,
+    /** Long enough to read "accepted", short enough that the re-ask feels like a consequence. */
+    private val pause: suspend () -> Unit = { delay(1700) },
+) {
+    var key by mutableStateOf(""); private set
+    var result by mutableStateOf<BraveWebSearchTool.KeyCheckResult?>(null); private set
+    var checking by mutableStateOf(false); private set
+    var accepted by mutableStateOf(false); private set
+    private var run = 0
+    private var handedOver: String? = null
+
+    suspend fun check(candidate: String) {
+        val mine = ++run
+        key = candidate; result = null; accepted = false; checking = true
+        val outcome = verify(candidate)
+        if (mine != run) return
+        result = outcome; checking = false
+        if (outcome.kind != BraveWebSearchTool.KeyCheck.VALID) return
+        accepted = true
+        pause()
+        if (mine != run || handedOver == candidate) return
+        handedOver = candidate
+        onAccepted(candidate)
+    }
+}

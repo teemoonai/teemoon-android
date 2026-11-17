@@ -79,4 +79,10 @@ class GlossaryPrimerTest {
             assertTrue(rendered.length < beat.length)   // the markers were consumed, not just hidden
         }
     }
+
+    /** Audit 2026-10-30 (the maintainer): the phone checks the images the launch config names, not what the enclave booted (1.2). */
+    @Test fun thePrimerDoesNotClaimWhatTheEnclaveBooted() {
+        assertFalse(primer.definition.contains("booted"))
+        assertTrue(primer.definition.contains("launch config"))
+    }
 }

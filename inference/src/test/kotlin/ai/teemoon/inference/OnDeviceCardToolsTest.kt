@@ -1,6 +1,6 @@
 // ports: teemoonTests/OnDeviceCardToolsTests.swift @ ca3d155
 //
-// The maintainer, 2026-10-22: Gemma 4 E2B's card said "tools-offered: 1" but showed no tool. The on-device card's request body
+// the maintainer, 2026-10-22: Gemma 4 E2B's card said "tools-offered: 1" but showed no tool. The on-device card's request body
 // carries the tools in the cloud card's shape.
 package ai.teemoon.inference
 

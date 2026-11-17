@@ -21,6 +21,17 @@ import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.withStyle
 import com.mikepenz.markdown.compose.components.markdownComponents
+import androidx.compose.foundation.background
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.foundation.layout.Box
+import androidx.compose.animation.core.Animatable
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.text.TextStyle
+import com.mikepenz.markdown.compose.elements.MarkdownCodeBlock
+import com.mikepenz.markdown.compose.elements.MarkdownCodeFence
 import com.mikepenz.markdown.m3.Markdown
 import com.mikepenz.markdown.m3.markdownColor
 import com.mikepenz.markdown.m3.markdownTypography
@@ -32,7 +43,7 @@ import androidx.compose.ui.text.TextLinkStyles
 import androidx.compose.ui.text.style.TextDecoration
 
 @Composable
-fun MarkdownBody(markdown: String, streaming: Boolean) {
+fun MarkdownBody(markdown: String, streaming: Boolean, fade: RevealFade? = null) {
     if (markdown.isEmpty()) { Text(if (streaming) "…" else "", style = MaterialTheme.typography.bodyLarge); return }
     val split = remember(markdown) { MarkdownStreamSplitter.split(markdown) }
     // The settled blocks are final; the tail is painted as the splitter says it should look this frame (a half-typed
@@ -68,6 +79,12 @@ fun MarkdownBody(markdown: String, streaming: Boolean) {
     val parsed = remember(text) { com.mikepenz.markdown.model.parseMarkdown(content = text, referenceLinkHandler = blocks.handlerFor(text)) }
     val components = remember {
         markdownComponents(
+            // CODE WRAPS (the maintainer 2026-10-25 via pm, the same on iOS): the renderer's default scrolled a long line sideways
+            // inside the vertically scrolling transcript, with nothing to say it was cut — "counts=wordCounts("the cat and t".
+            // A sideways scroller in a vertical one is fiddly on a phone; wrapping hides nothing, and copy keeps the lines.
+            // Plain soft wrap, no hanging indent.
+            codeFence = { MarkdownCodeFence(it.content, it.node, it.typography.code) { code, _, style -> WrappedCode(code, style) } },
+            codeBlock = { MarkdownCodeBlock(it.content, it.node, it.typography.code) { code, _, style -> WrappedCode(code, style) } },
             image = { model ->
                 // Alt text only. The renderer would otherwise resolve the url; the guard above is why it never does.
                 Text(MarkdownImageAlt.altText(model.content.substring(model.node.startOffset, model.node.endOffset)),
@@ -97,10 +114,30 @@ fun MarkdownBody(markdown: String, streaming: Boolean) {
             animations = com.mikepenz.markdown.model.markdownAnimations(animateTextSize = { this }),
             components = components,
             success = { state, comps, modifier ->
-                Column(modifier) { for (block in blocks.resolve(state)) MarkdownBlock(block, comps) }
+                Column(modifier) {
+                    // The paragraph StreamReveal showed whole fades in over 0.3 s (snaps under Reduce Motion: Compose's
+                    // animations follow the system's duration scale). It is the last [RevealFade.suffix] characters of the text, trailing blank lines aside.
+                    val alpha = remember(fade?.key) { Animatable(if (fade == null) 1f else 0f) }
+                    LaunchedEffect(fade?.key) { if (fade != null) alpha.animateTo(1f, Motion.paragraph()) }
+                    val fadeAt = fade?.let { text.trimEnd().length - it.suffix }
+                    for (block in blocks.resolve(state)) {
+                        if (fadeAt != null && block.node.startOffset >= fadeAt) Box(Modifier.graphicsLayer { this.alpha = alpha.value }) { MarkdownBlock(block, comps) }
+                        else MarkdownBlock(block, comps)
+                    }
+                }
             },
         )
     }
+}
+
+/** The paragraph a reveal showed whole: its length at the end of the shown text, and when its fade began. */
+data class RevealFade(val suffix: Int, val key: Long)
+
+/** A code block's body: the renderer's background, corner and padding, its text soft-wrapped instead of scrolled sideways. */
+@Composable
+private fun WrappedCode(code: String, style: TextStyle) {
+    Text(code, style = style, softWrap = true, modifier = Modifier.fillMaxWidth().testTag("reply.code")
+        .background(TeemoonColors.secondaryBackground, RoundedCornerShape(4.dp)).padding(horizontal = 14.dp, vertical = 8.dp))
 }
 
 /** One top-level block: skipped while [block] is the same instance — its text unchanged since the last partial. */

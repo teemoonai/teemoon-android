@@ -1,7 +1,8 @@
-// ports: teemoon/Confidential/AttestationService.swift @ ebc9bdb (fetch: three independent legs; only a blackout throws)
+// ports: teemoon/Confidential/AttestationService+Reports.swift, +Model.swift, +GPU.swift, AttestationService.swift @ d5e40fee (S37: advertised report_data per leg, the model leg's app_compose)
+//        teemoon/Confidential/AttestationService.swift @ v1.0.6 (fetch: three independent legs; only a blackout throws)
 //        teemoon/Confidential/AttestationService+Reports.swift @ v1.0.1
-//        teemoon/Confidential/AttestationService+Model.swift @ v1.0.5 (a 4xx is final)
-//        teemoon/Confidential/AttestationService+GPU.swift @ 97b2ca9 (status before decode; a 4xx is final)
+//        teemoon/Confidential/AttestationService+Model.swift @ v1.0.6 (a 4xx is final)
+//        teemoon/Confidential/AttestationService+GPU.swift @ v1.0.6 (status before decode; a 4xx is final)
 //        teemoon/Confidential/AttestationService+Routing.swift @ v1.0.1
 //        teemoon/Inference/ConfidentialLanguageModel.swift @ 3d561c4 (TEEContext only)
 //
@@ -78,7 +79,11 @@ object AttestationService {
 
     /** `/v1/attestation/report`: `{ "gateway_attestation": { "intel_quote", "signing_address", "info": { "compose_hash", "os_image_hash", "tcb_info": { "mrtd", "app_compose" } } } }` */
     @Serializable data class Report(@SerialName("gateway_attestation") val gatewayAttestation: GatewayAttestation)
-    @Serializable data class GatewayAttestation(@SerialName("intel_quote") val intelQuote: String? = null, val info: Info? = null, @SerialName("signing_address") val signingAddress: String? = null)
+    @Serializable data class GatewayAttestation(@SerialName("intel_quote") val intelQuote: String? = null, val info: Info? = null, @SerialName("signing_address") val signingAddress: String? = null,
+        /** The report_data the gateway advertises beside its quote (S37 B2); read untyped so an unexpected type costs only this field. */
+        @SerialName("report_data") val reportDataField: kotlinx.serialization.json.JsonElement? = null) {
+        val reportData: String? get() = (reportDataField as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
+    }
     @Serializable data class Info(@SerialName("compose_hash") val composeHash: String? = null, @SerialName("os_image_hash") val osImageHash: String? = null, @SerialName("tcb_info") val tcbInfo: TcbInfo? = null)
     @Serializable data class TcbInfo(val mrtd: String? = null, @SerialName("app_compose") val appCompose: String? = null)
 
@@ -88,6 +93,8 @@ object AttestationService {
         val signingAddress: String?, val intelQuote: String?,
         /** The model this node says it serves — verified against the requested model before any of the report's data is trusted. */
         val modelName: String?,
+        /** The report_data the node advertises beside its quote (S37 B2). */
+        val reportData: String? = null,
     ) {
         @Serializable data class CmAction(val action: String? = null, val file: String? = null, val commit: String? = null, val tag: String? = null, val timestamp: String? = null, @SerialName("file_sha256") val fileSha256: String? = null)
         /** The most recent compose_up action (the currently running model YAML). */
@@ -108,7 +115,7 @@ object AttestationService {
                 val info = o["info"] as? JsonObject
                 val actions = (o["compose_manager_attestation"] as? JsonObject)?.get("actions")?.let { a -> runCatching { a.jsonArray.map { json.decodeFromJsonElement(CmAction.serializer(), it) } }.getOrNull() } ?: emptyList()
                 return GpuNodeReport(str(payload, "arch"), str(info, "compose_hash"), str(info?.get("tcb_info") as? JsonObject, "app_compose"), actions,
-                    str(o, "signing_address"), str(o, "intel_quote"), str(o, "model_name"))
+                    str(o, "signing_address"), str(o, "intel_quote"), str(o, "model_name"), str(o, "report_data"))
             }
         }
     }
@@ -118,6 +125,9 @@ object AttestationService {
         val arch: String?, val composeHash: String?, val composeManifest: String?, val modelFileHash: String?, val modelComposePath: String?,
         val modelComposeCommit: String?, val modelComposeTag: String?, val modelDeployedAt: String?, val modelPreviouslyDeployedAt: String?,
         val signingAddress: String?, val quoteVerification: TdxVerificationResult?, val intelQuote: String?, val nonce: String?,
+        /** The node's report as it answered: the action log, its manager quote and the boot event log (NearTrustScope). */
+        val report: JsonObject? = null,
+        val advertisedReportData: String? = null,
     )
 
     /** `/v1/attestation/report?signing_algo=ed25519[&model=…]`: the current format (top-level + `all_attestations`) and the legacy `model_attestations` array. */
@@ -141,7 +151,21 @@ object AttestationService {
     }
 
     /** Result of fetching the model's Ed25519 attestation data. */
-    data class ModelAttestationData(val ed25519PubKey: ByteArray, val quoteVerification: TdxVerificationResult?, val gpuArch: String?, val intelQuote: String?, val nonce: String?, val nvidiaPayload: String?, val osImageHash: String?)
+    data class ModelAttestationData(val ed25519PubKey: ByteArray, val quoteVerification: TdxVerificationResult?, val gpuArch: String?, val intelQuote: String?, val nonce: String?, val nvidiaPayload: String?, val osImageHash: String?,
+                                    val advertisedReportData: String? = null, val appCompose: String? = null)
+
+    /**
+     * A string field of the attestation the model leg's quote came from, never a sibling's (iOS Ed25519Report.quoteLegString
+     * @ d5e40fee); read untyped so an unexpected shape costs only this field, never the model leg.
+     */
+    fun quoteLegString(path: List<String>, data: ByteArray): String? {
+        val root = runCatching { Json.parseToJsonElement(String(data, Charsets.UTF_8)).jsonObject }.getOrNull() ?: return null
+        val legs = listOf(root) + listOf("all_attestations", "model_attestations").mapNotNull { (root[it] as? kotlinx.serialization.json.JsonArray)?.firstOrNull() as? JsonObject }
+        val leg = legs.firstOrNull { (it["intel_quote"] as? JsonPrimitive)?.isString == true } ?: return null
+        var cur: kotlinx.serialization.json.JsonElement? = leg
+        for (k in path) cur = (cur as? JsonObject)?.get(k)
+        return (cur as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
+    }
 
     /** Test hook (not debug-gated on Android): the model node's `os_image_hash` from a raw model-attestation body, both wire shapes. */
     fun modelOSImageHash(fromModelReport: ByteArray): String? = runCatching { json.decodeFromString(Ed25519Report.serializer(), String(fromModelReport, Charsets.UTF_8)) }.getOrNull()?.resolvedOSImageHash
@@ -160,7 +184,9 @@ object AttestationService {
         baseUrl: String, apiKey: String, model: String = "", providerID: String, gpuNodeUrl: String? = null,
         http: AttestationHttp = okHttp, directBase: suspend (String) -> String? = { NearAIModelCatalog.endpointDirectory.directBase(it) },
         now: () -> Instant = { Instant.now() }, modelWaitMs: Long = 15_000, log: (String) -> Unit = {},
-    ): AttestationRecord = coroutineScope {
+    // Main-safe: the report decodes and the TDX chain checks between the fetches run on VerifyWork (its scope, as
+    // coroutineScope gave, for the legs' async)
+    ): AttestationRecord = withContext(VerifyWork.dispatcher) {
         val gpuTask = gpuNodeUrl?.let { url -> async { fetchGpuData(url, apiKey, model, http, directBase, log) } }
         val modelAttTask = if (model.isEmpty()) null else async { fetchModelAttestation(baseUrl, model, apiKey, http, directBase, log) }
 
@@ -184,6 +210,7 @@ object AttestationService {
             // Prefer GPU arch from the model attestation (always available from the gateway), fall back to the direct GPU node.
             gpuArch = modelAtt?.gpuArch ?: gpu?.arch,
             gpuNodeComposeHash = gpu?.composeHash, modelFileHash = gpu?.modelFileHash,
+            gpuNodeHost = if (gpu == null) null else runCatching { URI(gpuNodeUrl).host }.getOrNull(),
             signingAddress = gw?.signingAddress, gpuSigningAddress = gpu?.signingAddress, modelEd25519PubKey = modelAtt?.ed25519PubKey,
             quoteVerification = quoteVerification, gpuQuoteVerification = gpu?.quoteVerification, modelQuoteVerification = modelAtt?.quoteVerification,
             fetchedAt = now(), providerID = providerID,
@@ -191,7 +218,11 @@ object AttestationService {
             modelOSImageHash = modelAtt?.osImageHash, modelIntelQuote = modelAtt?.intelQuote, gpuIntelQuote = gpu?.intelQuote,
             gatewayNonce = gateway?.second, modelNonce = modelAtt?.nonce, gpuNonce = gpu?.nonce, nvidiaPayload = modelAtt?.nvidiaPayload,
             gpuNodeComposeManifest = gpu?.composeManifest, modelComposePath = gpu?.modelComposePath, modelComposeCommit = gpu?.modelComposeCommit,
-            modelComposeTag = gpu?.modelComposeTag, modelDeployedAt = gpu?.modelDeployedAt, modelPreviouslyDeployedAt = gpu?.modelPreviouslyDeployedAt, model = model)
+            modelComposeTag = gpu?.modelComposeTag, modelDeployedAt = gpu?.modelDeployedAt, modelPreviouslyDeployedAt = gpu?.modelPreviouslyDeployedAt, model = model,
+            gpuNodeReport = gpu?.report,
+            // S37 B2/B3: what each leg advertises beside its quote, and the model leg's own measured compose
+            gatewayAdvertisedReportData = gw?.reportData, modelAdvertisedReportData = modelAtt?.advertisedReportData,
+            gpuAdvertisedReportData = gpu?.advertisedReportData, modelComposeManifest = modelAtt?.appCompose)
     }
 
     /**
@@ -281,7 +312,8 @@ object AttestationService {
                 val bound = qv.measurements.reportData.size >= 32 && qv.measurements.reportData.copyOfRange(0, 32).contentEquals(keyData)
                 log("[$label] model attestation: quote ${if (qv.isVerified) "verified" else "FAILED"}, key bound: $bound, gpu: ${gpuArch ?: "nil"}")
             }
-            return ModelAttestationData(keyData, quoteVerification, gpuArch, report.resolvedQuote, nonce, report.resolvedNvidiaPayload, report.resolvedOSImageHash)
+            return ModelAttestationData(keyData, quoteVerification, gpuArch, report.resolvedQuote, nonce, report.resolvedNvidiaPayload, report.resolvedOSImageHash,
+                advertisedReportData = quoteLegString(listOf("report_data"), data), appCompose = quoteLegString(listOf("info", "tcb_info", "app_compose"), data))
         }
         log("[$label] model attestation: Ed25519 key unavailable after ${maxOf(1, maxAttempts)} attempt(s)")
         return null
@@ -334,7 +366,8 @@ object AttestationService {
             val resolvedAddr = report.signingAddress ?: addressFromReportData(report.intelQuote)
             val (latest, previous) = report.composeUpTimestamps
             return GpuNodeData(report.arch, report.composeHash, report.composeManifest, report.latestModelFileHash, report.latestComposeUp?.file,
-                report.latestComposeUp?.commit, report.latestComposeUp?.tag, latest, previous, resolvedAddr, gpuQuoteVerification, report.intelQuote, nonce)
+                report.latestComposeUp?.commit, report.latestComposeUp?.tag, latest, previous, resolvedAddr, gpuQuoteVerification, report.intelQuote, nonce,
+                runCatching { Json.parseToJsonElement(String(data, Charsets.UTF_8)).jsonObject }.getOrNull(), advertisedReportData = report.reportData)
         }
         return null
     }

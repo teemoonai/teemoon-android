@@ -1,4 +1,4 @@
-// ports: teemoon/Confidential/AttestationRecord.swift @ 97b2ca9 (the data model, its bindings, and the
+// ports: teemoon/Confidential/AttestationRecord.swift @ v1.0.6 (the data model, its bindings, and the
 //        two preview records; the fetcher is AttestationService.kt)
 package ai.teemoon.confidential
 
@@ -61,12 +61,20 @@ data class AttestationRecord(
     val gpuNonce: String? = null,
     /** Raw `nvidia_payload` JSON from the model attestation, retained for NRAS verification. */
     val nvidiaPayload: String? = null,
+    /** The report_data each leg's JSON advertises beside its quote; DcapService fails a quote whose own differs (S37 B2). */
+    val gatewayAdvertisedReportData: String? = null,
+    val modelAdvertisedReportData: String? = null,
+    val gpuAdvertisedReportData: String? = null,
+    /** The model leg's measured compose (its info.tcb_info.app_compose), read from the attestation its quote came from (S37 B3). */
+    val modelComposeManifest: String? = null,
     /** Raw docker-compose.yaml manifest the GPU node measured at boot — the model enclave's own container set. */
     val gpuNodeComposeManifest: String? = null,
     /** Repo-relative path, git commit, and tag of the model compose YAML, from the same compose-manager action. */
     val modelComposePath: String? = null,
     val modelComposeCommit: String? = null,
     val modelComposeTag: String? = null,
+    /** The model node's host the report came from: the chat path is resolved for this host (iOS b3d90fac). */
+    val gpuNodeHost: String? = null,
     /**
      * ISO8601 times of the newest and previous engine-layer `compose_up`, read
      * from compose-manager's signed action log (the operator's clock, inside the
@@ -79,20 +87,23 @@ data class AttestationRecord(
      * to expose a record whose model doesn't match the active provider — making
      * stale-model display structurally impossible.
      */
-    val model: String? = null,
+    val model: String? = null,    /** The GPU node's report as it answered, for the trust scope's checks over its action log and boot log (NearTrustScope). */
+    val gpuNodeReport: kotlinx.serialization.json.JsonObject? = null,
 ) {
     /**
      * One expert-sheet caption line for the model enclave's deployment recency:
      * "config deployed 2026-07-16 · previous 2026-07-12 · per the signed action
      * log". Dates only. null when the action log carried no timestamps.
      */
-    val deploymentCaption: String?
-        get() {
-            val latest = modelDeployedAt?.takeIf { it.length >= 10 } ?: return null
-            var line = "config deployed ${latest.take(10)}"
-            modelPreviouslyDeployedAt?.takeIf { it.length >= 10 }?.let { line += " · previous ${it.take(10)}" }
-            return "$line · per the signed action log"
-        }
+    val deploymentCaption: String? get() = deploymentCaption(signed = true)
+
+    /** The same, saying "signed" only once (a) has bound the log to the hardware (near-trust-scope, the maintainer 2026-11-06). */
+    fun deploymentCaption(signed: Boolean): String? {
+        val latest = modelDeployedAt?.takeIf { it.length >= 10 } ?: return null
+        var line = "config deployed ${latest.take(10)}"
+        modelPreviouslyDeployedAt?.takeIf { it.length >= 10 }?.let { line += " · previous ${it.take(10)}" }
+        return "$line · per the ${if (signed) "signed " else ""}action log"
+    }
 
     /**
      * Whether the gateway signing address is cryptographically bound to the TDX quote's report_data.
@@ -115,7 +126,10 @@ data class AttestationRecord(
 
     /**
      * Same binding for the model node's ECDSA address against the GPU-leg quote (iOS 97b2ca9).
-     * The report's `signing_address` JSON field alone proves nothing.
+     * The report's `signing_address` JSON field alone proves nothing. Nor does an address in a quote that did not
+     * verify: report_data is only as good as the quote's own signature and PCK chain, so a reply signed by that key read
+     * "verified" on a forged GPU quote (1.0.6 audit INFO; the same rule as [e2eeKeyBoundToModelTEE]'s T6, and iOS's
+     * red test cdfaccde on near-import-s7-lows).
      */
     val gpuSigningKeyBoundToHardware: Boolean?
         get() {
@@ -124,14 +138,22 @@ data class AttestationRecord(
             val reportData = qv.measurements.reportData
             val addrBytes = addr.removePrefix("0x").hexToBytesOrNull()
             if (addrBytes == null || addrBytes.size != 20 || reportData.size < 20) return false
-            return reportData.copyOfRange(0, 20).contentEquals(addrBytes)
+            return reportData.copyOfRange(0, 20).contentEquals(addrBytes) && qv.isVerified
         }
 
     /**
-     * Whether the E2EE Ed25519 key is cryptographically bound to the model TEE's TDX quote.
-     * Checks that the key appears in the first 32 bytes of the model quote's report_data.
+     * Whether the E2EE Ed25519 key is cryptographically bound to the model TEE's TDX quote: the key is in the first
+     * 32 bytes of report_data AND the quote verified. A key in a quote that didn't verify is not bound (T6,
+     * trust-quote-failed, the maintainer 2026-11-06; iOS e2eeKeyBoundToModelTEE with its T6 change).
      */
     val e2eeKeyBoundToModelTEE: Boolean?
+        get() {
+            val inReportData = e2eeKeyInModelReportData ?: return null
+            return inReportData && modelQuoteVerification?.isVerified == true
+        }
+
+    /** Only that the key bytes appear in the model quote's report_data, whether or not the quote verified. */
+    val e2eeKeyInModelReportData: Boolean?
         get() {
             val mqv = modelQuoteVerification ?: return null
             val key = modelEd25519PubKey?.takeIf { it.size == 32 } ?: return null
@@ -157,15 +179,30 @@ data class AttestationRecord(
      * quote verification. It does NOT verify that the manifest's image digests
      * came from near.ai's source — that is the separate provenance check.
      */
+    /**
+     * The model leg's and the GPU node's quotes each commit to their own app_compose (dstack MRCONFIGID; S37 B3, iOS
+     * d5e40fee); null when neither has a quote and a compose to compare.
+     */
+    val modelNodesBootedTheirCompose: Boolean?
+        get() {
+            fun binds(qv: TdxVerificationResult?, manifest: String?): Boolean? {
+                if (qv == null || manifest.isNullOrEmpty()) return null
+                return QuoteChecks.mrConfigCommits(qv.measurements.mrConfigId, sha256Hex(manifest))
+            }
+            val legs = listOfNotNull(binds(modelQuoteVerification, modelComposeManifest), binds(gpuQuoteVerification, gpuNodeComposeManifest))
+            return if (legs.isEmpty()) null else legs.all { it }
+        }
+
     val codeIdentityVerified: Boolean?
         get() {
+            // every model-node quote commits to the compose it served (S37 B3): never drop the model nodes from this
+            if (modelNodesBootedTheirCompose == false) return false
             val manifest = composeManifest?.takeIf { it.isNotEmpty() } ?: return null
             if (composeHash.isEmpty()) return null
             val qv = quoteVerification ?: return null
             val computed = sha256Hex(manifest)
             if (computed != composeHash.lowercase()) return false
-            val expectedPrefix = "01" + composeHash.lowercase()
-            return qv.measurements.mrConfigId.toHex().lowercase().startsWith(expectedPrefix)
+            return QuoteChecks.mrConfigCommits(qv.measurements.mrConfigId, composeHash)
         }
 
     /**
@@ -321,3 +358,7 @@ data class AttestationRecord(
         }
     }
 }
+
+/** The GPU node's compose-manager quote, when its report carries the action log's attestation. */
+val AttestationRecord.managerQuote: String?
+    get() = ((gpuNodeReport?.get("compose_manager_attestation") as? kotlinx.serialization.json.JsonObject)?.get("quote") as? kotlinx.serialization.json.JsonPrimitive)?.content

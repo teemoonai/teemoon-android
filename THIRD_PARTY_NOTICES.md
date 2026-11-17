@@ -132,3 +132,13 @@ README.
 `conformance/vendor/*.json` are golden vectors generated in teemoon-ios from recorded
 near.ai, NVIDIA, Intel PCS, Sigstore and provider-catalogue responses. They are test data
 owned by ringzero ventures llc and distributed under this repository's license.
+
+---
+
+## Wuffs (image decoding)
+
+teemoon's isolated image decoder compiles **Wuffs** ("Wrangling Untrusted File Formats Safely"), version
+v0.4.0-alpha.9, from the upstream single-file release `release/c/wuffs-v0.4.c`, vendored unmodified at
+`app/src/main/cpp/third_party/wuffs/` with its license file. Copyright 2017–2024 The Wuffs Authors. Licensed under the
+Apache License, Version 2.0 (the full text is `app/src/main/cpp/third_party/wuffs/LICENSE`). Provenance and pins:
+[`docs/IMAGE_DECODER.md`](docs/IMAGE_DECODER.md).

@@ -1,7 +1,9 @@
-// ports: teemoonTests/NRASServiceTests.swift @ d382a55 — all fourteen, over the kit's nras class (the recorded
+// ports: teemoonTests/NRASServiceTests.swift @ v1.1.0 — all fourteen, over the kit's nras class (the recorded
 //        near.ai nvidia_payload, its request nonce, NVIDIA's actual response, the JWKS of that moment, the instant
 //        every case runs at, and the outcome production answered per case). The seven token negatives mint their
-//        own ES384 key, as iOS does.
+//        own ES384 key, as iOS does. nras.json re-emitted at iOS ee5d1b51 (the counts are those of
+//        teemoonTests/ConformanceVectorsAttestation.swift @ ee5d1b51: a lost nonce asks with the fault line, a
+//        malformed NRAS response fails).
 package ai.teemoon.confidential
 
 import kotlinx.coroutines.runBlocking
@@ -62,9 +64,10 @@ class NrasServiceTest {
             c.reasonContains?.let { needle -> assertTrue("${c.note}: '${reason(result)}' should mention '$needle'", reason(result)?.contains(needle) == true) }
         }
         assertEquals("verified", cases.first().outcome)
-        // The hard tier is only a genuine negative — the nonce replay and the tampered token (its ES384 signature no
-        // longer verifies); every other non-verified case is soft.
-        assertEquals(2, cases.count { it.outcome == "failed" }); assertEquals(3, cases.count { it.outcome == "inconclusive" })
+        // The hard tier: the nonce replay, the tampered token (its ES384 signature no longer verifies) and, since
+        // near-gate-nvidia-tls-split (iOS ee5d1b51), an unrecognised NVIDIA answer — evidence. Soft: NRAS unreachable,
+        // and the lost request nonce, which is teemoon's own fault and says so with the approved line.
+        assertEquals(3, cases.count { it.outcome == "failed" }); assertEquals(2, cases.count { it.outcome == "inconclusive" })
     }
 
     /** A nonce mismatch must fail without any HTTP call. */

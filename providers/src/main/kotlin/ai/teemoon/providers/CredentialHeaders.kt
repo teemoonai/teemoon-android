@@ -1,6 +1,6 @@
-// android-only (for now): the header names keys were actually sent under. iOS's DebugHeaderRedaction masks a fixed
-// list of four; a provider configured with its own header name had its key copied in full from a debug card on both
-// (the local audit, an INFO since 3910, 2026-10-13).
+// android-only file: the header names keys were actually sent under. A provider configured with its own header name had
+// its key copied in full from a debug card on both (the local audit, an INFO since 3910, 2026-10-13). iOS took the same
+// rule into DebugHeaderRedaction.swift at 6094a24 (audit gardener #3); conformance/redaction.json holds both to it.
 package ai.teemoon.providers
 
 import java.util.concurrent.ConcurrentHashMap

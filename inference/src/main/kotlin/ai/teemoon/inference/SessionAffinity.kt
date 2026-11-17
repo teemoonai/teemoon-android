@@ -1,4 +1,4 @@
-// ports: teemoon/Inference/SessionAffinity.swift @ ead8674
+// ports: teemoon/Inference/SessionAffinity.swift @ v1.1.0
 package ai.teemoon.inference
 
 import java.net.URI

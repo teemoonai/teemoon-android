@@ -67,30 +67,30 @@ class ToolCallDisplayTruncationTest {
 
 class ApiErrorMessageTest {
     @Test fun providerBodyMessageIsSurfaced() {
-        assertEquals("near.ai (HTTP 404): model not found — try another", LlmError.apiErrorMessage("""{"error":{"message":"model not found","detail":"try another"}}""", 404, "near.ai"))
+        assertEquals("near.ai (http 404): model not found — try another", LlmError.apiErrorMessage("""{"error":{"message":"model not found","detail":"try another"}}""", 404, "near.ai"))
     }
     @Test fun metaErrorsAreJoined() {
-        assertEquals("x (HTTP 422): bad — worse", LlmError.apiErrorMessage("""{"error":{"meta":{"errors":[{"msg":"bad"},{"msg":"worse"}]}}}""", 422, "x"))
+        assertEquals("x (http 422): bad — worse", LlmError.apiErrorMessage("""{"error":{"meta":{"errors":[{"msg":"bad"},{"msg":"worse"}]}}}""", 422, "x"))
     }
     @Test fun noBodyFallsBackToTheStatusLine() {
-        assertEquals("x rejected the request (HTTP 401). Your API key may be invalid or missing.", LlmError.apiErrorMessage("", 401, "x"))
-        assertEquals("x server error (HTTP 503). The service may be temporarily unavailable.", LlmError.apiErrorMessage("<html>", 503, "x"))
+        assertEquals("x rejected the request (http 401). your api key may be invalid or missing.", LlmError.apiErrorMessage("", 401, "x"))
+        assertEquals("x server error (http 503). the service may be down for a moment.", LlmError.apiErrorMessage("<html>", 503, "x"))
     }
 
-    // LLMErrorTests @ v1.0.5 — the problem-details body.
+    // LLMErrorTests @ v1.0.6 — the problem-details body.
 
     /** NVIDIA lists models its chat endpoint no longer serves; the 404 is the model, not the URL — and the ids stay out. */
     @Test fun nvidiaUnservedModel404NamesTheModelNotTheURL() {
         val body = """{"status":404,"title":"Not Found","detail":"Function 'b0fcd392-e905-4ab4-8eb9-aeae95c30b37': Not found for account 'iqVNM_S9wj9BaKVMYqRKW'"}"""
         val msg = LlmError.apiErrorMessage(body, 404, "nvidia")
-        assertTrue(msg.contains("does not serve this model")); assertTrue(msg.contains("404"))
+        assertTrue(msg.contains("doesn't serve this model")); assertTrue(msg.contains("404"))
         assertFalse(msg.contains("URL")); assertFalse(msg.contains("b0fcd392")); assertFalse(msg.contains("iqVNM"))
     }
     @Test fun problemDetailsBodyShowsItsDetail() {
-        assertEquals("nvidia (HTTP 429): Rate limit exceeded for this model.",
+        assertEquals("nvidia (http 429): Rate limit exceeded for this model.",
             LlmError.apiErrorMessage("""{"status":429,"title":"Too Many Requests","detail":"Rate limit exceeded for this model."}""", 429, "nvidia"))
     }
     @Test fun anErrorEnvelopeStillWinsOverProblemDetails() {
-        assertEquals("x (HTTP 400): bad request", LlmError.apiErrorMessage("""{"error":{"message":"bad request"},"detail":"ignored"}""", 400, "x"))
+        assertEquals("x (http 400): bad request", LlmError.apiErrorMessage("""{"error":{"message":"bad request"},"detail":"ignored"}""", 400, "x"))
     }
 }

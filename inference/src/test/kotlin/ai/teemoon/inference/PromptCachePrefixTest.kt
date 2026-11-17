@@ -1,7 +1,7 @@
 // ports: teemoonTests/PromptCachePrefixTests.swift @ 904de68 (aRequestBodyIsTheSameBytesEveryTime, sortingNeverReordersAnArray;
 //        sealingTakesTheSortedPlaintextAndLeavesStrings is OpenAiTransportE2EETest's, beside the E2EE fixtures)
 //
-// The maintainer, TestFlight 57: Fireworks GLM 5.3 Flash showed "cache 0%" on a chat's second send. iOS serialized the body from
+// the maintainer, TestFlight 57: Fireworks GLM 5.3 Flash showed "cache 0%" on a chat's second send. iOS serialized the body from
 // Swift dictionaries without sorted keys — a Dictionary's order is seeded per process — so the tools' key order changed
 // between requests and the prompt the server rendered no longer shared a prefix. Live on iOS, two sends: 0 cached of
 // ~870 twice unsorted, 768 of ~860 twice sorted (2026-10-22).

@@ -1,4 +1,4 @@
-// ports: teemoonTests/AttestationHeroCopyTests.swift @ v1.0.1
+// ports: teemoonTests/AttestationHeroCopyTests.swift @ v1.0.1, @ 8bfe33cb (okState_claimsReadingOnlyOverAReviewedBuild)
 package ai.teemoon.confidential
 
 import ai.teemoon.providers.Provider
@@ -23,6 +23,8 @@ class AttestationHeroCopyTest {
         imageProvenance: ManifestProvenance? = null,
         degradeIsHardFailure: Boolean = false,
         e2eeIntact: Boolean = false,
+        auditState: EverydayAuditState? = EverydayAuditState.REVIEWED,
+        leaksExposure: String? = null,
     ) = AttestationSummary(
         attestation = attestation, state = state, timedOut = false, provider = Provider.nearAI,
         lastRequestUsedE2EE = null, lastE2EEFailReason = null,
@@ -32,6 +34,7 @@ class AttestationHeroCopyTest {
         modelLayerVerification = null,
         degradeIsHardFailure = degradeIsHardFailure,
         e2eeIntact = e2eeIntact,
+        auditState = auditState, leaksExposure = leaksExposure,
     )
 
     // MARK: - Nothing was verified
@@ -90,6 +93,16 @@ class AttestationHeroCopyTest {
         assertEquals(AttestationSummary.HeaderSeverity.FAILED, s.headerSeverity)
     }
 
+    /** trust-leaks-wording (the maintainer 2026-11-06; iOS 8bfe33cb): no "only you … can read" over an unreviewed or leaking build. */
+    @Test fun okState_claimsReadingOnlyOverAReviewedBuild() {
+        for (a in listOf(null, EverydayAuditState.INCOMPLETE, EverydayAuditState.REVIEWED_WITH_CAVEAT)) {
+            assertEquals("$a", AuditedSealText.NOT_REVIEWED, summary(state = AttestationState.OK, auditState = a).headerSubtitle)
+        }
+        assertEquals("no exposure recorded", AuditedSealText.NOT_REVIEWED, summary(state = AttestationState.OK, auditState = EverydayAuditState.LEAKS).headerSubtitle)
+        assertEquals("sealed to the model's hardware on the way in. a review of this exact build found: every prompt is logged.",
+            summary(state = AttestationState.OK, auditState = EverydayAuditState.LEAKS, leaksExposure = "every prompt is logged.").headerSubtitle)
+    }
+
     @Test fun okState_isUnchanged() {
         val s = summary(state = AttestationState.OK)
         assertEquals("end-to-end encrypted", s.headerTitle)
@@ -102,8 +115,10 @@ class AttestationHeroCopyTest {
 
     /** The hero is never greener than the worst check below it: a flagged run demotes ok to advisory, a failed one to failed. */
     @Test fun runResultDemotesTheHero() {
-        // Provenance resolved, so no pending section outranks the flag (running beats flagged in the rollup).
+        // Provenance and the engine resolved, so no pending step outranks the flag (running beats flagged in the rollup).
         val resolved = summary(imageProvenance = ManifestProvenance.AllVerified(emptyList(), emptyList()))
+            .copy(modelLayerVerification = ModelLayerVerification.VERIFIED,
+                dcapVerification = RecordDcapVerification(gateway = DcapVerification.Verified(DcapTcbStatus.UP_TO_DATE, "01", "")))
         val flagged = resolved.copy(tlsAttestation = TlsAttestation.Inconclusive("verifier unreachable"))
         assertEquals(SectionResult.FLAGGED, flagged.runResult)
         assertEquals(AttestationSummary.HeaderSeverity.ADVISORY, flagged.headerSeverity)

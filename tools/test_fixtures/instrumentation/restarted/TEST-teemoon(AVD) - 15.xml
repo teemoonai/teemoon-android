@@ -1,0 +1,12 @@
+<?xml version='1.0' encoding='UTF-8' ?>
+<testsuites tests="4" failures="0" errors="0" skipped="0" time="0.000" timestamp="2026-11-06T21:06:39" hostname="localhost">
+  <testsuite name="ai.teemoon.app.FixtureTest" tests="4" failures="0" errors="0" skipped="0" time="12.400" timestamp="2026-11-06T21:06:39" hostname="localhost">
+    <properties>
+      <property name="device" value="emulator-5554" />
+    </properties>
+    <testcase name="aOne" classname="ai.teemoon.app.FixtureTest" time="4.1" />
+    <testcase name="bTwo" classname="ai.teemoon.app.FixtureTest" time="4.1" />
+    <testcase name="bTwo" classname="ai.teemoon.app.FixtureTest" time="4.1" />
+    <testcase name="cThree" classname="ai.teemoon.app.FixtureTest" time="4.1" />
+  </testsuite>
+</testsuites>

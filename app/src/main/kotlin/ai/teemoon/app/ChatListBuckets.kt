@@ -46,4 +46,15 @@ object ChatListBuckets {
 
     /** iOS asks for a store review every five visits at most; the platform then decides whether to show anything. */
     fun shouldRequestReview(numberOfVisits: Int, numberOfVisitsOfLastRequest: Int): Boolean = numberOfVisits - numberOfVisitsOfLastRequest >= 5
+
+    /**
+     * iOS ChatsListView.requestReviewIfAppropriate, on the "+" new-chat tap: [request] (StoreReview) when five visits
+     * have passed since the last ask, and the ask is counted whatever the store then shows.
+     */
+    fun requestReviewIfAppropriate(settings: AppSettings, request: () -> Unit) {
+        if (shouldRequestReview(settings.numberOfVisits, settings.numberOfVisitsOfLastRequest)) {
+            request()
+            settings.numberOfVisitsOfLastRequest = settings.numberOfVisits
+        }
+    }
 }

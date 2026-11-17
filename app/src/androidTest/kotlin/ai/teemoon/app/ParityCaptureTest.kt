@@ -169,7 +169,7 @@ class ParityCaptureTest {
     }
     @Test fun g_gate() {
         launch(UiTestSeeding.EXTRA_PRESETS to "nearai", UiTestSeeding.EXTRA_ATTESTATION to "degraded").use {
-            shot("chat_degraded"); send("hello", waitReply = false); if (exists("send unencrypted")) { shot("send_gate"); tap("cancel") }
+            shot("chat_degraded"); send("hello", waitReply = false); if (exists("send unencrypted")) { shot("send_gate"); tap("don't send") }
         }
     }
 

@@ -1,4 +1,4 @@
-// ports: teemoon/Confidential/NRASService.swift @ d382a55 (the service; NrasVerification is its own file)
+// ports: teemoon/Confidential/NRASService.swift @ ee5d1b51 (the service; NrasVerification is its own file)
 //
 // Verifies the GPU attestation evidence (`nvidia_payload`) from a near.ai
 // model attestation against NVIDIA's Remote Attestation Service (NRAS) —
@@ -16,7 +16,10 @@
 //
 // Fail-closed: unreachable NRAS, malformed payload/response, nonce
 // mismatch, or a false verdict all yield a non-verified outcome (never
-// silently green).
+// silently green). near-gate-nvidia-tls-split (the maintainer 2026-11-06, iOS ee5d1b51):
+// only an outage (NRAS or its keys unreachable, a signing key still unknown
+// after one refetch) or teemoon's own fault (no recorded nonce) is soft; a
+// malformed GPU evidence blob and an unrecognised NVIDIA answer are evidence.
 package ai.teemoon.confidential
 
 import ai.teemoon.providers.TeemoonHttp
@@ -110,13 +113,18 @@ class NrasService(
     /**
      * Verifies one `nvidia_payload` JSON string. [expectedNonceHex] is the
      * nonce teemoon sent with the attestation request that returned this
-     * payload; without it freshness cannot be proven, so the check fails.
+     * payload; without it freshness cannot be proven, so the check can't pass — and since losing it is teemoon's
+     * own fault, it asks with the approved line rather than blocking.
      */
-    suspend fun verify(payloadJson: String, expectedNonceHex: String?): NrasVerification {
+    /** Main-safe: the payload parse and the JWT check run on [VerifyWork]. */
+    suspend fun verify(payloadJson: String, expectedNonceHex: String?): NrasVerification = withContext(VerifyWork.dispatcher) { verifyHere(payloadJson, expectedNonceHex) }
+
+    private suspend fun verifyHere(payloadJson: String, expectedNonceHex: String?): NrasVerification {
         val payloadNonce = runCatching { (Json.parseToJsonElement(payloadJson) as? JsonObject)?.get("nonce") }.getOrNull()
             ?.let { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.contentOrNull }
-            ?: return NrasVerification.Inconclusive("GPU evidence payload unparseable")
-        if (expectedNonceHex == null) return NrasVerification.Inconclusive("no request nonce recorded for GPU evidence")
+            ?: return NrasVerification.Failed("GPU evidence payload unparseable")
+        // teemoon lost its own nonce: our fault, not evidence and not an outage — soft, with the approved line
+        if (expectedNonceHex == null) return NrasVerification.Inconclusive(NrasVerification.TEEMOON_FAULT)
         if (!payloadNonce.equals(expectedNonceHex, ignoreCase = true)) {
             log("[nras] evidence nonce mismatch — possible replay")
             return NrasVerification.Failed("GPU evidence nonce mismatch (possible replay)")
@@ -125,9 +133,9 @@ class NrasService(
             log("[nras] unreachable: $e")
             return NrasVerification.Inconclusive("NVIDIA attestation service unreachable")
         }
-        val jwt = overallJwt(response) ?: return NrasVerification.Inconclusive("unrecognized NRAS response")
+        val jwt = overallJwt(response) ?: return NrasVerification.Failed("unrecognized NRAS response")
         checkToken(jwt, payloadNonce)?.let { return it }
-        val verdict = overallVerdict(response) ?: return NrasVerification.Inconclusive("unrecognized NRAS response")
+        val verdict = overallVerdict(response) ?: return NrasVerification.Failed("unrecognized NRAS response")
         if (!verdict) { log("[nras] NVIDIA verdict: FAIL"); return NrasVerification.Failed("NVIDIA attestation verdict: FAIL") }
         log("[nras] GPU attestation verified — verdict PASS, nonce matched")
         return NrasVerification.Verified
@@ -140,7 +148,7 @@ class NrasService(
             ?.let { runCatching { Json.parseToJsonElement(String(it, Charsets.UTF_8)) as? JsonObject }.getOrNull() }
         val claims = decodeJwtClaims(jwt)
         val signature = segments.takeIf { it.size == 3 }?.let { base64UrlDecode(it[2]) }
-        if (header == null || claims == null || signature == null) return NrasVerification.Inconclusive("unrecognized NRAS token")
+        if (header == null || claims == null || signature == null) return NrasVerification.Failed("unrecognized NRAS token")
         if (string(header, "alg") != "ES384") return NrasVerification.Failed("NRAS token is not ES384-signed")
         val kid = string(header, "kid") ?: return NrasVerification.Failed("NRAS token names no signing key")
         if (string(claims, "iss") != ISSUER) return NrasVerification.Failed("NRAS token issuer is not NVIDIA")

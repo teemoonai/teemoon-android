@@ -1,4 +1,4 @@
-// ports: teemoon/Providers/ProviderKeyValidator.swift @ v1.0.5 (Endpoint + ValidationResult, and the OpenRouter key URL)
+// ports: teemoon/Providers/ProviderKeyValidator.swift @ v1.1.0 (Endpoint + ValidationResult, and the OpenRouter key URL)
 package ai.teemoon.providers
 
 /**

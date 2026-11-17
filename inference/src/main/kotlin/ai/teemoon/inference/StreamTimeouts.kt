@@ -1,4 +1,4 @@
-// ports: teemoon/Inference/StreamStallWatchdog.swift @ 8780c32 — REBUILD over OkHttp/Okio timeouts
+// ports: teemoon/Inference/StreamStallWatchdog.swift @ v1.1.0 — REBUILD over OkHttp/Okio timeouts
 //
 // Two different waits on a chat request. Before headers, a free-tier queue (NVIDIA held glm-5.3-flash 253–282 s,
 // 2026-10-19) is still a live request, so the wait is long. After headers, bytes that stop for [STREAM_IDLE_MS] mean

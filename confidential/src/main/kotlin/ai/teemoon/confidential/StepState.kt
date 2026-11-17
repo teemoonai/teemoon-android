@@ -2,4 +2,5 @@
 package ai.teemoon.confidential
 
 /** Resolution state of a single verification step. */
-enum class StepState { DONE, LIVE, PENDING, STUCK }
+/** UNCHECKED: a check that couldn't run (an Intel outage) — the orange "couldn't check" mark, never a pass (trust-unchecked-glyph). */
+enum class StepState { DONE, LIVE, PENDING, STUCK, UNCHECKED }

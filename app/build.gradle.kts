@@ -1,3 +1,5 @@
+import java.io.File
+import java.security.MessageDigest
 import java.util.Properties
 
 plugins {
@@ -41,8 +43,8 @@ android {
         // teemoon-ios a411f18; drift 0 since 2026-10-02, kit 0.5.0) — and versionCode is that release's iOS build
         // number × 100 + the beta number, 99 for the release itself. 1.0.4 is iOS build 38: 1.0.4-beta.1 → 3801, beta.2 → 3802,
         // 1.0.4 → 3899, and iOS's next build starts above both, so Play's codes only ever rise.
-        versionCode = 3917   // 1.0.6 beta (internal track): the near.ai signature verifier (ed25519 against the quote-bound key, gateway at most GatewayTrustOnly, NRAS JWT checked, TCB allow-list) and the 1.0.6 performance work — kept on-device conversation, shared connection pool, late reply-signature check, day-resolved {{datetime}} with the minute on the turn, Fireworks session affinity, streamed markdown recomposing only the typed block, Think Harder on the newest reply (high effort, 8192 out), low effort by default, per-turn "[Sent at …]" notes and {{date}}, a 600 s header wait (iOS 1.0.6 build 45) (3917); 1.0.5: saved Fireworks setups on kimi-k2p6 move to kimi-k3 with a notice (3916, iOS 5d2fb66); the developer card shows decode and prefill for on-device turns, no drafter asked of the 8 Elite NPU (3914); 1.0.4 on LiteRT-LM 0.18.0 / LiteRT 2.3.0 (3913); 1.0.4 with the 2026-10-13/14 audit fixes: key hygiene, notification channels, clipboard expiry, seeding gate (3912); 3911 1.0.4 pinned dark and running LiteRT as iOS does (thinking off, 4800 cap), search payload sized to the bundle's window (3911); 3910 the first verified rebuild; 3908 the Play review build; 3899 the first 1.0.4
-        versionName = "1.0.6"
+        versionCode = 3918   // 1.1.0: import chats from near.ai private chat (IMPORT_NEAR.md draft 8), a chat named once by its first question, the sources chip under a reply that thinks (iOS 2fd9f7e) (3918); 1.0.6 (internal track, then production): the near.ai signature verifier (ed25519 against the quote-bound key, gateway at most GatewayTrustOnly, NRAS JWT checked, TCB allow-list) and the 1.0.6 performance work — kept on-device conversation, shared connection pool, late reply-signature check, day-resolved {{datetime}} with the minute on the turn, Fireworks session affinity, streamed markdown recomposing only the typed block, Think Harder on the newest reply (high effort, 8192 out), low effort by default, per-turn "[Sent at …]" notes and {{date}}, a 600 s header wait (iOS 1.0.6 build 45) (3917); 1.0.5: saved Fireworks setups on kimi-k2p6 move to kimi-k3 with a notice (3916, iOS 5d2fb66); the developer card shows decode and prefill for on-device turns, no drafter asked of the 8 Elite NPU (3914); 1.0.4 on LiteRT-LM 0.18.0 / LiteRT 2.3.0 (3913); 1.0.4 with the 2026-10-13/14 audit fixes: key hygiene, notification channels, clipboard expiry, seeding gate (3912); 3911 1.0.4 pinned dark and running LiteRT as iOS does (thinking off, 4800 cap), search payload sized to the bundle's window (3911); 3910 the first verified rebuild; 3908 the Play review build; 3899 the first 1.0.4
+        versionName = "1.1.0"
         testInstrumentationRunner = "ai.teemoon.app.TeemoonTestRunner"   // arms UiTestSeeding (UiTestSeeding.armed)
     }
     // The one emulator job (CONTRIBUTING.md): `./gradlew pixelDebugAndroidTest` runs the device suites on a
@@ -52,6 +54,8 @@ android {
         // Steady frames for the screen crawl and the capture suites: a screenshot taken mid-transition is a
         // screenshot of nothing in particular, and a golden recorded from one is worse.
         animationsDisabled = true
+        // Robolectric reads the merged manifest (the compose test rule's ComponentActivity, debug only) and resources
+        unitTests.isIncludeAndroidResources = true
         managedDevices {
             localDevices {
                 create("pixel") {
@@ -125,7 +129,11 @@ android {
         }
     }
     // buildConfig: BuildConfig.DEBUG gates DebugDiagnostics (StrictMode, JankStats) to debug builds.
-    buildFeatures { compose = true; buildConfig = true }
+    buildFeatures { compose = true; buildConfig = true; aidl = true }
+    // The isolated image decoder's Wuffs (IMAGES.md §2, the maintainer 2026-10-25). Both versions pinned: the reproducible build
+    // depends on the same NDK and CMake on every machine that builds a release.
+    ndkVersion = "27.2.12479018"
+    externalNativeBuild { cmake { path = file("src/main/cpp/CMakeLists.txt"); version = "3.22.1" } }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -161,7 +169,23 @@ baselineProfile {
 }
 // The plugin wires that directory into `release` only; `benchmark` must carry the same profile or StartupBenchmark's
 // Partial run measures a build users never get. (nonMinifiedRelease stays without it: generation starts from nothing.)
+// MigrationTestHelper reads the exported Room schemas as assets (ChatMigrationTest).
+android.sourceSets.getByName("androidTest").assets.directories.add("$rootDir/chat/schemas")
 android.sourceSets.getByName("benchmark").baselineProfiles.directories.add("src/main/generated/baselineProfiles")
+// The store this build is for (the maintainer 2026-11-01: the rating prompt in 1.1, the APK free of Google Play libraries). `-Pteemoon.store=play`
+// is the Play bundle, with Play In-App Review (src/store-play + src/play-review). Anything else, the default, is the
+// GitHub APK and every local build: src/store-github's no-op and no Google Play library on the classpath at all. A
+// property, not product flavours, so every task name, output path and REPRODUCIBLE.md's recipe stay as they were.
+val playStore = project.findProperty("teemoon.store") == "play"
+android.sourceSets.getByName("main").kotlin.directories.addAll(
+    if (playStore) listOf("src/store-play/kotlin", "src/play-review/kotlin") else listOf("src/store-github/kotlin"))
+// the Play half is tested on every run (JVM: the rule and a refused request; device: FakeReviewManager), whichever
+// store the build is for
+android.sourceSets.getByName("test").kotlin.directories.add("src/play-review/kotlin")
+if (!playStore) android.sourceSets.getByName("androidTest").kotlin.directories.add("src/play-review/kotlin")
+
+// Robolectric's Android runtime jar, resolved here and handed to the tests offline (ROBOLECTRIC, below)
+val robolectricRuntime: Configuration = configurations.create("robolectricRuntime") { isCanBeConsumed = false; isTransitive = false }
 
 dependencies {
     implementation(project(":chat"))
@@ -188,11 +212,22 @@ dependencies {
     implementation(libs.androidx.metrics.performance)   // JankStats; debug builds only at runtime (DebugDiagnostics)
     implementation(libs.markdown.renderer.m3)   // the markdown renderer (CONTRIBUTING.md allowlist): lists, tables, code, quotes — Textual's role on iOS   // list.bullet / gear / plus / xmark / lock / search / check
 
+    if (playStore) implementation(libs.play.review)
+    testImplementation(libs.play.review)
+    androidTestImplementation(libs.play.review)
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    // The motion check (MotionCheck*): Compose UI tests on the JVM, stepped a frame at a time. Test scope only; the
+    // release runtime classpath is unchanged (proved by a dependency report diff in the commit that added it).
+    testImplementation(libs.robolectric)
+    testImplementation(platform(libs.compose.bom))
+    testImplementation(libs.compose.ui.test.junit4)
+    "robolectricRuntime"(libs.robolectric.android.all)
     androidTestImplementation(libs.androidx.test.runner)
     // The kit's quotes/collateral classes, proved against the real dcap-qvl engine on the device.
+    testImplementation(project(":conformance"))   // the import corpus (ChatImportRunnerTest)
     androidTestImplementation(project(":conformance"))
+    androidTestImplementation(libs.room.testing)   // ChatMigrationTest: MigrationTestHelper over chat/schemas
     androidTestImplementation(libs.androidx.test.junit)
     androidTestImplementation(platform(libs.compose.bom))
     // Diagnostic only (OnDeviceDecodeBenchTest): :ondevice keeps the runtime `implementation`, so the flags it exposes
@@ -228,10 +263,77 @@ val behaviorLedger = tasks.register<Exec>("behaviorLedger") {
 }
 
 tasks.named("check") { dependsOn(behaviorLedger) }
+
+/*
+ * ROBOLECTRIC, offline and pinned (approved via pm, 2026-11-14; pins are option B until full dependency
+ * verification lands after 1.1.0). Robolectric fetches its Android runtime jar from Maven at test time unless told
+ * otherwise: Gradle resolves it here instead and the tests run with robolectric.offline, so `./gradlew test` makes no
+ * network call. verifyRobolectricPins fails the unit run when any artifact Robolectric brings (its whole subgraph on the
+ * unit-test classpath, plus the runtime jar) is missing from gradle/robolectric-pins.txt or has another sha256.
+ * Re-pin after a deliberate bump: ./gradlew --no-daemon :app:verifyRobolectricPins -Pteemoon.repinRobolectric=true
+ */
+val robolectricJars = tasks.register<Sync>("robolectricJars") {
+    from(robolectricRuntime)
+    into(layout.buildDirectory.dir("robolectric-jars"))
+}
+val verifyRobolectricPins = tasks.register("verifyRobolectricPins") {
+    group = "verification"
+    description = "Robolectric's artifacts against gradle/robolectric-pins.txt (sha256)"
+    val cfg = configurations.named("debugUnitTestRuntimeClasspath")
+    val rootComponent = cfg.flatMap { it.incoming.resolutionResult.rootComponent }
+    // external modules only: a project dependency (:chat, :inference …) is this repo's own code, and selecting its artifact
+    // with no artifact type is ambiguous
+    val artifacts = cfg.flatMap { c -> c.incoming.artifactView { componentFilter { it is org.gradle.api.artifacts.component.ModuleComponentIdentifier } }.artifacts.resolvedArtifacts }
+    val runtimeJars = robolectricRuntime.incoming.artifacts.resolvedArtifacts
+    val pins = rootProject.file("gradle/robolectric-pins.txt")
+    val repin = providers.gradleProperty("teemoon.repinRobolectric").map { it == "true" }.orElse(false)
+    outputs.upToDateWhen { false }
+    doLast {
+        val reach = mutableSetOf<org.gradle.api.artifacts.component.ComponentIdentifier>()
+        fun walk(c: org.gradle.api.artifacts.result.ResolvedComponentResult) {
+            if (reach.add(c.id)) c.dependencies.filterIsInstance<org.gradle.api.artifacts.result.ResolvedDependencyResult>().forEach { walk(it.selected) }
+        }
+        rootComponent.get().dependencies.filterIsInstance<org.gradle.api.artifacts.result.ResolvedDependencyResult>().map { it.selected }
+            .filter { (it.id as? org.gradle.api.artifacts.component.ModuleComponentIdentifier)?.let { m -> m.group == "org.robolectric" && m.module == "robolectric" } == true }
+            .forEach(::walk)
+        check(reach.isNotEmpty()) { "org.robolectric:robolectric is not on the unit-test classpath" }
+        fun sha(f: File) = MessageDigest.getInstance("SHA-256").digest(f.readBytes()).joinToString("") { b -> "%02x".format(b) }
+        val now = (artifacts.get().filter { it.id.componentIdentifier in reach } + runtimeJars.get())
+            .map { "${it.id.componentIdentifier.displayName} ${it.file.name} ${sha(it.file)}" }.toSortedSet()
+        if (repin.get()) { pins.writeText("# Robolectric's artifacts and their sha256 (app/build.gradle.kts: verifyRobolectricPins)\n" + now.joinToString("\n") + "\n"); return@doLast }
+        val pinned = if (pins.exists()) pins.readLines().filter { it.isNotBlank() && !it.startsWith("#") }.toSortedSet() else sortedSetOf()
+        val changed = (now - pinned).map { "not pinned or changed: $it" } + (pinned - now).map { "pinned, not resolved: $it" }
+        check(changed.isEmpty()) { "Robolectric pins differ (gradle/robolectric-pins.txt):\n" + changed.joinToString("\n") }
+    }
+}
+tasks.withType<Test>().configureEach {
+    dependsOn(verifyRobolectricPins, robolectricJars)
+    systemProperty("robolectric.offline", "true")
+    systemProperty("robolectric.dependency.dir", layout.buildDirectory.dir("robolectric-jars").get().asFile.absolutePath)
+}
 // AGP registers the unit-test tasks lazily, so `tasks.named("test")` does not resolve at
 // configuration time. withType catches testDebugUnitTest / testReleaseUnitTest — the tasks
 // `./gradlew test` actually runs.
 tasks.withType<Test>().configureEach { dependsOn(behaviorLedger) }
+
+/*
+ * THE MOTION CHECK RUNS IN ITS OWN JVM. Robolectric and Paparazzi each swap in their own Android, and once a Robolectric
+ * test had run in a test JVM every Paparazzi test after it failed ("Failed to init Bridge"): the unit gate stayed green
+ * only by the order the classes happened to run in. The unit tasks leave ai.teemoon.app.motion out; this task runs it,
+ * from the debug unit test's classes, and `test` (what merge_on_green and CONTRIBUTING.md run) depends on it.
+ */
+val motionCheck = tasks.register<Test>("testDebugMotionCheck") {
+    group = "verification"
+    description = "The motion check (Robolectric), apart from Paparazzi's JVM"
+    val unit = tasks.named<Test>("testDebugUnitTest")
+    testClassesDirs = files(unit.map { it.testClassesDirs })
+    classpath = files(unit.map { it.classpath })
+    include("ai/teemoon/app/motion/**")
+    dependsOn(unit.map { it.dependsOn })
+    useJUnit()
+}
+tasks.withType<Test>().matching { it.name.endsWith("UnitTest") }.configureEach { exclude("ai/teemoon/app/motion/**") }
+tasks.matching { it.name == "test" }.configureEach { dependsOn(motionCheck) }
 
 /*
  * THE SNAPSHOT GATE, on `check` — for the reason above, found the hard way on 2026-09-21.

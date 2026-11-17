@@ -47,7 +47,8 @@ class CollateralHttpException(val status: Int, val host: String, val path: Strin
 class OkHttpCollateralHttp(private val client: OkHttpClient = TeemoonHttp.builder().callTimeout(30, TimeUnit.SECONDS).build()) : CollateralHttpClient {
     override suspend fun get(url: String): Pair<ByteArray, Map<String, String>> = withContext(Dispatchers.IO) {
         val u = URI(url)
-        val resp = try { client.newCall(Request.Builder().url(url).get().build()).execute() } catch (e: Exception) { throw CollateralHttpException(-1, u.host ?: url, u.path ?: "") }
+        // only the network is "no response"; anything else is not an outage and must not ride its soft path (iOS e406bb96)
+        val resp = try { client.newCall(Request.Builder().url(url).get().build()).execute() } catch (e: java.io.IOException) { throw CollateralHttpException(-1, u.host ?: url, u.path ?: "") }
         resp.use {
             if (it.code !in 200..299) throw CollateralHttpException(it.code, u.host ?: "", u.path ?: "")
             val headers = HashMap<String, String>(); for (name in it.headers.names()) it.header(name)?.let { v -> headers[name] = v }
@@ -65,6 +66,10 @@ sealed class CollateralException(message: String) : Exception(message) {
     object QuoteMissingPckChain : CollateralException("quote does not embed a PCK certificate chain (cert_type != 5)")
     class MissingHeader(name: String) : CollateralException("PCS response missing header $name")
     class MalformedResponse(what: String) : CollateralException("malformed PCS response: $what")
+    /** The quote itself can't be parsed: evidence about the quote, not an Intel outage — stays hard. */
+    class QuoteUnreadable(what: String) : CollateralException("quote can't be parsed: $what")
+    /** The quote's own FMSPC or CA can't name collateral: a fault in the quote, not in Intel — hard (iOS e406bb96). */
+    class QuoteFieldsInvalid(what: String) : CollateralException("quote fields can't name collateral: $what")
 }
 
 /**
@@ -91,10 +96,11 @@ class IntelPcsCollateralProvider(
 
     /** The fields, before serialization — what the tests compare byte-exact per field, since JSON key order is not the contract. */
     suspend fun collateralFields(rawQuote: ByteArray): Map<String, String> {
-        val quote = try { QuoteParser.parse(rawQuote) } catch (e: QuoteParseException) { throw CollateralException.MalformedResponse("quote: ${e.message}") }
+        val quote = try { QuoteParser.parse(rawQuote) } catch (e: QuoteParseException) { throw CollateralException.QuoteUnreadable("${e.message}") }
         // near.ai quotes embed the PCK chain (cert_type 5); the encrypted-PPID PCK lookup path is deliberately unsupported (fail-closed).
         val pck = PckCertInfo.from(quote) ?: throw CollateralException.QuoteMissingPckChain
         val tee = "tdx"
+        PckCertInfo.requireCollateralFields(pck.fmspc, pck.ca)
         val shared = fmspcFields(pck.fmspc, pck.ca, tee)
         return shared + ("pck_certificate_chain" to pck.certChainPem)
     }

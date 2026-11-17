@@ -56,6 +56,7 @@ class ProvenanceVerifierTest {
                 is ImageProvenance.Reason.SignatureInvalid -> "signatureInvalid"
                 is ImageProvenance.Reason.CertificateChainInvalid -> "certificateChainInvalid"
                 is ImageProvenance.Reason.IdentityNotTrusted -> "identityNotTrusted"
+                is ImageProvenance.Reason.IdentityNotThisBuild -> "identityNotThisBuild"
                 is ImageProvenance.Reason.DigestMismatch -> "digestMismatch"
                 is ImageProvenance.Reason.FetchFailed -> "fetchFailed"
                 is ImageProvenance.Reason.FetchTransient -> "fetchTransient"

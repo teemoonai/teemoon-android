@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What the app's FileProvider may hand to another app, on the user's own action only (IMAGES.md §5 share, §4 camera):
+     re-encoded attachment files, and the camera's capture target. Nothing else in the data directory. -->
+<paths>
+    <files-path name="attachments" path="attachments/" />
+    <cache-path name="camera" path="camera/" />
+</paths>

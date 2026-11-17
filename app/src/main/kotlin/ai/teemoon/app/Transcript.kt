@@ -1,7 +1,7 @@
 // ports: teemoon/Views/Chat/TranscriptViewport.swift @ v1.0.1 (TranscriptAnchorGeometry, TranscriptViewport.resolve),
 //        teemoon/Views/Chat/TranscriptHandoffSizing.swift @ v1.0.1, teemoon/Views/Chat/TranscriptRowHeightCache.swift @ v1.0.1,
 //        teemoon/Views/Chat/TranscriptApplyPolicy.swift @ v1.0.1, teemoon/Views/Chat/FreshStartRule.swift @ v1.0.1 (FreshStart),
-//        teemoon/Views/Chat/FollowGlide.swift @ v1.0.1
+//        teemoon/Views/Chat/FollowGlide.swift @ 5d37f9c2 (the jump rule)
 //
 // The transcript CONTRACT (docs/UIKIT_TRANSCRIPT.md): the formulas the
 // UIKit transcript obeys, as pure values. The Compose transcript is a human
@@ -105,5 +105,15 @@ data class FollowGlide(val from: Double, val to: Double, val start: Double, val 
         const val FOLLOW_GLIDE_DURATION = 0.12
         fun shouldStart(delta: Double, mode: PinMode) = mode == PinMode.THROTTLED && delta > START_THRESHOLD
         fun shouldRetarget(delta: Double) = delta > RETARGET_THRESHOLD
+        /**
+         * Above this the glide is eased, fixed-length and never re-issued. A turn-start move is a reserve, not a wrap;
+         * restarting the linear glide against it at every 40 ms pin reads as judder (iOS TranscriptHandoffTests). On
+         * Android the send's prompt anchor ran its whole travel in the wrap's 120 ms, linear: 763 dp at 102 dp a frame
+         * (motion-pass item 2).
+         */
+        const val JUMP_THRESHOLD = 80.0
+        /** TranscriptCollectionView.jumpGlideDuration: a reserve-sized move takes the keyboard's 0.25 s, smoothstep. */
+        const val JUMP_GLIDE_DURATION = 0.25
+        fun isJump(delta: Double) = delta > JUMP_THRESHOLD
     }
 }

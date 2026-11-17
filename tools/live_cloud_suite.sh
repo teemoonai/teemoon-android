@@ -39,8 +39,11 @@ done
 echo "staged $staged key file(s) on $ANDROID_SERIAL"
 # LIVE_TEST=<method> runs one case; OLLAMA_ENDPOINT/OLLAMA_MODEL point L2 and the Ollama search case elsewhere
 # (default: the Mac's own Ollama at 10.0.2.2; a phone with Tailscale takes the tailnet name).
+# LIVE_ARGS="k=v k=v" passes instrumentation arguments through (cache_preset, cache_model, cache_plain_chat).
+RUNNER_ARGS=()
+for kv in ${LIVE_ARGS:-}; do RUNNER_ARGS+=("-Pandroid.testInstrumentationRunnerArguments.$kv"); done
 ./gradlew -q :app:connectedDebugAndroidTest \
   "-Pandroid.testInstrumentationRunnerArguments.class=ai.teemoon.app.LiveCloudTurnsTest${LIVE_TEST:+#$LIVE_TEST}" \
   ${OLLAMA_ENDPOINT:+"-Pandroid.testInstrumentationRunnerArguments.ollamaEndpoint=$OLLAMA_ENDPOINT"} \
   ${OLLAMA_MODEL:+"-Pandroid.testInstrumentationRunnerArguments.ollamaModel=$OLLAMA_MODEL"} \
-  -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true $GX
+  ${RUNNER_ARGS[@]+"${RUNNER_ARGS[@]}"} -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true $GX

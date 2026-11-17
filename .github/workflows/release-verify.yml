@@ -35,6 +35,8 @@ jobs:
         with:
           distribution: temurin
           java-version: '25'
+      - name: NDK r27c and CMake 3.22.1, pinned (the isolated image decoder's Wuffs; sdkmanager checks each package's checksum)
+        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --install "ndk;27.2.12479018" "cmake;3.22.1" > /dev/null
       - uses: gradle/actions/setup-gradle@v4
       - name: rebuild the tag
         run: ./gradlew -q :app:bundleRelease -Pteemoon.abi=arm64
@@ -44,10 +46,13 @@ jobs:
           echo "a099cfa1543f55593bc2ed16a70a7c67fe54b1747bb7301f37fdfd6d91028e29  bundletool.jar" | sha256sum -c
           java -jar bundletool.jar build-apks --bundle=app/build/outputs/bundle/release/app-release.aab --output=out.apks --mode=universal
           unzip -p out.apks universal.apk > rebuilt.apk
+      - name: no Google Play libraries in the rebuilt APK (the maintainer 2026-11-01)
+        run: python3 tools/check_store.py github rebuilt.apk
       - name: download the released APK
         run: |
           mkdir release && gh release download "$TAG" --pattern 'teemoon-*.apk' --dir release
           ls -la release
+          python3 tools/check_store.py github release/teemoon-*.apk
       - name: compare
         id: cmp
         run: |

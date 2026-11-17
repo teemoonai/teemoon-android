@@ -50,6 +50,15 @@ class StreamStallTest {
         assertEquals("Hello", partial)
     }
 
+    /**
+     * An image turn's upload (the earlier images ride along) may pause on a phone's uplink: OkHttp's 10 s write default
+     * failed the maintainer's fourth image message on every retry (2026-10-28). The upload's idle bound is the header wait, as
+     * iOS's timeoutIntervalForRequest covers both.
+     */
+    @Test fun anUploadThatPausesIsNotCutAtOkHttpsTenSecondDefault() {
+        assertEquals(StreamTimeouts.HEADER_WAIT_MS, OpenAiTransport.chatClient().writeTimeoutMillis.toLong())
+    }
+
     @Test fun aStreamThatStopsAfterHeadersTimesOut() = runBlocking {
         serve(headerDelayMs = 0, stallAfterFirstLine = true)
         var partial = ""

@@ -1,9 +1,8 @@
 // ports: teemoon/Inference/HTTPTransport.swift @ v1.0.4 (the truncated-prompt warning's text and its provider name)
 //
-// ANDROID DIVERGENCE, recorded in docs/ANDROID_NATIVE.md: iOS writes this to `logger.warning`, where only a console
-// attached to the device ever sees it. Here it rides `StreamCallbacks.onWarning` and reaches the user, because the
-// thing it is telling them — your server is silently dropping the front of every prompt — is something only they
-// can fix, and a log they cannot read cannot ask them to.
+// iOS writes this to `logger.warning`. Here it rides `StreamCallbacks.onWarning` and the app LOGS it (TurnWarnings), as
+// iOS does; it is not shown. Until 1.1.0 this header said it reached the user — it never did: the app collected it into
+// a state nothing read (audit gardener #1, 2026-10-25). Showing it would be new on both platforms.
 package ai.teemoon.inference
 
 import org.junit.Assert.assertEquals

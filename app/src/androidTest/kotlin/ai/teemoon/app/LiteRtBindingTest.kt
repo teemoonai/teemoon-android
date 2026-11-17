@@ -68,7 +68,7 @@ class LiteRtBindingTest {
         try {
             val spec = LocalConversationSpec(systemMessage = null, history = emptyList(), tools = listOf(tool),
                 userText = "Use web_search to find the weather in Paris right now, then tell me.", maxOutputTokens = 96,
-                enableThinking = false, temperature = 0f)
+                enableThinking = false)
             engine.stream(spec) { text.append(it) }
         } finally { engine.close() }
         log("tool calls=$calls reply=${text.toString().take(200)}")

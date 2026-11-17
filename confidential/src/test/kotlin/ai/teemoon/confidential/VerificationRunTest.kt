@@ -176,8 +176,8 @@ class VerificationRunTest {
     }
 
     @Test fun outOfDateTcb_passesNotFlags() {
-        // TLS + provenance resolved so no pending section keeps the run "running".
-        val s = summary(imageProvenance = allVerifiedEmpty,
+        // TLS, provenance and the engine resolved so no pending step keeps the run "running".
+        val s = summary(imageProvenance = allVerifiedEmpty, modelLayerVerification = ModelLayerVerification.VERIFIED,
             dcap = RecordDcapVerification(gateway = verified(DcapTcbStatus.OUT_OF_DATE)), tls = TlsAttestation.NotPerformed)
         // Genuine hardware behind on Intel platform updates is a note, not a
         // warning — the quote still proves real sealed silicon and the E2EE
@@ -190,6 +190,23 @@ class VerificationRunTest {
         val s = summary(dcap = RecordDcapVerification(gateway = verified(DcapTcbStatus.UP_TO_DATE)), tls = null)   // TLS still in flight
         assertEquals(SectionResult.RUNNING, section(s, "tls")?.result)
         assertEquals(SectionResult.RUNNING, s.runResult)
+    }
+
+    /** T1 (pm sweep 2026-11-06): a pending step among passes is not a pass — [pass, pending, pass] rolled up PASSED. */
+    @Test fun aPendingQuoteAmongPassesKeepsTheSectionRunning() {
+        val s = summary(dcap = null, nras = NrasVerification.Verified, tls = TlsAttestation.Verified)
+        val model = section(s, "model")!!
+        assertTrue(model.steps.any { it.label == "hardware quote" && it.status == RunStepStatus.PENDING })
+        assertEquals(SectionResult.RUNNING, model.result)
+        assertEquals(SectionResult.RUNNING, s.runResult)
+    }
+
+    /** T1: a DCAP answer with neither quote verified must still show the quote as unanswered, not drop the step. */
+    @Test fun aDcapAnswerWithNoQuoteVerdictStillShowsTheQuoteStep() {
+        val s = summary(dcap = RecordDcapVerification(), nras = NrasVerification.Verified, tls = TlsAttestation.Verified)
+        val model = section(s, "model")!!
+        assertTrue(model.steps.any { it.label == "hardware quote" && it.status == RunStepStatus.PENDING })
+        assertEquals(SectionResult.RUNNING, model.result)
     }
 
     @Test fun directOnlyPath_hasNoGatewaySection() {
@@ -263,7 +280,7 @@ class VerificationRunTest {
 
     /** A flagged section (TLS inconclusive) rolls up to FLAGGED, which the hero reads as advisory — the OPEN this row closes. */
     @Test fun inconclusiveTlsFlagsTheRunAndDemotesTheHero() {
-        val s = summary(imageProvenance = allVerifiedEmpty,
+        val s = summary(imageProvenance = allVerifiedEmpty, modelLayerVerification = ModelLayerVerification.VERIFIED,
             dcap = RecordDcapVerification(gateway = verified(DcapTcbStatus.UP_TO_DATE)),
             tls = TlsAttestation.Inconclusive("verifier unreachable"))
         val tls = section(s, "tls")!!
@@ -307,10 +324,11 @@ class VerificationRunTest {
         val dcapFailed = section(summary(dcap = RecordDcapVerification(gateway = DcapVerification.Failed("no collateral"))), "model")!!
         assertEquals(SectionResult.FAILED, dcapFailed.result)
         assertEquals("no collateral", dcapFailed.steps.first { it.label == "hardware quote" }.detail)
-        // Pending DCAP is a pending step; the bindings still pass, so the section passes rather than "runs".
+        // Pending DCAP is a pending step, and the section runs until it answers: passing bindings don't make an
+        // unanswered quote a pass (T1, 2026-11-06 — this used to assert PASSED).
         val pendingDcap = section(summary(), "model")!!
         assertEquals(RunStepStatus.PENDING, pendingDcap.steps.first { it.label == "hardware quote" }.status)
-        assertEquals(SectionResult.PASSED, pendingDcap.result)
+        assertEquals(SectionResult.RUNNING, pendingDcap.result)
     }
 
     @Test fun stepAndLinkIdsAreStable() {

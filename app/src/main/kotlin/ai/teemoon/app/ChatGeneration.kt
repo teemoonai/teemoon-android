@@ -1,5 +1,5 @@
 // ports: teemoon/Inference/ChatGeneration.swift @ v1.0.4 (the per-turn state; generate()'s prologue and epilogue),
-//        teemoon/Inference/ChatGeneration+SearchOffer.swift @ v1.0.1,
+//        teemoon/Inference/ChatGeneration+SearchOffer.swift @ 8494cdb9,
 //        teemoon/Inference/ChatGeneration+Stream.swift @ v1.0.1 (the callback folds; the model factory is GenerationEngine's transport seam),
 //        teemoon/Inference/ChatGeneration+Transcript.swift @ 224ec87,
 //        teemoon/Inference/LastRequestDebugInfo.swift @ v1.0.1 (LastRequestDebugInfo; ToolCallRecord is in :inference)
@@ -21,6 +21,7 @@ import ai.teemoon.inference.LlmError
 import ai.teemoon.inference.PromptBudget
 import ai.teemoon.inference.RequestResult
 import ai.teemoon.inference.Tool
+import ai.teemoon.inference.WebSearchOfferTool
 import ai.teemoon.inference.ToolCallRecord
 import ai.teemoon.inference.TurnPhase
 import ai.teemoon.inference.WireMessage
@@ -98,6 +99,11 @@ data class LastRequestDebugInfo(
 
 class ChatGeneration {
     @Volatile var running = false
+    /**
+     * Which turn is current: bumped by every [beginTurn]. A callback that outlives its turn's coroutine — an on-device
+     * tool runs inside LiteRT's loop, not the turn's job — compares the turn it was made for (pm sweep 2026-11-06, G1).
+     */
+    @Volatile var turn = 0L
     @Volatile var cancelled = false
     var output = ""
     var lastError: LlmError? = null
@@ -141,7 +147,7 @@ class ChatGeneration {
     /** generate()'s prologue: everything per-turn is cleared. The offer map, the declined threads and the pending retry are NOT — they outlive a turn. */
     @Synchronized fun beginTurn(nowMs: Long): Boolean {
         if (running) return false
-        running = true; cancelled = false; output = ""
+        running = true; cancelled = false; output = ""; turn += 1
         groundingSources.clear(); searchQueries.clear(); isExecutingTools = false; awaitingTurn = null; providerWait = null
         unconfiguredSearchQuery = null; unconfiguredSearchThreadID = null
         lastError = null; lastErrorThreadID = null; lastRequestDebugInfo = null
@@ -189,19 +195,28 @@ class ChatGeneration {
      * that is the only honest trigger for the offer card. A thread whose offer
      * was declined stops paying for the schema while keyless; once a key
      * exists it attaches again. Built-in grounding never attaches it.
+     *
+     * ON DEVICE the model pays for the schema in prefill, so (the maintainer, 2026-10-28; iOS 8494cdb9): a key with the web chip
+     * off sends nothing, and keyless sends [WebSearchOfferTool], the offer trigger with `query` only. Cloud is unchanged.
      */
-    fun makeGroundingTools(provider: Provider, groundingAPIKey: String?, threadID: String, localContextTokens: Int? = null): List<Tool> {
+    fun makeGroundingTools(provider: Provider, groundingAPIKey: String?, threadID: String, localContextTokens: Int? = null, today: String? = null,
+                           searchTurnedOff: Boolean = false): List<Tool> {
         val offerDeclined = synchronized(this) { threadID in declinedOfferThreadIDs }
         val keyless = groundingAPIKey.isNullOrEmpty()
-        if (ProviderCapability.BUILT_IN_GROUNDING in provider.capabilities || !provider.modelSupportsTools || (keyless && offerDeclined)) return emptyList()
-        // android-only: the payload is sized to the local bundle's window (an NPU bundle's is 4096, compiled in); docs/ANDROID_NATIVE.md.
-        val tool = BraveWebSearchTool(apiKey = groundingAPIKey ?: "", onDevice = provider.isLocal,
-            contextTokens = localContextTokens ?: GroundingBudget.measuredContextTokens)
-        tool.onUnconfiguredSearch = { query ->
+        if (ProviderCapability.BUILT_IN_GROUNDING in provider.capabilities || !provider.modelSupportsTools || (keyless && offerDeclined)
+            || (provider.isLocal && searchTurnedOff)) return emptyList()
+        val madeFor = turn
+        val onUnconfiguredSearch: (String) -> Unit = { query ->
             synchronized(this) {
-                if (unconfiguredSearchQuery == null) { unconfiguredSearchQuery = query; unconfiguredSearchThreadID = threadID }
+                // a stopped turn's search, still running on the device, raises no offer in the next turn
+                if (turn == madeFor && unconfiguredSearchQuery == null) { unconfiguredSearchQuery = query; unconfiguredSearchThreadID = threadID }
             }
         }
+        if (provider.isLocal && keyless) return listOf(WebSearchOfferTool(onUnconfiguredSearch))
+        // android-only: the payload is sized to the local bundle's window (an NPU bundle's is 4096, compiled in); docs/ANDROID_NATIVE.md.
+        val tool = BraveWebSearchTool(apiKey = groundingAPIKey ?: "", onDevice = provider.isLocal,
+            contextTokens = localContextTokens ?: GroundingBudget.measuredContextTokens, today = today)
+        tool.onUnconfiguredSearch = onUnconfiguredSearch
         return listOf(tool)
     }
 
@@ -281,8 +296,8 @@ class ChatGeneration {
         if (lastError == null && !cancelled && output.trim().isEmpty()) {
             val searches = toolCalls.size
             lastError = LlmError(LlmError.Source.Provider(providerName),
-                if (searches > 0) "$providerName ran $searches search${if (searches == 1) "" else "es"} but didn't write an answer. Ask again to retry."
-                else "$providerName returned an empty response. Ask again to retry.",
+                if (searches > 0) "$providerName ran $searches search${if (searches == 1) "" else "es"} but didn't write an answer. ask again to retry."
+                else "$providerName sent an empty answer. ask again to retry.",
                 url = baseURL)
             lastErrorThreadID = threadID
         }
@@ -297,24 +312,22 @@ class ChatGeneration {
             val prior = messages.dropLast(1).filter { it.role != "system" }
             val priorToInclude = if (maxMessages != null) prior.takeLast(maxOf(0, maxMessages - 1)) else prior
             for (message in priorToInclude) when (message.role) {
-                "user" -> wire += WireMessage("user", message.content)
-                "assistant" -> wire += WireMessage("assistant", message.content)
+                "user", "assistant" -> wire += message   // images ride along (IMAGES.md §4); ImageHistory caps them
             }
             return wire
         }
-
-        private val DATE_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("EEEE, MMMM d, yyyy", Locale.getDefault())
-        private val TIME_FORMAT: DateTimeFormatter = DateTimeFormatter.ofPattern("h:mm a", Locale.getDefault())
 
         /**
          * `{{date}}` (and the older `{{datetime}}`, same meaning) resolves to the DAY, never the minute: the system prompt
          * opens every request, and a prefix that changes each minute misses every provider's prompt cache (pm,
          * 2026-10-19: Fireworks cached 0 → 3718 of 3847 tokens on a repeat, and 0 again when only the minute changed).
          * The minute rides on each user turn instead ([timeNote]). On device it is also what lets a kept Conversation
-         * serve the next turn (ConversationReuse).
+         * serve the next turn (ConversationReuse). What the day says is the destination's (DisclosurePolicy.dateLine,
+         * iOS 868edec6): local with the zone named once, or the UTC day — in English either way.
          */
-        fun resolvePromptTemplates(prompt: String, now: ZonedDateTime = ZonedDateTime.now()): String {
-            val day = DATE_FORMAT.format(now)
+        fun resolvePromptTemplates(prompt: String, now: ZonedDateTime = ZonedDateTime.now(),
+                                   disclosure: ai.teemoon.providers.DisclosurePolicy = ai.teemoon.providers.DisclosurePolicy(ai.teemoon.providers.DisclosurePolicy.Tier.PRIVATE, now.zone)): String {
+            val day = disclosure.dateLine(now.toInstant())
             return prompt.replace("{{datetime}}", day).replace("{{date}}", day)
         }
 
@@ -325,8 +338,9 @@ class ChatGeneration {
         /**
          * Appended to a user turn on the wire, never stored: the message's OWN timestamp is the source, so the same turn
          * renders the same bytes on every request (a cached prefix and a kept on-device conversation both depend on it).
+         * As the CURRENT request's [disclosure] renders it, earlier turns too (DisclosurePolicy.sentAt).
          */
-        fun timeNote(sentAtMs: Long, zone: java.time.ZoneId = java.time.ZoneId.systemDefault()): String =
-            "\n\n[Sent at ${TIME_FORMAT.format(java.time.Instant.ofEpochMilli(sentAtMs).atZone(zone))}]"
+        fun timeNote(sentAtMs: Long, disclosure: ai.teemoon.providers.DisclosurePolicy = ai.teemoon.providers.DisclosurePolicy(ai.teemoon.providers.DisclosurePolicy.Tier.PRIVATE)): String =
+            disclosure.sentAt(java.time.Instant.ofEpochMilli(sentAtMs))
     }
 }

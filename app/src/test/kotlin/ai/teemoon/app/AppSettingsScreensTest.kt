@@ -14,6 +14,14 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AppSettingsScreensTest {
+    /** The maintainer 2026-11-13 (card settings-chip-footer): the chip is in the message box since the one-panel composer, not above it. */
+    @Test fun thePlacesFooterSaysWhereTheModelChipIs() =
+        assertEquals("manage hosts and keys here. to switch model mid-chat, tap the model chip in the message box.", SettingsCopy.PLACES_FOOTER)
+
+    /** The same approved phrase on the places & keys page (card settings-chip-footer, pm 2026-11-13). */
+    @Test fun thePlacesPageSaysWhereTheModelChipIs() =
+        assertEquals("to switch model mid-chat, tap the model chip in the message box — not here.", SettingsCopy.PLACES_PAGE_FOOTER)
+
     @Test fun placesSummaryCountsManagedSetups() { assertEquals("none", placesSummary(0)); assertEquals("1 setup", placesSummary(1)); assertEquals("3 setups", placesSummary(3)) }
     @Test fun everyKeyCheckOutcomeHasCopyAndAllButRejectedSayTheKeyIsSaved() {
         for (k in BraveWebSearchTool.KeyCheck.entries) {
@@ -47,11 +55,20 @@ class AppSettingsScreensTest {
             override suspend fun deleteAllMessages() { swept++ }
             override suspend fun deleteMessagesSince(threadId: String, sinceMs: Long) {}
             override suspend fun deleteMessages(ids: List<String>) {}
+            override suspend fun rewriteSentBeforeConfirmed(from: String, to: String?): Int = 0
             override suspend fun setTimestamp(id: String, timestamp: Long) {}
             override suspend fun indexableMessageIds() = emptyList<String>()
             override suspend fun messagesByIds(ids: List<String>) = emptyList<MessageEntity>()
             override fun observePreviews() = flowOf(emptyList<ThreadPreview>())
             override suspend fun threadIdsWithContent(needle: String) = emptyList<String>()
+            override suspend fun threadExists(id: String) = false
+            override suspend fun insertAttachments(attachments: List<ai.teemoon.chat.AttachmentEntity>) {}
+            override suspend fun attachmentsFor(messageIds: List<String>) = emptyList<ai.teemoon.chat.AttachmentEntity>()
+            override fun observeAttachments(threadId: String) = kotlinx.coroutines.flow.flowOf(emptyList<ai.teemoon.chat.AttachmentEntity>())
+            override suspend fun attachmentPaths() = emptyList<String>()
+            override suspend fun setTitleIfNone(id: String, title: String) {}
+            override suspend fun insertThread(thread: ThreadEntity) {}
+            override suspend fun insertMessages(messages: List<MessageEntity>) {}
         }
         ChatRepository(dao).deleteAll()
         assertEquals(2, swept)

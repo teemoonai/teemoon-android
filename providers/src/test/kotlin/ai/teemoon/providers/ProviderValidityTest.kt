@@ -81,7 +81,14 @@ class ProviderValidityTest {
     }
     @Test fun consoleRecovery_nullForUnknownHost() { assertNull(recovery("192.168.1.9", "lab")) }
 
-    @Test fun capabilities_trueForNearAI() { assertTrue(ProviderCapability.ATTESTATION in p("near.ai", "https://cloud-api.near.ai/v1", "test").capabilities) }
+    @Test fun capabilities_trueForNearAI() {
+        assertTrue(ProviderCapability.ATTESTATION in p("near.ai", "https://cloud-api.near.ai/v1", "z-ai/glm-5.3-flash").capabilities)
+        // An id no rule names claims no e2ee until the catalogue says own fleet (iOS 9862a35, audit gardener #7), but its
+        // send still goes through the attested gate, never plain without asking (iOS cdcae74b, pm's option A, 2026-10-31).
+        val unlisted = p("near.ai", "https://cloud-api.near.ai/v1", "test")
+        assertFalse(unlisted.claimsEndToEndEncryption)
+        assertTrue(ProviderCapability.ATTESTATION in unlisted.capabilities)
+    }
     @Test fun capabilities_falseForOtherEndpoints() { assertFalse(ProviderCapability.ATTESTATION in p("OpenAI", "https://api.openai.com/v1").capabilities) }
     @Test fun capabilities_reflectStoredFlags() {
         var provider = p(endpoint = "https://api.example.com/v1", model = "m").copy(supportsModelBrowsing = true, hasBuiltInGrounding = true)

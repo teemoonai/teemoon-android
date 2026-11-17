@@ -27,12 +27,20 @@ class HomeServerProbe(
     private val _infoByProvider = MutableStateFlow<Map<String, Info>>(emptyMap())
     val infoByProvider: StateFlow<Map<String, Info>> get() = _infoByProvider
     private val inFlight = HashSet<String>()
+    /**
+     * Models deleted from a machine while its probe was on the wire. That probe read the server before the delete, so
+     * its answer still lists them; landing as-is, it put the deleted model back in the cache and syncHomeEquipped wrote
+     * the row the user had just removed straight back into the equipped list. Cleared when the probe lands, so the
+     * next probe reports whatever the server then says.
+     */
+    private val forgottenInFlight = HashMap<String, MutableSet<String>>()
     private var isSeeded = false
 
     fun info(provider: Provider): Info? = _infoByProvider.value[provider.id]
 
     /** A model deleted from the machine leaves the cached list too, so the sheet does not re-offer it before the next probe. */
     fun forget(modelID: String, provider: Provider) {
+        forgottenInFlight[provider.id]?.add(modelID)
         val info = _infoByProvider.value[provider.id] ?: return
         _infoByProvider.value = _infoByProvider.value + (provider.id to info.copy(models = info.models?.filter { it != modelID }, warm = info.warm - modelID))
     }
@@ -62,8 +70,11 @@ class HomeServerProbe(
                 val base = provider.openAIBaseUrl ?: continue
                 if (!inFlight.add(provider.id)) continue
                 val key = credential(provider); val header = provider.authHeaderName; val id = provider.id
+                forgottenInFlight[id] = HashSet()
                 async {
-                    val info = probe(base, header, key)
+                    val answer = probe(base, header, key)
+                    val gone = forgottenInFlight.remove(id).orEmpty()
+                    val info = if (gone.isEmpty()) answer else answer.copy(models = answer.models?.filter { it !in gone }, warm = answer.warm - gone)
                     _infoByProvider.value = _infoByProvider.value + (id to info)
                     inFlight.remove(id)
                 }

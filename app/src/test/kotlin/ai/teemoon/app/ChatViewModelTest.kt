@@ -3,6 +3,8 @@
 //        the coroutine Job is awaited directly)
 //        teemoonTests/SendPrepTests.swift @ v1.0.4 (postPrepareRefusalHonoursTheSettledGate); AppStateTests' postPrepareRefusal
 //        halves (9f4aa84, 4ea1dda) ride the send-level cases below
+//        teemoonTests/ConfirmPendingSendAnywayTests.swift @ b05f4d25 (aConfirmationDoesNotCarryOverToADifferentReason) and
+//        @ 535dfae6 (a hard verdict while asked sends nothing)
 package ai.teemoon.app
 
 import ai.teemoon.inference.GenerationTransport
@@ -19,6 +21,7 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.coroutines.test.setMain
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -32,12 +35,18 @@ import ai.teemoon.inference.ToolCallState
 import ai.teemoon.inference.ToolRoundPolicy
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalCoroutinesApi::class)
 class ChatViewModelTest {
+    /** These sessions read the send gate while a near.ai tier is still unknown, run to idle: no tier deadline inside them. */
+    private val TIER_WAITS: Long? = null
+    // NO saved tier list (pm 2026-10-31): a list recorded "seen" here hid a fresh install's plain-TLS near.ai send
+    // (UnseenTierSendGateTest). The gate must hold from the first launch, so every case starts where a new user does.
+
     private val dispatcher = StandardTestDispatcher()
-    @Before fun up() { Dispatchers.setMain(dispatcher) }
-    @After fun down() { Dispatchers.resetMain() }
+    @Before fun up() { Dispatchers.setMain(dispatcher); ai.teemoon.providers.NearAIModelCatalog.tierListSeenOverride = false }
+    @After fun down() { Dispatchers.resetMain(); ai.teemoon.providers.NearAIModelCatalog.tierListSeenOverride = null }
 
     private class Scripted(private val turns: List<TurnResult>) : GenerationTransport {
         var calls = 0
@@ -120,10 +129,50 @@ class ChatViewModelTest {
         assertEquals("what streamed stays", "Jupiter is the largest", s.messages.last().text)
     }
 
+    /** A transport whose first turn holds its read past a stop (a blocked read, an on-device step), then answers. */
+    private class OutlivesTheStop : GenerationTransport {
+        val release = kotlinx.coroutines.CompletableDeferred<Unit>()
+        var calls = 0
+        override suspend fun runTurn(messages: List<Map<String, Any>>, includeTools: Boolean, tools: List<Tool>, onPartial: (String) -> Unit): TurnResult {
+            if (calls++ == 0) { onPartial("partial"); kotlinx.coroutines.withContext(kotlinx.coroutines.NonCancellable) { release.await() }; return TurnResult(content = "partial") }
+            onPartial("the second answer"); return TurnResult(content = "the second answer")
+        }
+    }
+
+    /**
+     * A2 (pm sweep 2026-11-06): stop() settles the screen at once (isStreaming false) while the stopped turn's job
+     * runs until its read returns. A send in that window passed the screen's check, the composer cleared, and the
+     * turn refused to begin: the message was lost. It now waits for the stopped turn, then goes.
+     */
+    @Test fun aSendWhileTheStoppedTurnWindsDownIsNotLost() = runTest(dispatcher) {
+        val transport = OutlivesTheStop()
+        val vm = vm(transport)
+        vm.send("first"); advanceUntilIdle()
+        vm.stop(); advanceUntilIdle()
+        assertTrue("the stop window: settled on screen, the turn still running", !vm.state.value.isStreaming && vm.generation.running)
+        vm.send("second"); advanceUntilIdle()
+        transport.release.complete(Unit); advanceUntilIdle()
+        assertEquals(2, transport.calls)
+        assertEquals(listOf("user" to "first", "assistant" to "partial", "user" to "second", "assistant" to "the second answer"),
+            vm.state.value.messages.map { it.role to it.text })
+    }
+
+    /** A2: retry in the same window deleted the question, then its send refused to begin — the question was gone. */
+    @Test fun aRetryWhileTheStoppedTurnWindsDownKeepsAndAsksTheQuestion() = runTest(dispatcher) {
+        val transport = OutlivesTheStop()
+        val vm = vm(transport)
+        vm.send("first"); advanceUntilIdle()
+        vm.stop(); advanceUntilIdle()
+        vm.retryLastTurn(); advanceUntilIdle()
+        transport.release.complete(Unit); advanceUntilIdle()
+        assertEquals(2, transport.calls)
+        assertEquals(listOf("user" to "first", "assistant" to "the second answer"), vm.state.value.messages.map { it.role to it.text })
+    }
+
     @Test fun emptyReplyBecomesAStatedFailure() = runTest(dispatcher) {
         val vm = vm(Scripted(listOf(TurnResult(content = ""))))
         vm.send("hello"); advanceUntilIdle()
-        assertTrue(vm.state.value.error?.contains("empty response") == true)
+        assertTrue(vm.state.value.error?.contains("empty answer") == true)
         assertEquals(vm.state.value.error, vm.generation.lastError?.userMessage)
         assertEquals("no reply row without output, as iOS", "user", vm.state.value.messages.last().role)
     }
@@ -230,7 +279,7 @@ class ChatViewModelTest {
         val preview = AttestationRecord.preview
         val near = Provider.nearAI.copy(id = preview.providerID, model = preview.model ?: Provider.nearAI.model)
         val session = ConfidentialSession(this, { near }, credentialFor = { "" },
-            services = ConfidentialSession.Services(skipLiveAttestation = true, directBase = { "https://model.example" },
+            services = ConfidentialSession.Services(skipLiveAttestation = true, directBase = { "https://model.example" }, tierDeadlineMs = TIER_WAITS,
                 verifyTls = { delay(300); TlsAttestation.Failed("certificate does not match") }))
         session.attestation = preview
         session.lastRequestUsedE2EE = true
@@ -244,12 +293,335 @@ class ChatViewModelTest {
         assertNull("a refusal is abandoned, not booked as an unsealed request", session.lastRequestUsedE2EE)
     }
 
+    /**
+     * The still-checking question is answered on the SAME reply (reply-machine.json: awaitingConfirm → confirm → requesting;
+     * ios, 2026-11-06): "send anyway" sends the waiting turn — its row, first written "interrupted", ends complete and
+     * carries the pending sent-before-confirmed mark. It used to be a retry: a new reply, and the mark lost.
+     */
+    @Test fun theStillCheckingQuestionIsAnsweredOnTheSameReply() = runTest(dispatcher) {
+        val (vm, dao, transport) = stillChecking()
+        vm.send("hello"); advanceUntilIdle()
+        assertTrue("the question is asked", vm.state.value.hardwareConfirmRequested)
+        assertEquals("nothing sent while it waits", 0, transport.calls)
+        val waiting = dao.messages.single { it.role == "assistant" }
+        assertEquals("interrupted", waiting.status)
+        vm.answerStillChecking(sendIt = true); advanceUntilIdle()
+        assertEquals(1, transport.calls)
+        val reply = dao.messages.single { it.role == "assistant" }
+        assertEquals("the same reply", waiting.id, reply.id)
+        assertEquals("complete", reply.status)
+        assertTrue("marked sent before confirmed: ${reply.sentBeforeConfirmed}", reply.sentBeforeConfirmed?.startsWith("pending|") == true)
+        stillCheckingSession?.clearDerivedState(resetCounts = true)   // the TLS check that never answers
+    }
+
+    /**
+     * "don't send" on a fresh send (reply-machine.json 0.6.1 "returned"; the maintainer's rule via pm, 2026-11-06): the
+     * question leaves the chat and the store, its text goes back to the composer, nothing is sent, no marker shows.
+     */
+    @Test fun dontSendReturnsTheQuestionToTheComposer() = runTest(dispatcher) {
+        val (vm, dao, transport) = stillChecking()
+        vm.send("hello"); advanceUntilIdle()
+        vm.answerStillChecking(sendIt = false); advanceUntilIdle()
+        assertEquals(0, transport.calls)
+        assertTrue("nothing left in the store: ${dao.messages}", dao.messages.none { it.threadId == "t" })
+        assertTrue("nothing left in the chat", vm.state.value.messages.isEmpty())
+        assertEquals("hello", vm.state.value.returnedQuestion?.text)
+        assertNull("a decline shows no card: the user chose not to send (iOS returnGatedQuestion)", vm.state.value.error)
+        vm.returnedQuestionTaken()
+        assertNull(vm.state.value.returnedQuestion)
+        stillCheckingSession?.clearDerivedState(resetCounts = true)
+    }
+
+    /**
+     * "Never destroy a reply the user had" (reply-machine.json 0.6.2; the maintainer's rule via pm, 2026-11-06): a retry
+     * changes nothing on disk until its request goes out. Declined at the still-checking question, the reply the user
+     * already had stands as it was — in the chat and in the store, no marker — and nothing is sent.
+     */
+    @Test fun aDeclinedRetryLeavesTheReplyTheUserHad() = runTest(dispatcher) {
+        val (vm, dao, transport) = stillChecking()
+        val had = listOf(ai.teemoon.chat.MessageEntity("m-1", "t", "user", "hello", 1),
+            ai.teemoon.chat.MessageEntity("a-2", "t", "assistant", "Old answer", 2, status = "complete"))
+        dao.messages += had
+        vm.restore(had)
+        vm.retryLastTurn(); advanceUntilIdle()
+        assertTrue("the question is asked", vm.state.value.hardwareConfirmRequested)
+        assertEquals("nothing written while it waits", had, dao.messages.sortedBy { it.timestamp })
+        vm.answerStillChecking(sendIt = false); advanceUntilIdle()
+        assertEquals(0, transport.calls)
+        assertEquals("the store as it was", had, dao.messages.sortedBy { it.timestamp })
+        assertEquals(listOf("m-1" to "hello", "a-2" to "Old answer"), vm.state.value.messages.map { it.id to it.text })
+        assertNull("no marker", vm.state.value.messages.last().marker)
+        assertFalse(vm.state.value.isStreaming)
+        assertNull("a decline shows no card: the user chose not to send (iOS returnGatedQuestion)", vm.state.value.error)
+        stillCheckingSession?.clearDerivedState(resetCounts = true)
+    }
+
+    /**
+     * A hard verdict that lands while the still-checking question is up (reply-machine.json 0.6.4
+     * lifecycle/hard-verdict-while-awaiting-confirm-sends-nothing): "send" re-reads the gate. Under BLOCK nothing goes
+     * out, the question goes back to the composer (awaitingConfirm × gateRefused) and the existing hard refusal shows.
+     * It used to send: no mark (the verdict was no longer pending), to a host that had just failed its TLS check.
+     */
+    @Test fun aSendAnswerUnderAHardVerdictSendsNothing() = runTest(dispatcher) {
+        val tls = kotlinx.coroutines.CompletableDeferred<TlsAttestation>()
+        val (vm, dao, transport) = stillChecking(tls)
+        vm.send("hello"); advanceUntilIdle()
+        assertTrue("the question is asked", vm.state.value.hardwareConfirmRequested)
+        tls.complete(TlsAttestation.Failed("certificate does not match")); advanceUntilIdle()
+        assertEquals("precondition: the verdict is hard", TrustSendPolicy.BLOCK, stillCheckingSession?.sendPolicy)
+        vm.answerStillChecking(sendIt = true); advanceUntilIdle()
+        assertEquals("nothing reached the wire", 0, transport.calls)
+        assertTrue("no reply row is left", dao.messages.none { it.role == "assistant" })
+        assertEquals("the question returns to the composer", "hello", vm.state.value.returnedQuestion?.text)
+        assertFalse(vm.state.value.hardwareConfirmRequested)
+        assertFalse(vm.state.value.isStreaming)
+        assertEquals("the existing hard refusal shows", postPrepareRefusal(TrustSendPolicy.BLOCK, false, false), vm.state.value.error)
+        stillCheckingSession?.clearDerivedState(resetCounts = true)
+    }
+
+    /**
+     * F4 (sendgate.json 0.5.14 confirmScope; iOS ConfirmPendingSendAnywayTests.aConfirmationDoesNotCarryOverToADifferentReason):
+     * the still-checking answer is for (this record, pending). TLS came back inconclusive while it was up — a different,
+     * soft reason with its own question — and the answer must not carry the send past it.
+     */
+    @Test fun aStillCheckingAnswerDoesNotCarryOverToADifferentReason() = runTest(dispatcher) {
+        val tls = kotlinx.coroutines.CompletableDeferred<TlsAttestation>()
+        // a known tier: since S30 an unknown one is itself pending, and the soft TLS reason would never be the only thing left
+        val model = "zai-org/F4-DIFFERENT-REASON-PROBE"
+        ai.teemoon.providers.NearAIModelCatalog.recordTiers(mapOf(model to ai.teemoon.providers.NearAIModelCatalog.Confidentiality.TEE_OWN))
+        val (vm, dao, transport) = stillChecking(tls, model = model)
+        vm.send("hello"); advanceUntilIdle()
+        assertTrue("the question is asked", vm.state.value.hardwareConfirmRequested)
+        tls.complete(TlsAttestation.Inconclusive("probe unreachable")); advanceUntilIdle()
+        val s = stillCheckingSession!!
+        assertTrue("precondition: a different, soft reason", !s.verdictsPending && s.sendPolicy == TrustSendPolicy.CONFIRM)
+        vm.answerStillChecking(sendIt = true); advanceUntilIdle()
+        assertEquals("the still-checking answer carried the send past an unconfirmed reason", 0, transport.calls)
+        assertTrue("no reply row is left", dao.messages.none { it.role == "assistant" })
+        assertEquals("the question returns to the composer", "hello", vm.state.value.returnedQuestion?.text)
+        s.clearDerivedState(resetCounts = true)
+    }
+
+    /** The question's offered choices follow the live policy, not the gate its screen captured. */
+    @Test fun theStillCheckingQuestionGivesWayToAHardBlock() {
+        assertTrue(asksStillChecking(pendingAsk = true, policy = TrustSendPolicy.CONFIRM))
+        assertTrue(asksStillChecking(pendingAsk = true, policy = TrustSendPolicy.ALLOW))
+        assertFalse("a hard verdict landed: the hard choices", asksStillChecking(pendingAsk = true, policy = TrustSendPolicy.BLOCK))
+        assertFalse(asksStillChecking(pendingAsk = false, policy = TrustSendPolicy.CONFIRM))
+    }
+
+    /**
+     * reply-machine.json 0.6.5 lifecycle/reverify-on-a-retry-keeps-it-pending (iOS 5638261c; the maintainer 2026-11-07, "1.1
+     * should match"): Re-verify on a held retry declines it — the reply the user had stands, nothing is sent — and keeps
+     * the retry pending, so the re-shown alert's "send anyway" resends it; only then is the old reply replaced.
+     */
+    @Test fun aReverifiedRetryStaysPendingAndSendAnywayResendsIt() = runTest(dispatcher) {
+        val (vm, dao, transport) = stillChecking()
+        val had = listOf(ai.teemoon.chat.MessageEntity("m-1", "t", "user", "hello", 1),
+            ai.teemoon.chat.MessageEntity("a-2", "t", "assistant", "Old answer", 2, status = "complete"))
+        dao.messages += had
+        vm.restore(had)
+        vm.retryLastTurn(); advanceUntilIdle()
+        assertTrue("the question is asked", vm.state.value.hardwareConfirmRequested)
+        val kept = vm.reverifyHeldTurn(); advanceUntilIdle()
+        assertEquals("the retry is kept, at its effort", ai.teemoon.inference.ReasoningEffort.CHAT_DEFAULT, kept)
+        assertEquals(0, transport.calls)
+        assertEquals("the reply the user had stands", had, dao.messages.sortedBy { it.timestamp })
+        assertNull("a retry's question does not go to the composer", vm.state.value.returnedQuestion)
+        // the re-shown alert, still checking: "send sealed unconfirmed" resends the kept retry, without asking again
+        vm.confirmStillChecking()
+        vm.retryLastTurn(acceptedDegrade = true, effort = kept!!); advanceUntilIdle()
+        assertFalse("asked twice for one answer", vm.state.value.hardwareConfirmRequested)
+        assertEquals("the kept retry went out", 1, transport.calls)
+        assertEquals(listOf("hello", "a sealed answer"), vm.state.value.messages.map { it.text })
+        stillCheckingSession?.clearDerivedState(resetCounts = true)
+    }
+
+    /** The same Re-verify on a fresh send: its question goes back to the composer and nothing is kept. */
+    @Test fun aReverifiedSendReturnsItsQuestion() = runTest(dispatcher) {
+        val (vm, _, transport) = stillChecking()
+        vm.send("hello"); advanceUntilIdle()
+        assertNull(vm.reverifyHeldTurn()); advanceUntilIdle()
+        assertEquals(0, transport.calls)
+        assertEquals("hello", vm.state.value.returnedQuestion?.text)
+        stillCheckingSession?.clearDerivedState(resetCounts = true)
+    }
+
+    /** After the re-verify: a hard verdict re-shows the block; a newer turn meanwhile means nothing runs (G6). */
+    @Test fun afterAReverifyTheAlertComesBackOrNothingRuns() = runTest(dispatcher) {
+        val tls = kotlinx.coroutines.CompletableDeferred<TlsAttestation>()
+        val (vm, _, _) = stillChecking(tls)
+        tls.complete(TlsAttestation.Failed("certificate does not match")); advanceUntilIdle()
+        assertEquals(ChatViewModel.AfterReverify.BLOCKED, vm.afterReverify(wasHardBlock = false, captured = vm.reverifyCapture()))
+        val captured = vm.reverifyCapture()
+        vm.send("a newer question"); advanceUntilIdle()
+        assertNull("a newer turn started", vm.afterReverify(wasHardBlock = true, captured = captured))
+        stillCheckingSession?.clearDerivedState(resetCounts = true)
+    }
+
+    /** C2 (iOS retryE2EEAndGenerate): after a hard block nothing is sent on its own, even once the state reads allow — the alert comes back. */
+    @Test fun afterAHardBlockTheAlertComesBackEvenWhenItNowAllows() = runTest(dispatcher) {
+        val tls = kotlinx.coroutines.CompletableDeferred<TlsAttestation>()
+        val (vm, _, _) = stillChecking(tls)
+        tls.complete(TlsAttestation.Verified); advanceUntilIdle()
+        assertEquals("precondition", TrustSendPolicy.ALLOW, stillCheckingSession?.sendPolicy)
+        assertEquals(ChatViewModel.AfterReverify.ASK, vm.afterReverify(wasHardBlock = true, captured = vm.reverifyCapture()))
+        assertEquals(ChatViewModel.AfterReverify.GO, vm.afterReverify(wasHardBlock = false, captured = vm.reverifyCapture()))
+        stillCheckingSession?.clearDerivedState(resetCounts = true)
+    }
+
+    /**
+     * F4 strict (sendgate.json 0.5.15; the maintainer 2026-11-07; iOS ConfirmPendingSendAnywayTests @ b1d6ad56): Intel's
+     * couldn't-check is already known while TLS still runs. The ask answers that reason — one answer covers the record —
+     * and the send goes out.
+     */
+    @Test fun aKnownCouldntCheckWhileChecksRunAsksItsOwnQuestion() = runTest(dispatcher) {
+        val (vm, _, transport) = stillChecking()
+        val s = stillCheckingSession!!
+        s.dcapVerification = ai.teemoon.confidential.RecordDcapVerification(model = ai.teemoon.confidential.DcapVerification.Unchecked("collateral: pcs unreachable"))
+        assertTrue("precondition: couldn't-check known, checks running", s.sendPolicy == TrustSendPolicy.CONFIRM && s.verdictsPending)
+        assertEquals("the ask answers 'still checking', not the known couldn't-check", s.confirmationKey(pending = false), s.confirmationKey(pending = true))
+        vm.send("hello"); advanceUntilIdle()
+        assertTrue("precondition: the gate asked", vm.state.value.hardwareConfirmRequested)
+        vm.answerStillChecking(sendIt = true); advanceUntilIdle()
+        assertTrue("the answer did not cover the record's couldn't-check", s.hasConfirmed(pending = false))
+        assertEquals("the answered send did not go out", 1, transport.calls)
+        s.clearDerivedState(resetCounts = true)
+    }
+
+    /**
+     * Window B (reply-machine.json 0.6.6 lifecycle/confirm-for-a-sealed-send-never-goes-plain; iOS @ 6e3e1d13): "send" to
+     * the still-checking question for a sealed send, but near.ai's tier resolved to third-party meanwhile. Nothing goes
+     * out; the held turn ends like a decline and the question comes back.
+     */
+    @Test fun aConfirmForASealedSendNeverGoesPlain() = runTest(dispatcher) {
+        val model = "zai-org/S1-SEALED-CONFIRM-PROBE"
+        try {
+            val (vm, dao, transport) = stillChecking(model = model)
+            vm.send("hello"); advanceUntilIdle()
+            assertTrue("precondition: the still-checking ask for a sealed send", vm.state.value.hardwareConfirmRequested)
+            ai.teemoon.providers.NearAIModelCatalog.recordTiers(mapOf(model to ai.teemoon.providers.NearAIModelCatalog.Confidentiality.TEE_THIRD_PARTY))
+            vm.answerStillChecking(sendIt = true); advanceUntilIdle()
+            assertEquals("the confirmed sealed send went out", 0, transport.calls)
+            assertFalse(vm.state.value.isStreaming)
+            assertEquals("the question did not come back to the composer", "hello", vm.state.value.returnedQuestion?.text)
+            assertTrue(dao.messages.isEmpty())
+            assertNull("a decline, not a card", vm.state.value.error)
+        } finally { stillCheckingSession?.clearDerivedState(resetCounts = true); ai.teemoon.providers.NearAIModelCatalog.resetTierCache() }
+    }
+
+    /**
+     * Window A (0.6.6 lifecycle/a-turn-started-attestable-never-goes-plain; iOS @ ad43bd60): the turn starts attestable
+     * (unknown tier) and the tier resolves to third-party while prepareTurn waits, before the gate, with no ask. It must
+     * not leave unsealed: nothing is sent, the question comes back.
+     */
+    @Test fun aTurnStartedAttestableNeverGoesPlain() = runTest(dispatcher) {
+        val model = "zai-org/S1-WINDOW-A-PROBE"
+        try {
+            val (vm, dao, transport) = stillChecking(model = model)
+            assertEquals("precondition: the tier is unknown", ai.teemoon.providers.NearAIModelCatalog.Confidentiality.UNKNOWN,
+                ai.teemoon.providers.NearAIModelCatalog.confidentiality(model))
+            launch { delay(150); ai.teemoon.providers.NearAIModelCatalog.recordTiers(mapOf(model to ai.teemoon.providers.NearAIModelCatalog.Confidentiality.TEE_THIRD_PARTY)) }
+            vm.send("hello"); advanceUntilIdle()
+            assertEquals("a turn that started attestable went out unsealed", 0, transport.calls)
+            assertEquals("the question did not come back to the composer", "hello", vm.state.value.returnedQuestion?.text)
+            assertTrue(dao.messages.isEmpty())
+        } finally { stillCheckingSession?.clearDerivedState(resetCounts = true); ai.teemoon.providers.NearAIModelCatalog.resetTierCache() }
+    }
+
+    /** A switch to another model of the same setup while the question is up: the turn is no longer the selected place's (ownsTurn), so nothing goes out. */
+    @Test fun aConfirmAfterAModelSwitchSendsNothing() = runTest(dispatcher) {
+        try {
+            val (vm, _, transport) = stillChecking()
+            vm.send("hello"); advanceUntilIdle()
+            assertTrue("precondition: asked", vm.state.value.hardwareConfirmRequested)
+            val asked = stillCheckingSession!!.activeProvider!!
+            activeOverride = asked.copy(model = "zai-org/another-model")
+            vm.answerStillChecking(sendIt = true); advanceUntilIdle()
+            assertEquals("sent for a model no longer selected", 0, transport.calls)
+            assertEquals("hello", vm.state.value.returnedQuestion?.text)
+        } finally { activeOverride = null; stillCheckingSession?.clearDerivedState(resetCounts = true) }
+    }
+
+    /** A stop before the request goes out leaves it too. */
+    @Test fun aRetryStoppedBeforeItsRequestLeavesTheReplyTheUserHad() = runTest(dispatcher) {
+        val (vm, dao, transport) = stillChecking()
+        val had = listOf(ai.teemoon.chat.MessageEntity("m-1", "t", "user", "hello", 1),
+            ai.teemoon.chat.MessageEntity("a-2", "t", "assistant", "Old answer", 2, status = "stopped"))
+        dao.messages += had
+        vm.restore(had)
+        vm.retryLastTurn(); advanceUntilIdle()
+        vm.stop(); advanceUntilIdle()
+        assertEquals(0, transport.calls)
+        assertEquals("the store as it was", had, dao.messages.sortedBy { it.timestamp })
+        assertEquals(listOf("m-1" to "hello", "a-2" to "Old answer"), vm.state.value.messages.map { it.id to it.text })
+        assertEquals("its own marker, as saved", "marker.stopped", vm.state.value.messages.last().marker)
+        stillCheckingSession?.clearDerivedState(resetCounts = true)
+    }
+
+    /** Nothing to restore (the reply had failed): the decline ends the retry stopped, and the failed row goes. */
+    @Test fun aDeclinedRetryOfAFailedReplyEndsStopped() = runTest(dispatcher) {
+        val (vm, dao, transport) = stillChecking()
+        val had = listOf(ai.teemoon.chat.MessageEntity("m-1", "t", "user", "hello", 1),
+            ai.teemoon.chat.MessageEntity("a-2", "t", "assistant", "", 2, status = "failed"))
+        dao.messages += had
+        vm.restore(had)
+        vm.retryLastTurn(); advanceUntilIdle()
+        vm.answerStillChecking(sendIt = false); advanceUntilIdle()
+        assertEquals(0, transport.calls)
+        assertTrue("the failed row went: ${dao.messages}", dao.messages.none { it.id == "a-2" })
+        val questions = dao.messages.filter { it.role == "user" }
+        assertEquals("the question once, at its own time", listOf("hello" to 1L), questions.map { it.content to it.timestamp })
+        assertEquals("stopped", dao.messages.single { it.role == "assistant" }.status)
+        assertEquals("marker.stopped", vm.state.value.messages.last().marker)
+        assertNull("a decline shows no card: the user chose not to send (iOS returnGatedQuestion)", vm.state.value.error)
+        stillCheckingSession?.clearDerivedState(resetCounts = true)
+    }
+
+    /** "send anyway" on a retry: the request goes out, and only then do the old turn's rows go. */
+    @Test fun aRetrySentAnywayReplacesTheReplyWhenItGoesOut() = runTest(dispatcher) {
+        val (vm, dao, transport) = stillChecking()
+        val had = listOf(ai.teemoon.chat.MessageEntity("m-1", "t", "user", "hello", 1),
+            ai.teemoon.chat.MessageEntity("a-2", "t", "assistant", "Old answer", 2, status = "complete"))
+        dao.messages += had
+        vm.restore(had)
+        vm.retryLastTurn(); advanceUntilIdle()
+        vm.answerStillChecking(sendIt = true); advanceUntilIdle()
+        assertEquals(1, transport.calls)
+        assertTrue("the old reply went: ${dao.messages}", dao.messages.none { it.id == "a-2" || it.id == "m-1" })
+        assertEquals(listOf("user" to "hello", "assistant" to "a sealed answer"), dao.messages.sortedBy { it.timestamp }.map { it.role to it.content })
+        assertEquals("complete", dao.messages.single { it.role == "assistant" }.status)
+        stillCheckingSession?.clearDerivedState(resetCounts = true)
+    }
+
+    private var stillCheckingSession: ConfidentialSession? = null
+    /** The selected provider, once a test switches it; null = the rig's near.ai setup. */
+    private var activeOverride: Provider? = null
+    /** [tls] is the TLS check's answer; by default it never comes, so the verdict stays pending. */
+    /** [model]: stamp the record for a model id no other test uses, so its near.ai tier can be moved safely. */
+    private fun kotlinx.coroutines.test.TestScope.stillChecking(tls: kotlinx.coroutines.Deferred<TlsAttestation>? = null, model: String? = null): Triple<ChatViewModel, FakeChatDao, Scripted> {
+        val preview = AttestationRecord.preview.let { if (model != null) it.copy(model = model) else it }
+        val near = Provider.nearAI.copy(id = preview.providerID, model = preview.model ?: Provider.nearAI.model)
+        val session = ConfidentialSession(this, { activeOverride ?: near }, credentialFor = { "" },
+            services = ConfidentialSession.Services(skipLiveAttestation = true, directBase = { "https://model.example" }, tierDeadlineMs = TIER_WAITS,
+                verifyTls = { tls?.await() ?: awaitCancellation() }))
+        session.attestation = preview
+        session.lastRequestUsedE2EE = true
+        session.verifyTls(near)
+        stillCheckingSession = session
+        val dao = FakeChatDao(); dao.threads += ai.teemoon.chat.ThreadEntity(id = "t", title = null, timestamp = 0)
+        val transport = Scripted(listOf(TurnResult(content = "a sealed answer")))
+        val vm = ChatViewModel(repo = ai.teemoon.chat.ChatRepository(dao), threadId = "t", provider = { activeOverride ?: near }, credential = { "sk-test" }, session = session,
+            makeTransport = { _, _, _, _, _, _ -> transport })
+        return Triple(vm, dao, transport)
+    }
+
     /** A plain-TLS provider never waits on verdicts it does not have (iOS 4ea1dda, NVIDIA): the send goes out. */
     @Test fun aPlainTlsSendIsNotHeldByAnotherSessionsVerifier() = runTest(dispatcher) {
         val preview = AttestationRecord.preview
         var active: Provider = Provider.nearAI.copy(id = preview.providerID, model = preview.model ?: Provider.nearAI.model)
         val session = ConfidentialSession(this, { active }, credentialFor = { "" },
-            services = ConfidentialSession.Services(skipLiveAttestation = true, directBase = { "https://model.example" },
+            services = ConfidentialSession.Services(skipLiveAttestation = true, directBase = { "https://model.example" }, tierDeadlineMs = TIER_WAITS,
                 verifyTls = { awaitCancellation() }))
         session.attestation = preview
         session.verifyTls(active)
@@ -305,5 +677,20 @@ class ChatViewModelTest {
             assertTrue(!vm.state.value.needsPlace)
         }
         assertEquals(1, transport.calls)
+    }
+
+    /**
+     * Found on the maintainer's Pixel (2026-11-12, the device check): changing the font size rebuilt the screen and the
+     * composer's attached photos were gone — the text survived (rememberSaveable), the photos were a plain remember. The
+     * activity handles rotation and dark mode itself, not font scale. The draft's photos and their note live on the chat's
+     * view model, which a rebuild keeps.
+     */
+    @Test fun theComposersPhotosLiveOnTheViewModelAndOutliveARebuild() {
+        val vm = vm(object : GenerationTransport { override suspend fun runTurn(messages: List<Map<String, Any>>, includeTools: Boolean, tools: List<ai.teemoon.inference.Tool>, onPartial: (String) -> Unit) = error("no send") })
+        assertEquals(emptyList<ai.teemoon.app.imaging.ImageDecodeFrame.Decoded>(), vm.draftImages)
+        val photo = ai.teemoon.app.imaging.ImageDecodeFrame.Decoded("image/jpeg", 64, 48, byteArrayOf(1), byteArrayOf(2))
+        vm.draftImages = listOf(photo); vm.draftImageNote = "note"
+        assertEquals("what a rebuilt composer reads back", listOf(photo), vm.draftImages)
+        assertEquals("note", vm.draftImageNote)
     }
 }

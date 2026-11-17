@@ -126,7 +126,8 @@ class ProvenanceServiceTest {
     @Test fun clean404RetriesOnceThenFailsClosed() = runTest {
         val http = Scripted(step(404, "{}".toByteArray(), "x-ratelimit-remaining" to "37"), step(404, "{}".toByteArray(), "x-ratelimit-remaining" to "36"),
             step(404, "{}".toByteArray(), "x-ratelimit-remaining" to "35"), step(404, "{}".toByteArray(), "x-ratelimit-remaining" to "34"))
-        val r = service(http).verify(ImageRef(image = "nearaidev/compose-manager-launcher", digest = "2".repeat(64)))
+        // not the launcher: no Docker Hub lookup follows (LauncherIndexRulesTest covers the launcher's)
+        val r = service(http).verify(ImageRef(image = "nearaidev/cloud-api", digest = "2".repeat(64)))
         val why = ((r as ImageProvenance.Unverified).reason as ImageProvenance.Reason.FetchFailed).detail
         assertTrue(why.contains("404")); assertEquals(4, http.requestCount)   // both repos, each retried once
     }
@@ -166,10 +167,10 @@ class ProvenanceServiceTest {
             step(404, "{}".toByteArray(), "x-ratelimit-remaining" to "35"), step(404, "{}".toByteArray(), "x-ratelimit-remaining" to "34"))
         var now = 1_000_000L
         val service = ProvenanceService(http = http, upgradeAttempted = HashSet(), recentMisses = HashMap(), nowMs = { now }, sleepMs = {})
-        val ref = ImageRef(image = "nearaidev/compose-manager-launcher", digest = "9".repeat(64))
+        val ref = ImageRef(image = "nearaidev/cloud-api", digest = "9".repeat(64))
         val first = service.verify(ref)
         assertTrue("expected a definitive miss, got $first", (first as? ImageProvenance.Unverified)?.reason is ImageProvenance.Reason.FetchFailed)
-        assertEquals(4, http.requestCount)
+        assertEquals(4, http.requestCount)   // four GitHub answers
 
         val second = service.verify(ref)
         assertTrue("expected the remembered miss, got $second", (second as? ImageProvenance.Unverified)?.reason is ImageProvenance.Reason.FetchFailed)
@@ -197,5 +198,160 @@ class ProvenanceServiceTest {
         val all = r as ManifestProvenance.AllVerified
         assertEquals("https://github.com/nearai/cloud-api", all.verified.single().sourceRepo); assertEquals(listOf("gateway"), all.verified.single().hosts); assertEquals(1, all.thirdParty.size)
         assertTrue(cache.load().containsKey(fixtureDigest))
+    }
+
+    /**
+     * The launcher (audit 2026-10-30): GitHub has no attestation for the measured child 079a14b4…, only for its
+     * multi-platform index 91fdff3c…. Docker Hub (approved for near.ai verification only) gives the index: an anonymous
+     * token, tags newest first, a HEAD per tag, the bytes of each new candidate checked, the first match kept — and
+     * cached, so the next pass asks Docker Hub nothing. GitHub is then asked about the INDEX digest.
+     */
+    @Test fun aChildWithoutItsOwnAttestationResolvesToItsIndexOnDockerHub() = runTest {
+        val child = "079a14b41deb11e0e27f9b69648e8b3d89bd6fb9ccf6071643b8f447fa415085"
+        val index = "91fdff3cfa3543d72656b2368c7d8a0a83d95a0f1087378c897aa1537acdba56"
+        val other = "ab".repeat(32)
+        val indexBytes = javaClass.getResource("/fixtures/nearai-trust/launcher-index-91fdff3c.json")!!.readBytes()
+        val asked = ArrayList<String>()
+        val http = object : ProvenanceHttp {
+            override suspend fun get(url: String, headers: Map<String, String>): ProvenanceResponse {
+                asked.add("GET $url"); assertFalse("credentials sent to $url", url.contains("api.github.com") && headers.containsKey("Authorization"))
+                return when {
+                    url.startsWith("https://api.github.com/") -> ProvenanceResponse(404, mapOf("x-ratelimit-remaining" to "40"), "{}".toByteArray())
+                    url.startsWith("https://auth.docker.io/token") -> ProvenanceResponse(200, emptyMap(), "{\"token\":\"anon\"}".toByteArray())
+                    url.endsWith("/tags/list") -> ProvenanceResponse(200, emptyMap(), "{\"tags\":[\"latest\",\"staging-20261001-a\",\"staging-20261029-b\"]}".toByteArray())
+                    url.endsWith("/manifests/sha256:$index") -> ProvenanceResponse(200, emptyMap(), indexBytes)
+                    url.endsWith("/manifests/sha256:$other") -> ProvenanceResponse(200, emptyMap(), "{\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[]}".toByteArray())
+                    else -> ProvenanceResponse(404, emptyMap(), ByteArray(0))
+                }
+            }
+            override suspend fun head(url: String, headers: Map<String, String>): ProvenanceResponse {
+                asked.add("HEAD $url"); assertEquals("Bearer anon", headers["Authorization"])
+                val d = if (url.endsWith("staging-20261029-b")) other else index
+                return ProvenanceResponse(200, mapOf("docker-content-digest" to "sha256:$d", "content-type" to ImageIndexResolution.INDEX_MEDIA_TYPE), ByteArray(0))
+            }
+        }
+        val cache = InMemoryProvenanceCacheStore()
+        val service = ProvenanceService(http = http, cache = cache, upgradeAttempted = HashSet(), recentMisses = HashMap(), sleepMs = {})
+        service.verify(ImageRef(image = "nearaidev/compose-manager-launcher", digest = child))
+        val hub = asked.filter { "docker.io" in it }
+        // prod first (iOS LauncherIndex): it names the index, so no tag list is read
+        assertEquals(listOf(
+            "GET https://auth.docker.io/token?service=registry.docker.io&scope=repository:nearaidev/compose-manager-launcher:pull",
+            "HEAD https://registry-1.docker.io/v2/nearaidev/compose-manager-launcher/manifests/prod",
+            "GET https://registry-1.docker.io/v2/nearaidev/compose-manager-launcher/manifests/sha256:$index"), hub)
+        assertEquals(index, service.cachedIndex(child))
+        assertTrue("GitHub was asked about the index", asked.any { it.contains("api.github.com") && it.endsWith("sha256:$index") })
+        asked.clear()
+        ProvenanceService(http = http, cache = cache, upgradeAttempted = HashSet(), recentMisses = HashMap(), sleepMs = {})
+            .verify(ImageRef(image = "nearaidev/compose-manager-launcher", digest = child))
+        assertTrue("a cached index asks Docker Hub nothing: $asked", asked.none { "docker.io" in it })
+    }
+
+    /**
+     * Docker Hub is approved for the launcher's index only (the maintainer 2026-10-30), and nothing but what the lookup
+     * needs goes there: the token request carries no header at all, and every registry request exactly the bearer and
+     * the index Accept (audit mutation pass on 05c07fa: an extra header on either survived every test). Walked through
+     * the tag list too — prod and latest miss — so the list GET is held to the same rule.
+     */
+    @Test fun dockerHubRequestsCarryOnlyTheBearerAndTheIndexAccept() = runTest {
+        val child = "079a14b41deb11e0e27f9b69648e8b3d89bd6fb9ccf6071643b8f447fa415085"
+        val index = "91fdff3cfa3543d72656b2368c7d8a0a83d95a0f1087378c897aa1537acdba56"
+        val indexBytes = javaClass.getResource("/fixtures/nearai-trust/launcher-index-91fdff3c.json")!!.readBytes()
+        val sent = ArrayList<Pair<String, Set<String>>>()
+        val http = object : ProvenanceHttp {
+            override suspend fun get(url: String, headers: Map<String, String>): ProvenanceResponse {
+                sent += "GET $url" to headers.keys
+                return when {
+                    url.startsWith("https://api.github.com/") -> ProvenanceResponse(404, mapOf("x-ratelimit-remaining" to "40"), "{}".toByteArray())
+                    url.startsWith("https://auth.docker.io/token") -> ProvenanceResponse(200, emptyMap(), "{\"token\":\"anon\"}".toByteArray())
+                    url.endsWith("/tags/list") -> ProvenanceResponse(200, emptyMap(), "{\"tags\":[\"staging-20261029-b\"]}".toByteArray())
+                    url.endsWith("/manifests/sha256:$index") -> ProvenanceResponse(200, emptyMap(), indexBytes)
+                    else -> ProvenanceResponse(404, emptyMap(), ByteArray(0))
+                }
+            }
+            override suspend fun head(url: String, headers: Map<String, String>): ProvenanceResponse {
+                sent += "HEAD $url" to headers.keys
+                if (url.endsWith("/prod") || url.endsWith("/latest")) return ProvenanceResponse(404, emptyMap(), ByteArray(0))
+                return ProvenanceResponse(200, mapOf("docker-content-digest" to "sha256:$index"), ByteArray(0))
+            }
+        }
+        ProvenanceService(http = http, cache = InMemoryProvenanceCacheStore(), upgradeAttempted = HashSet(), recentMisses = HashMap(), sleepMs = {})
+            .verify(ImageRef(image = "nearaidev/compose-manager-launcher", digest = child))
+        val token = sent.filter { "auth.docker.io" in it.first }
+        val registry = sent.filter { "registry-1.docker.io" in it.first }
+        assertEquals(1, token.size)
+        assertEquals("the token request carries no header", emptySet<String>(), token.single().second)
+        assertTrue("the tag list was walked: $registry", registry.any { it.first.endsWith("/tags/list") })
+        for ((req, keys) in registry) assertEquals("headers on $req", setOf("Authorization", "Accept"), keys)
+    }
+
+    /** One repository's index is looked up, no other (audit mutation pass on 05c07fa: a second entry survived every test). */
+    @Test fun onlyTheLauncherRepositoryIsEverLookedUpOnDockerHub() = runTest {
+        assertEquals(setOf("nearaidev/compose-manager-launcher"), ProvenanceService.INDEX_REPOS)
+        val asked = ArrayList<String>()
+        val http = object : ProvenanceHttp {
+            override suspend fun get(url: String, headers: Map<String, String>): ProvenanceResponse {
+                asked += url
+                return if (url.startsWith("https://api.github.com/")) ProvenanceResponse(404, mapOf("x-ratelimit-remaining" to "40"), "{}".toByteArray())
+                else ProvenanceResponse(404, emptyMap(), ByteArray(0))
+            }
+            override suspend fun head(url: String, headers: Map<String, String>): ProvenanceResponse { asked += url; return ProvenanceResponse(404, emptyMap(), ByteArray(0)) }
+        }
+        val service = ProvenanceService(http = http, cache = InMemoryProvenanceCacheStore(), upgradeAttempted = HashSet(), recentMisses = HashMap(), sleepMs = {})
+        for (image in listOf("nearaidev/dstack-vpc", "nearaidev/cloud-api", "nearai/compose-manager-launcher"))
+            service.verify(ImageRef(image = image, digest = "cd".repeat(32)))
+        assertTrue("another repository went to Docker Hub: $asked", asked.none { "docker.io" in it })
+    }
+
+    /** A fake Docker Hub: [pages] of tags (each but the last carries Link rel="next"); every tag's HEAD answers [digestFor]. */
+    private class FakeHub(val pages: List<List<String>>, val digestFor: (String) -> String, val bodies: Map<String, ByteArray> = emptyMap()) : ProvenanceHttp {
+        val asked = ArrayList<String>()
+        override suspend fun get(url: String, headers: Map<String, String>): ProvenanceResponse {
+            asked.add("GET $url")
+            return when {
+                url.startsWith("https://api.github.com/") -> ProvenanceResponse(404, mapOf("x-ratelimit-remaining" to "40"), "{}".toByteArray())
+                url.startsWith("https://auth.docker.io/token") -> ProvenanceResponse(200, emptyMap(), "{\"token\":\"anon\"}".toByteArray())
+                "/tags/list" in url -> {
+                    val n = url.substringAfter("page=", "0").toInt()
+                    val link = if (n + 1 < pages.size) mapOf("link" to "</v2/nearaidev/compose-manager-launcher/tags/list?page=${n + 1}>; rel=\"next\"") else emptyMap()
+                    ProvenanceResponse(200, link, ("{\"tags\":[" + pages[n].joinToString(",") { "\"$it\"" } + "]}").toByteArray())
+                }
+                else -> bodies[url.substringAfterLast("sha256:")]?.let { ProvenanceResponse(200, emptyMap(), it) } ?: ProvenanceResponse(404, emptyMap(), ByteArray(0))
+            }
+        }
+        override suspend fun head(url: String, headers: Map<String, String>): ProvenanceResponse {
+            asked.add("HEAD $url")
+            return ProvenanceResponse(200, mapOf("docker-content-digest" to "sha256:${digestFor(url.substringAfterLast('/'))}", "content-type" to ImageIndexResolution.INDEX_MEDIA_TYPE), ByteArray(0))
+        }
+    }
+    private val launcherChild = "079a14b41deb11e0e27f9b69648e8b3d89bd6fb9ccf6071643b8f447fa415085"
+    private val launcherIndex = "91fdff3cfa3543d72656b2368c7d8a0a83d95a0f1087378c897aa1537acdba56"
+
+
+    @Test fun noIndexIsRememberedForADayAndAskedAgainAfter() = runTest {
+        // every tag names an index that answers and doesn't list the child: a clean miss (a 404 for its bytes is trouble, never remembered)
+        val hub = FakeHub(listOf(listOf("only")), { "cd".repeat(32) }, mapOf("cd".repeat(32) to "{\"mediaType\":\"application/vnd.oci.image.index.v1+json\",\"manifests\":[]}".toByteArray()))
+        var now = 1_000_000L
+        val cache = InMemoryProvenanceCacheStore()
+        fun service() = ProvenanceService(http = hub, cache = cache, upgradeAttempted = HashSet(), recentMisses = HashMap(), nowMs = { now }, sleepMs = {})
+        val ref = ImageRef(image = "nearaidev/compose-manager-launcher", digest = launcherChild)
+        service().verify(ref)
+        assertTrue(hub.asked.any { "auth.docker.io" in it }); hub.asked.clear()
+        now += 23 * 3_600_000L; service().verify(ref)
+        assertTrue("within the day Docker Hub is not asked: ${hub.asked}", hub.asked.none { "docker.io" in it })
+        now += 2 * 3_600_000L; service().verify(ref)
+        assertTrue("after the day it is asked again", hub.asked.any { "auth.docker.io" in it })
+    }
+
+
+    /** Audit 2026-10-31: the Docker Hub hosts are approved for the launcher's index only. */
+    @Test fun noOtherImageIsLookedUpOnDockerHub() = runTest {
+        val asked = ArrayList<String>()
+        val http = object : ProvenanceHttp {
+            override suspend fun get(url: String, headers: Map<String, String>): ProvenanceResponse { asked += url; return ProvenanceResponse(404, emptyMap(), ByteArray(0)) }
+        }
+        service(http).verify(ImageRef(image = "nearaidev/vllm-proxy-rs", digest = "5".repeat(64)))
+        assertTrue(asked.isNotEmpty())
+        assertEquals(emptyList<String>(), asked.filter { "docker.io" in it })
     }
 }

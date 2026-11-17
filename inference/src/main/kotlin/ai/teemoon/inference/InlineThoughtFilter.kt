@@ -1,4 +1,4 @@
-// ports: teemoon/Inference/LiteRTTransport.swift @ a6ce6e8 (InlineThoughtFilter)
+// ports: teemoon/Inference/LiteRTTransport.swift @ v1.0.6 (InlineThoughtFilter)
 package ai.teemoon.inference
 
 /**

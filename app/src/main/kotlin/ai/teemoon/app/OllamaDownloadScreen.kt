@@ -56,6 +56,8 @@ import androidx.compose.ui.text.input.ImeAction
 @Composable
 fun OllamaDownloadScreen(
     provider: Provider, center: OllamaDownloadCenter, onBack: () -> Unit,
+    /** Opened from a where sheet with "reads images" on: the two browse links narrow to vision models (IMAGES.md §4e). */
+    readsImages: Boolean = false,
     /** Called with the normalised ref the moment a pull STARTS, so the parent shows it as arriving (equipped, selected). */
     onStarted: (String) -> Unit = {},
     /** Called with the ref when the pull finishes WHILE THIS SHEET IS OPEN — the parent re-fetches and selects. */
@@ -128,8 +130,8 @@ fun OllamaDownloadScreen(
         SectionLabel("or bring any other model", style = MaterialTheme.typography.titleMedium)
         InsetGroup {
             if (!isPulling) {
-                BrowseLink("ollama.com", "curated · tools and vision badges", "https://ollama.com/search") { uri.openUri(it) }
-                BrowseLink("hugging face — gguf", "any community quant", "https://huggingface.co/models?library=gguf&sort=trending") { uri.openUri(it) }
+                BrowseLink("ollama.com", "curated · tools and vision badges", ai.teemoon.providers.OllamaBrowseLinks.ollama(readsImages)) { uri.openUri(it) }
+                BrowseLink("hugging face — gguf", "any community quant", ai.teemoon.providers.OllamaBrowseLinks.huggingFace(readsImages)) { uri.openUri(it) }
             }
             InsetField(ref, { ref = it; refProblem = null }, "paste the link here", enabled = !isPulling,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri, autoCorrectEnabled = false, imeAction = ImeAction.Go),

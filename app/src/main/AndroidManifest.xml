@@ -19,6 +19,11 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <!-- IMAGES.md §4a: whether a camera app exists, so "take photo" is offered only where it can work. Not a permission:
+         teemoon declares no CAMERA permission, so the system camera app takes the photo and nothing is prompted. -->
+    <queries>
+        <intent><action android:name="android.media.action.IMAGE_CAPTURE" /></intent>
+    </queries>
 
     <!-- allowBackup=false is PARITY, not a new tradeoff. teemoonApp.swift:459
          (hardenConversationStore) excludes the SwiftData store and its WAL/SHM
@@ -89,6 +94,32 @@
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+            <!-- A near.ai export opened from Files ("open with") or shared to teemoon: application/json over content:
+                 only — no octet-stream, no file: and no BROWSABLE, so no web link opens it (pm 2026-10-30, import
+                 redesign (f)). MainActivity.receiveExport copies it to the cache on arrival (IncomingExport). -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:scheme="content" android:mimeType="application/json" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="application/json" />
+            </intent-filter>
+            <!-- Share to teemoon (teemoon-ios docs/SHARE_IN.md @ 1f60fe9c): photos, text and a URL (text/plain) land in a new
+                 chat as a draft, never sent. Never */*: teemoon appears only where it can take what is shared. -->
+            <intent-filter>
+                <action android:name="android.intent.action.SEND" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+                <data android:mimeType="text/plain" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.SEND_MULTIPLE" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <data android:mimeType="image/*" />
+            </intent-filter>
         </activity>
         <!-- A phone-model download keeps the network while backgrounded (DownloadService): a backgrounded app lost
              its connection six seconds after Home (AVD, 2026-10-02). Same dataSync type: a user-started file transfer. -->
@@ -100,6 +131,22 @@
             android:name=".DownloadService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
+        <!-- The image decoder (IMAGES.md §2): an isolated process — its own UID, no permissions, no app files, no network.
+             A malformed image that crashes or exploits the decoder stays in there; the app gets a placeholder. -->
+        <service
+            android:name=".imaging.ImageDecodeService"
+            android:process=":decode"
+            android:isolatedProcess="true"
+            android:exported="false" />
+        <!-- Shares a re-encoded image the user chose to share, and gives the camera app its capture target
+             (res/xml/file_paths.xml). Not exported: another app gets a single URI, granted for that action. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data android:name="android.support.FILE_PROVIDER_PATHS" android:resource="@xml/file_paths" />
+        </provider>
         <service
             android:name=".TurnService"
             android:exported="false"

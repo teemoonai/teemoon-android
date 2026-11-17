@@ -1,6 +1,6 @@
 // ports: teemoonTests/XAIRequestShapeTests.swift @ 94b8500
 //
-// The maintainer, 2026-10-19: Grok must never search server-side — xAI's search is a plaintext exfiltration path we cannot
+// the maintainer, 2026-10-19: Grok must never search server-side — xAI's search is a plaintext exfiltration path we cannot
 // audit; web search is Brave, run by the app. So an xAI request carries no `search_parameters`, no xAI server tools,
 // and only our own function tools.
 package ai.teemoon.inference

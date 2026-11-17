@@ -1,4 +1,4 @@
-// ports: teemoon/Confidential/TEESignatureVerifier.swift @ 441cecf (SignedExchange, ContentBinding, TEEMessageSignature,
+// ports: teemoon/Confidential/TEESignatureVerifier.swift @ v1.1.0 (SignedExchange, ContentBinding, TEEMessageSignature,
 //        SignedText, Ed25519Signature, and the verifier's decision over an injected fetch seam — TEEContext is the
 //        AttestationService row)
 package ai.teemoon.confidential

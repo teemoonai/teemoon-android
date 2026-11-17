@@ -132,6 +132,8 @@ class LiveCatalogStore(
 
     private val entries = LinkedHashMap<Key, Entry>()
     private val loaded = HashSet<Key>()
+    /** The directory has been read in full (loadAll). */
+    private var scanned = false
     private val inFlight = HashMap<Key, CompletableDeferred<List<KnownModel>?>>()
 
     /**
@@ -182,6 +184,9 @@ class LiveCatalogStore(
 
     // MARK: - Writing
 
+    /** Called with every list recorded (iOS a851981). The app points it at AppState.adoptCapabilities. */
+    @Volatile var onRecorded: ((Provider, List<KnownModel>) -> Unit)? = null
+
     /** Records an answer teemoon already has, so every door updates the same copy. */
     fun record(models: List<KnownModel>, forProvider: Provider, apiKey: String) {
         recordIf(models, forProvider, apiKey, startedAt = null)
@@ -203,6 +208,7 @@ class LiveCatalogStore(
             write(entry, key)
         }
         _revision.value += 1
+        onRecorded?.invoke(forProvider, models)
         return true
     }
 
@@ -234,6 +240,10 @@ class LiveCatalogStore(
             synchronized(this) { inFlight.remove(key) }
             job.complete(null)
             throw e
+        } catch (e: Exception) {
+            // Any other throw ends the fetch like a failure: left in flight, every later refresh of this server awaited
+            // a fetch that would never finish (pm sweep 2026-11-06).
+            null
         }
         synchronized(this) { inFlight.remove(key) }
         job.complete(models)
@@ -287,6 +297,30 @@ class LiveCatalogStore(
 
     // MARK: - Keys and storage
 
+    /** What a keyed list is filed under — a salted hash of the key, never the key — so a row can find its list unopened. */
+    @JvmInline value class KeyScope(val value: String)
+
+    fun scopeOf(apiKey: String): KeyScope = KeyScope(scopeHash(apiKey, salt))
+
+    fun key(forProvider: Provider, scope: KeyScope): Key? {
+        val source = WhereProviderPresentation.liveCatalogSource(forProvider) ?: return null
+        return Key(forProvider.presetMatchKey, if (listIsPublic(source)) "public" else scope.value)
+    }
+
+    /** [models] by the key's scope (ProviderCredentials.KeyFacts): drawing finds a list without opening the key. */
+    fun models(forProvider: Provider, scope: KeyScope): List<KnownModel> {
+        val key = key(forProvider, scope) ?: return emptyList()
+        return synchronized(this) { entry(key)?.let { e -> e.models.map { it.toKnownModel(e) } } } ?: emptyList()
+    }
+
+    /** [count] by the key's scope. */
+    fun count(forProvider: Provider, scope: KeyScope): Int? {
+        val key = key(forProvider, scope) ?: return null
+        val e = synchronized(this) { entry(key) } ?: return null
+        return e.models.size.takeIf { it > 0 }
+    }
+
+
     /** null when there is no server list to ask for (on-device, Brave). */
     fun key(forProvider: Provider, apiKey: String): Key? {
         val source = WhereProviderPresentation.liveCatalogSource(forProvider) ?: return null
@@ -299,7 +333,15 @@ class LiveCatalogStore(
         return entries[key]
     }
 
+    /**
+     * Every saved list, read from the directory ONCE per store. Before 2026-11-11 this listed the directory and read
+     * and decoded every file on every call, keeping nothing — and allModels, which calls it, runs from the chat's
+     * composition (AppState.canSeeImages): the maintainer's Pixel took ~600 ms a tap (new in 1.1, with the images'
+     * "can this model see?"). What this store records later goes into [entries] as it is written, so memory stays current.
+     */
     private fun loadAll() {
+        if (scanned) return
+        scanned = true
         val files = directory?.listFiles() ?: return
         for (f in files) {
             if (f.extension != "json") continue
@@ -311,7 +353,7 @@ class LiveCatalogStore(
 
     private fun decode(text: String): Entry? {
         val entry = runCatching { json.decodeFromString(Entry.serializer(), text) }.getOrNull() ?: return null
-        if (entry.version != CURRENT_VERSION) return null
+        if (!serves(entry)) return null
         return entry
     }
 
@@ -378,7 +420,18 @@ class LiveCatalogStore(
     }
 
     companion object {
-        const val CURRENT_VERSION = 1
+        // 2 (2026-10-28, iOS 96becff): Fireworks' object deprecationDate had sent its list down the generic probe, whose
+        // rows carry no capabilities, and that copy was SAVED — so the decode fix alone left "can't see images" for up to
+        // the 24 h launch refresh (the maintainer's Pixel, glm-5p3-flash). See [serves].
+        const val CURRENT_VERSION = 2
+
+        /**
+         * A version-1 list is kept except Fireworks'. NEVER drop near.ai's: without its saved tiers a cold launch labels
+         * rows from the id guess, which reads an unseen third-party id in an own-fleet namespace as own fleet — an
+         * encryption claim the evidence does not support, until the fresh list lands.
+         */
+        internal fun serves(entry: Entry): Boolean = entry.version == CURRENT_VERSION ||
+            (entry.version == 1 && !FireworksAdapter.handles(runCatching { java.net.URI(entry.endpoint).host }.getOrNull()))
         private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
         /**

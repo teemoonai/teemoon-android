@@ -63,7 +63,7 @@ class ChatCardsTest {
         assertNull(ErrorCardText.consoleAction(err(500), recovery)); assertNull(ErrorCardText.consoleAction(err(null), recovery)); assertNull(ErrorCardText.consoleAction(err(401), null))
     }
     @Test fun sourceLabel_namesBraveSearchForGroundingErrors() {
-        assertEquals("Brave Search", ErrorCardText.sourceLabel(LlmError(LlmError.Source.BraveGrounding, "")))
+        assertEquals("brave search", ErrorCardText.sourceLabel(LlmError(LlmError.Source.BraveGrounding, "")))
         assertEquals("box", ErrorCardText.sourceLabel(LlmError(LlmError.Source.Provider("box"), "")))
     }
     @Test fun messageCount_readsTheHistoryArray() {
@@ -77,13 +77,13 @@ class ChatCardsTest {
         assertEquals(WebSearchChipState.OFF, webSearchChipState(hasProvider = true, hasKey = true, groundingEnabled = false))
     }
     @Test fun activityLabel_followsTheStreamState() {
-        assertEquals("thinking...", activityLabel(ActivityState.of(false, 0), 0.4))
-        assertEquals("thinking... 45s", activityLabel(ActivityState.Thinking, 45.7))
+        assertEquals("thinking\u2026", activityLabel(ActivityState.of(false, 0), 0.4))
+        assertEquals("thinking\u2026 45s", activityLabel(ActivityState.Thinking, 45.7))
         // Think Harder (iOS 14b2974): the same counter, while the old reply waits dimmed above.
-        assertEquals("thinking harder...", activityLabel(ActivityState.of(false, 0, thinkingHarder = true), 0.4))
-        assertEquals("thinking harder... 12s", activityLabel(ActivityState.ThinkingHarder, 12.9))
+        assertEquals("thinking harder\u2026", activityLabel(ActivityState.of(false, 0, thinkingHarder = true), 0.4))
+        assertEquals("thinking harder\u2026 12s", activityLabel(ActivityState.ThinkingHarder, 12.9))
         assertEquals("a running search still wins", ActivityState.Searching, ActivityState.of(true, 0, thinkingHarder = true))
-        assertEquals("searching...", activityLabel(ActivityState.of(true, 0), null))
+        assertEquals("searching\u2026", activityLabel(ActivityState.of(true, 0), null))
         assertEquals("1 source", activityLabel(ActivityState.of(true, 1), null)); assertEquals("5 sources", activityLabel(ActivityState.of(true, 5), null))
         assertEquals("3 sources", sourcesChipLabel(3))
     }
@@ -97,7 +97,7 @@ class ChatCardsTest {
         assertEquals(ActivityState.SourcesFound(3), ActivityState.of(true, 3, wait, nowMs = 60_000))
         assertEquals(ActivityState.Thinking, ActivityState.of(false, 0, null, nowMs = 60_000))
         // the follow-up request waited 5 s; the turn has run 31 s, and the chip says 31
-        assertEquals("waiting for fireworks... 31s", activityLabel(ActivityState.WaitingForProvider("fireworks"), 31.4))
+        assertEquals("waiting for fireworks\u2026 31s", activityLabel(ActivityState.WaitingForProvider("fireworks"), 31.4))
     }
 
     @Test fun aRequestsHeadersClearOnlyItsOwnWait() {
@@ -137,7 +137,7 @@ class ChatCardsTest {
         assertEquals(listOf(true, true, false, false), listOf(WebSearchChipState.ON, WebSearchChipState.OFF, WebSearchChipState.UNCONFIGURED, WebSearchChipState.DISABLED).map { it.searchConfigured })
     }
 
-    /** The maintainer (card-one-line, iOS 6fdcb43): effort and cache go on the timing row; the copied text keeps its own lines. */
+    /** the maintainer (card-one-line, iOS 6fdcb43): effort and cache go on the timing row; the copied text keeps its own lines. */
     @Test fun theCardsTimingRowEndsWithEffortAndCache() {
         val info = LastRequestDebugInfo(providerName = "fireworks", url = "https://api.fireworks.ai/inference/v1/chat/completions", requestHeaders = null,
             requestBodyJson = """{"reasoning_effort":"low"}""", responseBody = null, toolCalls = emptyList(), threadID = "t",

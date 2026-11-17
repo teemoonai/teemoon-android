@@ -1,4 +1,4 @@
-// ports: teemoon/Confidential/TEESignatureVerifier.swift @ 441cecf (the ResponseVerification value type only —
+// ports: teemoon/Confidential/TEESignatureVerifier.swift @ v1.1.0 (the ResponseVerification value type only —
 //        the verifier is TeeSignature.kt)
 package ai.teemoon.confidential
 

@@ -24,7 +24,25 @@ object ProvenanceParsing {
     private val imageRefRegex = Regex("([A-Za-z0-9._/\\-]+)(?::[A-Za-z0-9._\\-]+)?@sha256:([0-9a-f]{64})")
 
     /** Extracts `@sha256:<digest>` image references from a compose manifest, deduplicated by digest. */
-    fun imageRefs(manifest: String): List<ImageRef> {
+    /**
+     * The last few manifests' parses, by text. The trust ladder classifies every image row against the same compose
+     * YAML on each recomposition, and re-running the regex per row cost 7.7 s of main-thread time across one chat open,
+     * verification and a send (the Pixel 10 Pro profile, 2026-11-07). The parses are pure, so a manifest's answer is
+     * the same list every time; a session holds only a handful of manifests.
+     */
+    private class Memo<T>(private val size: Int = 8) {
+        private val entries = LinkedHashMap<String, T>(16, 0.75f, true)
+        @Synchronized fun get(key: String, compute: () -> T): T = entries[key] ?: compute().also {
+            entries[key] = it
+            if (entries.size > size) entries.remove(entries.keys.first())
+        }
+    }
+    private val imageRefsMemo = Memo<List<ImageRef>>()
+    private val tagPinnedMemo = Memo<List<String>>()
+
+    fun imageRefs(manifest: String): List<ImageRef> = imageRefsMemo.get(manifest) { parseImageRefs(manifest) }
+
+    private fun parseImageRefs(manifest: String): List<ImageRef> {
         val seen = HashSet<String>()
         val refs = ArrayList<ImageRef>()
         for (m in imageRefRegex.findAll(manifest)) {
@@ -76,7 +94,9 @@ object ProvenanceParsing {
      * compose — a tag-pinned row's facts must come from the document the action
      * log actually pinned.
      */
-    fun tagPinnedImageRefs(manifest: String): List<String> {
+    fun tagPinnedImageRefs(manifest: String): List<String> = tagPinnedMemo.get(manifest) { parseTagPinnedImageRefs(manifest) }
+
+    private fun parseTagPinnedImageRefs(manifest: String): List<String> {
         val yaml = PlaintextExposure.dockerComposeYaml(manifest)
         val anchors = PlaintextExposure.anchorBlocks(yaml)
         val refs = ArrayList<String>()

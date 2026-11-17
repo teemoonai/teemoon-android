@@ -80,7 +80,8 @@ private fun rollup(steps: List<RunStep>): SectionResult {
     if (steps.any { it.status == RunStepStatus.FAIL }) return SectionResult.FAILED
     if (steps.any { it.status == RunStepStatus.RUNNING }) return SectionResult.RUNNING
     if (steps.any { it.status == RunStepStatus.FLAG }) return SectionResult.FLAGGED
-    if (steps.all { it.status == RunStepStatus.PENDING }) return SectionResult.RUNNING
+    // A step not yet answered is not a pass, alone or among passes (T1, 2026-11-06: [pass, pending, pass] read PASSED).
+    if (steps.any { it.status == RunStepStatus.PENDING }) return SectionResult.RUNNING
     return SectionResult.PASSED
 }
 
@@ -92,7 +93,7 @@ private val AttestationSummary.modelSection: VerificationSection?
         val steps = ArrayList<RunStep>()
         nrasState?.let { nras ->
             steps.add(RunStep("GPU check", nrasDetail,
-                if (nras == StepState.DONE) RunStepStatus.PASS else if (nras == StepState.STUCK) RunStepStatus.FAIL else RunStepStatus.RUNNING))
+                when (nras) { StepState.DONE -> RunStepStatus.PASS; StepState.STUCK -> RunStepStatus.FAIL; StepState.UNCHECKED -> RunStepStatus.FLAG; else -> RunStepStatus.RUNNING }))
         }
         val dcap = dcapVerification
         if (dcap != null) {
@@ -109,7 +110,9 @@ private val AttestationSummary.modelSection: VerificationSection?
                         steps.add(RunStep("hardware quote", "dcap-qvl → `${modelDcap.tcbStatus.rawValue}` (genuine hardware, behind on Intel platform updates)", RunStepStatus.PASS))
                     }
                 is DcapVerification.Failed -> steps.add(RunStep("hardware quote", modelDcap.reason, RunStepStatus.FAIL))
-                null -> Unit
+                is DcapVerification.Unchecked -> steps.add(RunStep("hardware quote", modelDcap.reason, RunStepStatus.FLAG))
+                // Answered, but with no verdict on either quote: still unconfirmed, never a dropped step (T1).
+                null -> steps.add(RunStep("hardware quote", "verifying with Intel dcap-qvl…", RunStepStatus.PENDING))
             }
         } else {
             steps.add(RunStep("hardware quote", "verifying with Intel dcap-qvl…", RunStepStatus.PENDING))
@@ -144,6 +147,7 @@ private val AttestationSummary.gatewaySection: VerificationSection?
                     if (gw.tcbStatus == DcapTcbStatus.UP_TO_DATE) steps.add(RunStep("hardware quote", "dcap-qvl → `UpToDate`", RunStepStatus.PASS))
                     else steps.add(RunStep("hardware quote", "dcap-qvl → `${gw.tcbStatus.rawValue}` (genuine, behind on patches)", RunStepStatus.PASS))
                 is DcapVerification.Failed -> steps.add(RunStep("hardware quote", gw.reason, RunStepStatus.FAIL))
+                is DcapVerification.Unchecked -> steps.add(RunStep("hardware quote", gw.reason, RunStepStatus.FLAG))
             }
         } else {
             steps.add(RunStep("hardware quote", "verifying with Intel dcap-qvl…", RunStepStatus.PENDING))
@@ -161,7 +165,7 @@ private val AttestationSummary.gatewaySection: VerificationSection?
     }
 
 private const val TLS_WHY =
-    "proves your encrypted connection ends inside the sealed hardware — so nothing in between (network, load balancers, near.ai’s own infra) can read it."
+    "checks that the model node's own tls certificate is the one its attestation binds. teemoon checks this on a separate connection; your chat goes through near.ai's gateway, sealed end-to-end to the model's key."
 
 private fun tlsSection(result: SectionResult, steps: List<RunStep>) = VerificationSection(
     id = "tls", command = "verify tls attestation", isExtra = false, why = TLS_WHY, docURL = "$DOC_BASE/tls", result = result, steps = steps)
@@ -170,17 +174,17 @@ private val AttestationSummary.tlsSection: VerificationSection?
     get() = when (val tls = tlsAttestation) {
         // pending
         null -> tlsSection(SectionResult.RUNNING,
-            listOf(RunStep("checking", "verifying the connection terminates in the enclave…", RunStepStatus.PENDING)))
+            listOf(RunStep("checking", "checking the model node's certificate…", RunStepStatus.PENDING)))
         TlsAttestation.NotPerformed -> null   // no direct host — not applicable, don't clutter the run
         TlsAttestation.Verified -> tlsSection(SectionResult.PASSED, listOf(
             RunStep("cert bound to hardware", "`report_data[0:32]` == `sha256(address ‖ tls fingerprint)`", RunStepStatus.PASS),
             RunStep("live cert matches", "live `SPKI` hash == attested fingerprint", RunStepStatus.PASS)))
         is TlsAttestation.Failed -> tlsSection(SectionResult.FAILED,
-            listOf(RunStep("connection binding", tls.reason, RunStepStatus.FAIL)))
+            listOf(RunStep("model node certificate", tls.reason, RunStepStatus.FAIL)))
         // Couldn't complete (unreachable/unparseable) — advisory, not a
         // MITM verdict. Fail-closed elsewhere, but shown orange here.
         is TlsAttestation.Inconclusive -> tlsSection(SectionResult.FLAGGED,
-            listOf(RunStep("connection binding", "${tls.reason} — could not complete", RunStepStatus.FLAG)))
+            listOf(RunStep("model node certificate", if (tls.reason == NrasVerification.TEEMOON_FAULT) tls.reason else "${tls.reason} — could not complete", RunStepStatus.FLAG)))
     }
 
 private val AttestationSummary.chatSection: VerificationSection?
@@ -191,6 +195,7 @@ private val AttestationSummary.chatSection: VerificationSection?
                 RunStep("request + response hash", "`sha256` of what was sent/received matches the signed value", RunStepStatus.PASS),
                 RunStep("signature", responseSigEvidence ?: "`ecrecover(sig)` == attested signer", RunStepStatus.PASS))
             StepState.STUCK -> listOf(RunStep("signature", responseSigDetail, RunStepStatus.FAIL))
+            StepState.UNCHECKED -> listOf(RunStep("signature", responseSigDetail, RunStepStatus.FLAG))
             StepState.LIVE, StepState.PENDING -> listOf(RunStep("signature", "waiting for a signed response…", RunStepStatus.PENDING))
         }
         return VerificationSection(
@@ -218,6 +223,7 @@ private val AttestationSummary.provenanceSection: VerificationSection?
                 built
             }
             StepState.STUCK -> listOf(RunStep("image provenance", provenanceDetail, RunStepStatus.FAIL))
+            StepState.UNCHECKED -> listOf(RunStep("image provenance", provenanceDetail, RunStepStatus.FLAG))
             StepState.LIVE, StepState.PENDING -> listOf(RunStep("image provenance", "checking Sigstore / Rekor…", RunStepStatus.PENDING))
         }
         return VerificationSection(

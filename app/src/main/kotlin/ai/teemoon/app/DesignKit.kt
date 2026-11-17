@@ -5,6 +5,33 @@
 //         the search pill and the composer pill. Copy is lowercase; the grid is 8pt; tint is the user's.
 package ai.teemoon.app
 
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.core.animate
+import androidx.compose.foundation.gestures.ScrollScope
+import androidx.compose.foundation.gestures.TargetedFlingBehavior
+import kotlinx.coroutines.launch
+import androidx.compose.ui.semantics.customActions
+import androidx.compose.ui.semantics.CustomAccessibilityAction
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.offset
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.foundation.gestures.Orientation
+import androidx.compose.foundation.gestures.anchoredDraggable
+import androidx.compose.foundation.gestures.DraggableAnchors
+import androidx.compose.foundation.gestures.AnchoredDraggableState
+import androidx.compose.foundation.gestures.animateTo
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
+import androidx.compose.foundation.layout.wrapContentHeight
+import androidx.compose.foundation.selection.toggleable
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -19,6 +46,9 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
@@ -29,15 +59,21 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.content.contentReceiver
+import androidx.compose.foundation.content.consume
+import androidx.compose.foundation.content.hasMediaType
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.SwipeToDismissBox
 import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.rememberSwipeToDismissBoxState
@@ -57,6 +93,8 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -75,6 +113,8 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.ime
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.ui.platform.LocalDensity
@@ -84,6 +124,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.getValue
@@ -109,6 +150,9 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.window.Dialog
 import kotlin.math.abs
 import kotlin.math.cos
+import kotlin.math.roundToInt
+import androidx.compose.ui.semantics.traversalIndex
+import androidx.compose.ui.semantics.isTraversalGroup
 
 // MARK: chrome
 
@@ -160,12 +204,15 @@ fun NavBar(
 ) {
     // The title is centred on the screen, not between the controls; the controls size to their content (a text pill is wider than a circle).
     // 44pt, the UIKit navigation bar (measured on the tag: the title sits 9pt under a sheet's top edge, not 36)
-    Box(modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 8.dp)) {
-        Box(Modifier.align(Alignment.CenterStart)) { leading() }
-        Box(Modifier.align(Alignment.CenterEnd)) { trailing() }
+    // The title's side inset is the WIDER control's width plus a gap (at most 80pt), the same on both sides so the title
+    // stays centred — not a fixed 80pt, which cut "import from near.ai" to "import from near…" beside a lone back circle (pm
+    // 2026-11-01) where UIKit's bar, which also lays the title out between the measured items, fits it.
+    Layout(modifier = modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 8.dp), content = {
+        Box { leading() }
+        Box { trailing() }
         // E2EETitleBlock: the title line AND the caption are ONE control (44pt minimum, the whole rectangle) with one
         // action. Two stacked targets a few points apart let the finger pick which sheet opened (2026-09-09).
-        Column(Modifier.align(Alignment.Center).padding(horizontal = 80.dp).heightIn(min = 44.dp)
+        Column(Modifier.heightIn(min = 44.dp)
             .then(if (onTitle != null) Modifier.clickable(onClick = onTitle).testTag("chat.titleBlock") else Modifier),
             horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -174,12 +221,52 @@ fun NavBar(
                 Text(title, style = MaterialTheme.typography.titleMedium, maxLines = 1, overflow = TextOverflow.Ellipsis, textAlign = TextAlign.Center, modifier = Modifier.weight(1f, fill = false))
                 if (titleChevron) Icon(Icons.Filled.KeyboardArrowDown, null, tint = TeemoonColors.secondaryLabel, modifier = Modifier.size(18.dp))
             }
-            subtitle?.let {
-                Text(it, style = MaterialTheme.typography.bodySmall, color = subtitleColor, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag("chat.trustChip"))
+            // a caption that changes ("checking …" → "end-to-end encrypted") fades through, the old one out first, rather
+            // than cut (motion-pass item 4)
+            subtitle?.let { caption ->
+                androidx.compose.animation.AnimatedContent(caption, label = "caption", transitionSpec = {
+                    androidx.compose.animation.fadeIn(Motion.axisFadeIn()) togetherWith androidx.compose.animation.fadeOut(Motion.axisFadeOut())
+                }) { text ->
+                    Text(text, style = MaterialTheme.typography.bodySmall, color = subtitleColor, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag("chat.trustChip"))
+                }
             }
+        }
+    }) { measurables, constraints ->
+        val loose = constraints.copy(minWidth = 0, minHeight = 0)
+        val lead = measurables[0].measure(loose)
+        val trail = measurables[1].measure(loose)
+        // never MORE than the old 80pt: a text pill ("cancel", "save") reaches under it, and the titles beside pills fit there.
+        // Except at the accessibility sizes, where the pill outgrows it and the title ran into it: "cancelbrowse models"
+        // at 200% (pm 2026-11-04). There the title takes the space BETWEEN the controls, as UIKit's bar lays it out, and
+        // sits as near the centre as that allows.
+        val gap = NAV_TITLE_GAP.roundToPx()
+        val large = fontScale >= 1.5f
+        val side = minOf(maxOf(lead.width, trail.width) + gap, NAV_TITLE_INSET.roundToPx())
+        val titleWidth = (if (large) constraints.maxWidth - lead.width - trail.width - 2 * gap else constraints.maxWidth - 2 * side).coerceAtLeast(0)
+        val title = measurables[2].measure(loose.copy(maxWidth = titleWidth))
+        val height = maxOf(lead.height, trail.height, title.height, constraints.minHeight)
+        // rounded as Alignment.Center rounds, so a title that fitted before sits on the same pixel
+        fun mid(space: Int, size: Int) = ((space - size) / 2f).roundToInt()
+        layout(constraints.maxWidth, height) {
+            lead.place(0, mid(height, lead.height))
+            trail.place(constraints.maxWidth - trail.width, mid(height, trail.height))
+            val centred = mid(constraints.maxWidth, title.width)
+            val x = if (large) centred.coerceIn(lead.width + gap, maxOf(lead.width + gap, constraints.maxWidth - trail.width - gap - title.width)) else centred
+            title.place(x, mid(height, title.height))
         }
     }
 }
+
+/**
+ * iOS's `dynamicTypeSize.isAccessibilitySize`: Android 14's nonlinear font sizes above the old 1.3 maximum (1.5, 1.8,
+ * 2.0) are the counterpart of iOS's AX1–AX5, where a layout that holds at the standard sizes changes shape.
+ */
+@Composable
+fun isAccessibilitySize(): Boolean = androidx.compose.ui.platform.LocalDensity.current.fontScale >= 1.5f
+
+/** The gap between a navigation bar's control and its title, and the most the title is inset from the bar's padding. */
+private val NAV_TITLE_GAP = 8.dp
+private val NAV_TITLE_INSET = 80.dp
 
 // MARK: grouped lists
 
@@ -197,6 +284,12 @@ fun GroupedPage(modifier: Modifier = Modifier, scroll: Boolean = true, scrollSta
      * starts with a SectionLabel (20pt of its own top padding) pass [LABEL_FIRST_INSET] instead.
      */
     topInset: Dp = 35.dp,
+    /**
+     * Pinned under the scrolling content, with a hairline above it, at every sheet height: the sheet's frame ends at the
+     * visible edge, so this stays on screen at the half detent too (the where sheet's reasoning bar, the maintainer 2026-11-13).
+     * Header pages only. It takes the sheet's bottom safe area, which the scrolling content then doesn't add.
+     */
+    footer: (@Composable () -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit) {
     val focus = LocalFocusManager.current
     val base = modifier.fillMaxSize().background(TeemoonColors.groupedBackground).statusBarsPadding().navigationBarsPadding().imePadding()
@@ -218,7 +311,13 @@ fun GroupedPage(modifier: Modifier = Modifier, scroll: Boolean = true, scrollSta
                 if (scrolled) drawRect(Brush.verticalGradient(listOf(ground, ground.copy(alpha = 0f)), endY = 24.dp.toPx()),
                     size = androidx.compose.ui.geometry.Size(size.width, 24.dp.toPx()))
             }
-            Column((if (scroll) Modifier.weight(1f).fillMaxWidth().then(fade).verticalScroll(state) else Modifier.weight(1f).fillMaxWidth()).padding(top = topInset, bottom = 24.dp)) { content(); if (scroll) SheetScrollEnd() }
+            Column((if (scroll) Modifier.weight(1f).fillMaxWidth().then(fade).verticalScroll(state) else Modifier.weight(1f).fillMaxWidth()).padding(top = topInset, bottom = 24.dp)) { content(); if (scroll && footer == null) SheetScrollEnd() }
+            if (footer != null) {
+                val separator = TeemoonColors.separator
+                // a band of the sheet's frame (TeemoonColors.sheetBand), 8 above and below its row, the sheet's safe area under it
+                Box(Modifier.fillMaxWidth().background(TeemoonColors.sheetBand).drawWithContent { drawContent(); drawLine(separator, Offset(0f, 0f), Offset(size.width, 0f), 1f) }
+                    .padding(top = 8.dp, bottom = 8.dp + LocalSheetBottomInset.current)) { footer() }
+            }
         }
         else Column((if (scroll) base.verticalScroll(scrollState ?: rememberScrollState()) else base).padding(bottom = 24.dp)) { content(); if (scroll) SheetScrollEnd() }
     }
@@ -414,6 +513,48 @@ fun CopyGlyph(tint: Color = TeemoonColors.tint, sizeDp: Dp = 18.dp) {
     }
 }
 
+/** SF `square.and.arrow.down`: an open tray with an arrow into it — save in an image's menu. */
+@Composable
+fun SaveGlyph(tint: Color = TeemoonColors.label, sizeDp: Dp = 18.dp) {
+    Canvas(Modifier.size(sizeDp)) {
+        val w = size.width; val h = size.height; val s = 1.5.dp.toPx(); val cap = StrokeCap.Round
+        val tray = Path().apply { moveTo(w * 0.34f, h * 0.42f); lineTo(w * 0.16f, h * 0.42f); lineTo(w * 0.16f, h * 0.9f); lineTo(w * 0.84f, h * 0.9f); lineTo(w * 0.84f, h * 0.42f); lineTo(w * 0.66f, h * 0.42f) }
+        drawPath(tray, tint, style = Stroke(s, cap = cap, join = StrokeJoin.Round))
+        drawLine(tint, Offset(w * 0.5f, h * 0.08f), Offset(w * 0.5f, h * 0.64f), s, cap)
+        drawLine(tint, Offset(w * 0.36f, h * 0.5f), Offset(w * 0.5f, h * 0.64f), s, cap); drawLine(tint, Offset(w * 0.64f, h * 0.5f), Offset(w * 0.5f, h * 0.64f), s, cap)
+    }
+}
+
+/** SF `square.and.arrow.up`: an open tray with an arrow out of it — share in an image's menu. */
+@Composable
+fun ShareGlyph(tint: Color = TeemoonColors.label, sizeDp: Dp = 18.dp) {
+    Canvas(Modifier.size(sizeDp)) {
+        val w = size.width; val h = size.height; val s = 1.5.dp.toPx(); val cap = StrokeCap.Round
+        val tray = Path().apply { moveTo(w * 0.34f, h * 0.42f); lineTo(w * 0.16f, h * 0.42f); lineTo(w * 0.16f, h * 0.9f); lineTo(w * 0.84f, h * 0.9f); lineTo(w * 0.84f, h * 0.42f); lineTo(w * 0.66f, h * 0.42f) }
+        drawPath(tray, tint, style = Stroke(s, cap = cap, join = StrokeJoin.Round))
+        drawLine(tint, Offset(w * 0.5f, h * 0.06f), Offset(w * 0.5f, h * 0.62f), s, cap)
+        drawLine(tint, Offset(w * 0.36f, h * 0.2f), Offset(w * 0.5f, h * 0.06f), s, cap); drawLine(tint, Offset(w * 0.64f, h * 0.2f), Offset(w * 0.5f, h * 0.06f), s, cap)
+    }
+}
+
+/**
+ * The composer's remove control on an attached image (iOS S42, the maintainer 2026-11-11: "clearly visible"): a 24dp
+ * black circle at 85%, a 1.5dp white ring and a bold white x, its top-right corner 8dp past the thumbnail's; the
+ * target is 48dp (Android's minimum; iOS 44pt) around it, reaching into the thumbnail.
+ */
+@Composable
+fun ImageRemoveButton(onRemove: () -> Unit, modifier: Modifier = Modifier) {
+    Box(modifier.size(48.dp).clickable(onClick = onRemove).semantics { contentDescription = "remove image"; role = Role.Button }
+        .testTag("chat.image.remove"), contentAlignment = Alignment.Center) {
+        Box(Modifier.size(24.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.85f)).border(1.5.dp, Color.White, CircleShape))
+        Canvas(Modifier.size(9.dp)) {
+            val s = 2.dp.toPx()
+            drawLine(Color.White, Offset.Zero, Offset(size.width, size.height), s, StrokeCap.Round)
+            drawLine(Color.White, Offset(size.width, 0f), Offset(0f, size.height), s, StrokeCap.Round)
+        }
+    }
+}
+
 /** SF `brain`: two lobes and the fissure between them — Think Harder in a reply's menu. */
 @Composable
 fun BrainGlyph(tint: Color = TeemoonColors.label, sizeDp: Dp = 18.dp) {
@@ -510,10 +651,16 @@ fun UpDownChevrons(tint: Color = TeemoonColors.secondaryLabel, sizeDp: Dp = 12.d
 /**
  * The app's alert (ProductAlert on iOS): a card on the elevated tertiary ground, a semibold title, a secondary
  * message, then every action as a full-width pill stacked in order — never Material's row of text buttons, which
- * wraps three actions onto two lines.
+ * wraps three actions onto two lines. A choice of three (the E2EE confirm, the mobile-data download) is the same card
+ * with three pills. 1.0.6's look (the maintainer 2026-10-31, "Revert all to 1.0.6": the 10-25 Material dialog and bottom sheet
+ * are gone, and with them the red "delete…" they brought); only an action the call site names keeps iOS's red.
  */
 @Composable
-fun IosAlert(title: String, message: String, actions: List<Pair<String, () -> Unit>>, onDismiss: () -> Unit) {
+fun IosAlert(
+    title: String, message: String, actions: List<Pair<String, () -> Unit>>, onDismiss: () -> Unit,
+    /** Labels drawn red: iOS's role .destructive, e.g. "send unencrypted" (E2EESendChoice, iOS f600e4e). */
+    destructive: Set<String> = emptySet(),
+) {
     // An alert is three kinds of copy and each is a separate row: a title that
     // matches while its body does not is exactly the ChatView finding the copy
     // audit turned up, and one merged row would have hidden it.
@@ -524,11 +671,14 @@ fun IosAlert(title: String, message: String, actions: List<Pair<String, () -> Un
     }
     Dialog(onDismissRequest = onDismiss) {
         Column(Modifier.fillMaxWidth().clip(RoundedCornerShape(28.dp)).background(Color(0xFF2C2C2E)).padding(20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Text(title, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold), color = Color.White)
-            Text(message, style = MaterialTheme.typography.bodyMedium, color = Color(0xFFEBEBF5).copy(alpha = 0.6f), modifier = Modifier.padding(bottom = 6.dp))
+            // an empty title or message takes no line (the image-refusal note is a message alone)
+            if (title.isNotEmpty()) Text(title, style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold), color = Color.White)
+            if (message.isNotEmpty()) Text(message, style = MaterialTheme.typography.bodyMedium, color = Color(0xFFEBEBF5).copy(alpha = 0.6f), modifier = Modifier.padding(bottom = 6.dp))
             actions.forEach { (label, act) ->
-                Box(Modifier.fillMaxWidth().height(48.dp).clip(CircleShape).background(Color(0xFF3A3A3C)).clickable(onClick = act), contentAlignment = Alignment.Center) {
-                    Text(label, style = MaterialTheme.typography.bodyLarge, color = TeemoonColors.tint)
+                // at least 48dp, and taller when a label wraps (the export's delete names the file, v9) rather than clipped
+                Box(Modifier.fillMaxWidth().heightIn(min = 48.dp).clip(RoundedCornerShape(24.dp)).background(Color(0xFF3A3A3C)).clickable(onClick = act)
+                    .padding(horizontal = 16.dp, vertical = 8.dp), contentAlignment = Alignment.Center) {
+                    Text(label, style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center, color = if (label in destructive) TeemoonColors.red else TeemoonColors.tint)
                 }
             }
         }
@@ -583,38 +733,101 @@ fun InsetRow(
 }
 
 /**
- * `.swipeActions(edge: .trailing)` for one destructive action: a swipe from the trailing edge reveals [label] on red, the
- * action fires when the swipe settles past the threshold, and the row springs back rather than dismissing (`false`) —
- * what happens next is the action's own affair (an alert, or the row leaving the list because the store no longer has
- * it). No leading swipe. The content carries the card's ground so the red is REVEALED beside the row, not seen through
- * it. The same box the chats list uses; every inset row that iOS lets you swipe goes through here.
+ * `.swipeActions(edge: .trailing)` for one destructive action, as iOS draws it: a part swipe OPENS the row on a red
+ * button that stays and acts on a tap; a full swipe acts at once where iOS allows it ([allowsFullSwipe], its default),
+ * else it only opens. Either way the row closes again rather than dismissing — what happens next is the action's own
+ * affair (an alert, or the row leaving the list because the store no longer has it). A tap on an open row only closes
+ * it. No leading swipe. The content carries the card's ground so the red is REVEALED beside the row.
  *
- * `confirmValueChange` is deprecated in favour of dynamic anchor sets. Vetoing the dismiss is the whole point here
- * (the row never leaves; the action decides), and the journeys' swipe goldens were recorded against this state, so the
- * migration is a device-verified change — kept in this one place.
+ * It was a SwipeToDismissBox whose red label was only a background painted while the row moved (the maintainer's Pixel,
+ * 2026-11-08: "sometimes it just shows unequip but doesnt select it"): a swipe short of the threshold showed the word,
+ * sprang back and did nothing — there was no button — and its confirmValueChange fired the action on every frame past
+ * the threshold (eleven times for one full swipe, TrailingSwipeTest). The chats list, places & keys, a setup's models
+ * and the where sheet all go through here.
  */
 @Composable
-fun TrailingSwipe(label: String, onAction: () -> Unit, modifier: Modifier = Modifier, content: @Composable () -> Unit) {
-    @Suppress("DEPRECATION")
-    val state = rememberSwipeToDismissBoxState(confirmValueChange = { v -> if (v == SwipeToDismissBoxValue.EndToStart) onAction(); false })
-    SwipeToDismissBox(state = state, enableDismissFromStartToEnd = false, modifier = modifier, backgroundContent = {
-        Box(Modifier.fillMaxSize().background(TeemoonColors.red), contentAlignment = Alignment.CenterEnd) {
-            Text(label, style = MaterialTheme.typography.bodyLarge, color = Color.White, modifier = Modifier.padding(end = 24.dp))
+fun TrailingSwipe(label: String, onAction: () -> Unit, modifier: Modifier = Modifier, allowsFullSwipe: Boolean = true, content: @Composable () -> Unit) {
+    val density = LocalDensity.current
+    val scope = rememberCoroutineScope()
+    val act by rememberUpdatedState(onAction)
+    val state = remember { AnchoredDraggableState(SwipeSlot.CLOSED) }
+    var width by remember { mutableIntStateOf(0) }
+    val buttonWidth = 96.dp
+    LaunchedEffect(width, allowsFullSwipe) {
+        if (width == 0) return@LaunchedEffect
+        val open = with(density) { buttonWidth.toPx() }
+        state.updateAnchors(DraggableAnchors {
+            SwipeSlot.CLOSED at 0f
+            SwipeSlot.OPEN at -open
+            if (allowsFullSwipe) SwipeSlot.FULL at -width.toFloat()
+        })
+    }
+    // a full swipe acts ONCE, when it settles there, then the row closes
+    LaunchedEffect(state) {
+        snapshotFlow { state.settledValue }.collect { if (it == SwipeSlot.FULL) { act(); state.animateTo(SwipeSlot.CLOSED) } }
+    }
+    // Where the row lands is decided by how far it was pulled, never how fast (iOS): the default fling carried a moderate
+    // part swipe on past the button to the full anchor, and the action ran on a swipe meant to open.
+    val fling = remember(state) { NearestAnchorFling(state) }
+    val open = state.currentValue != SwipeSlot.CLOSED || (state.offset.takeIf { !it.isNaN() } ?: 0f) < 0f
+    Box(modifier.onSizeChanged { width = it.width }.clipToBounds()) {
+        // the revealed button: under the row, reachable only once the row has moved off it
+        Box(Modifier.matchParentSize().background(TeemoonColors.red), contentAlignment = Alignment.CenterEnd) {
+            Box(Modifier.fillMaxHeight().widthIn(min = buttonWidth)
+                .clickable(enabled = open) { act(); scope.launch { state.animateTo(SwipeSlot.CLOSED) } }
+                .padding(horizontal = 16.dp), contentAlignment = Alignment.Center) {
+                Text(label, style = MaterialTheme.typography.bodyLarge, color = Color.White, maxLines = 1)
+            }
         }
-    }) { Box(Modifier.background(TeemoonColors.groupedCard)) { content() } }
+        Box(Modifier.offset { IntOffset((state.offset.takeIf { !it.isNaN() } ?: 0f).roundToInt(), 0) }
+            .anchoredDraggable(state, Orientation.Horizontal, flingBehavior = fling)
+            .background(TeemoonColors.groupedCard)
+            // iOS exposes swipe actions to VoiceOver as actions; TalkBack gets the same one
+            .semantics { customActions = listOf(CustomAccessibilityAction(label) { act(); true }) }) {
+            content()
+            // an open row's tap only closes it (iOS), never reaches the row's own action
+            if (open) Box(Modifier.matchParentSize().pointerInput(Unit) { detectTapGestures { scope.launch { state.animateTo(SwipeSlot.CLOSED) } } })
+        }
+    }
+}
+
+private enum class SwipeSlot { CLOSED, OPEN, FULL }
+
+/** Settles a released row on the anchor nearest its offset, whatever the release velocity. */
+private class NearestAnchorFling(private val state: AnchoredDraggableState<SwipeSlot>) : TargetedFlingBehavior {
+    override suspend fun ScrollScope.performFling(initialVelocity: Float, onRemainingDistanceUpdated: (Float) -> Unit): Float {
+        val from = state.offset.takeIf { !it.isNaN() } ?: return initialVelocity
+        val target = state.anchors.closestAnchor(from) ?: return initialVelocity
+        val to = state.anchors.positionOf(target)
+        var last = from
+        animate(from, to, animationSpec = Motion.settle()) { value, _ -> scrollBy(value - last); last = value }
+        return 0f
+    }
 }
 
 /** A row whose trailing control is a switch. */
 @Composable
-fun ToggleInsetRow(title: String, on: Boolean, onSet: (Boolean) -> Unit, subtitle: String? = null, enabled: Boolean = true, divider: Boolean = false, leading: (@Composable () -> Unit)? = null) {
+fun ToggleInsetRow(title: String, on: Boolean, onSet: (Boolean) -> Unit, subtitle: String? = null, enabled: Boolean = true, divider: Boolean = false, leading: (@Composable () -> Unit)? = null,
+    /** The on-track: the accent (ContentView's `.tint`), or a row's own (developer mode's green). */
+    checkedTrack: Color = TeemoonColors.tint) {
     LocalRenderRecorder.current?.let { rec ->
         rec.row(kind = "toggleRowTitle", text = title)
         subtitle?.let { rec.row(kind = "toggleRowSubtitle", text = it) }
     }
-    InsetRow(title, subtitle, divider = divider, leading = leading, trailing = {
-        // ContentView / SettingsView apply `.tint(appTintColor)`: every toggle's on-track is the accent, not UIKit's green
-        Switch(checked = on, onCheckedChange = onSet, enabled = enabled, colors = SwitchDefaults.colors(checkedTrackColor = TeemoonColors.tint, checkedThumbColor = Color.White, uncheckedTrackColor = TeemoonColors.fill, uncheckedBorderColor = Color.Transparent, uncheckedThumbColor = Color.White))
-    })
+    // The whole row is the toggle: its touch target is the full-width row, at least 48dp tall. The switch is drawn inside
+    // the title's line (it overflows into the row's padding), so a toggle row is as tall as its sibling rows, as iOS's
+    // (the maintainer's Pixel, 2026-11-07: settings › chats' haptics row stood taller — the switch's own 48dp touch box
+    // plus the row's padding made it 72dp).
+    InsetRow(title, subtitle, divider = divider, leading = leading,
+        modifier = Modifier.toggleable(value = on, enabled = enabled, role = androidx.compose.ui.semantics.Role.Switch, onValueChange = onSet),
+        trailing = {
+            Box(Modifier.height(24.dp).wrapContentHeight(unbounded = true), contentAlignment = Alignment.Center) {
+                CompositionLocalProvider(LocalMinimumInteractiveComponentSize provides Dp.Unspecified) {
+                    // ContentView / SettingsView apply `.tint(appTintColor)`: every toggle's on-track is the accent, not UIKit's green
+                    Switch(checked = on, onCheckedChange = null, enabled = enabled, colors = SwitchDefaults.colors(checkedTrackColor = checkedTrack, checkedThumbColor = Color.White, uncheckedTrackColor = TeemoonColors.fill, uncheckedBorderColor = Color.Transparent, uncheckedThumbColor = Color.White))
+                }
+            }
+        })
 }
 
 /** A text field that lives inside an [InsetGroup]: no outline, no floating label — the placeholder is the label. */
@@ -725,6 +938,11 @@ fun Capsule(
     text: String, modifier: Modifier = Modifier, onClick: (() -> Unit)? = null, tint: Color = TeemoonColors.label, filled: Boolean = false, raised: Boolean = false,
     enabled: Boolean = true, glyph: ImageVector? = null, glyphText: String? = null, background: Color? = null, outlined: Boolean = false,
     leading: (@Composable () -> Unit)? = null,
+    /** false: the glyph alone (the composer's chips at accessibility sizes); the label is still the content description. */
+    labelShown: Boolean = true,
+    /** The composer's row takes 34 tall and 14 at the sides (COMPOSER_PANEL.md @ 06c7e759); elsewhere 32 and 12. */
+    height: androidx.compose.ui.unit.Dp = 32.dp,
+    sidePadding: androidx.compose.ui.unit.Dp = 12.dp,
 ) {
     // Raised: the tertiary background in the dark (the lightest rung of that ladder); in the light that rung is white,
     // the same as the chat's ground, so the system fill stands in.
@@ -733,14 +951,17 @@ fun Capsule(
     // ends near 12% white, not 40% white. Material's 38% content alpha alone read four times brighter than iOS.
     val fg = if (filled) Color.White else if (enabled) tint else TeemoonColors.tertiaryLabel
     val alpha = if (enabled) 1f else 0.4f
-    var m = modifier.height(32.dp).clip(CircleShape).background(bg.copy(alpha = bg.alpha * alpha))
+    // the glyph alone is a circle the row's height, as "+" (COMPOSER_PANEL.md @ 06c7e759: "web goes icon-only (34)")
+    val circle = !labelShown && leading == null && glyphText == null
+    var m = (if (circle) modifier.size(height) else modifier.height(height)).clip(CircleShape).background(bg.copy(alpha = bg.alpha * alpha))
     if (outlined) m = m.border(1.dp, TeemoonColors.separator, CircleShape)
     if (onClick != null && enabled) m = m.clickable(onClick = onClick)
-    Row(m.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    if (!labelShown) m = m.semantics { contentDescription = text }
+    Row(if (circle) m else m.padding(horizontal = sidePadding), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = if (circle) Arrangement.Center else Arrangement.spacedBy(6.dp)) {
         leading?.invoke()
         glyph?.let { Icon(it, null, tint = fg.copy(alpha = alpha), modifier = Modifier.size(15.dp)) }
         glyphText?.let { Text(it, style = MaterialTheme.typography.labelMedium, color = fg.copy(alpha = alpha)) }
-        Text(text, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = fg.copy(alpha = alpha), maxLines = 1, overflow = TextOverflow.Ellipsis)
+        if (labelShown) Text(text, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = fg.copy(alpha = alpha), maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -748,13 +969,13 @@ fun Capsule(
 @Composable
 fun PrimaryPill(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true, tint: Color = TeemoonColors.tint, glyph: (@Composable () -> Unit)? = null,
     /** Null: the background colour, inverting against the user's tint (iOS's Label). Set for a FIXED fill. */
-    labelColor: Color? = null) {
+    labelColor: Color? = null, height: Dp = 48.dp) {
     val pillStyle = MaterialTheme.typography.titleMedium
     LocalRenderRecorder.current?.row(
         kind = "primaryPill", text = text,
         fontSize = pillStyle.fontSize, fontWeight = pillStyle.fontWeight,
         color = if (tint == TeemoonColors.tint) "tint" else "custom")
-    Box(modifier.fillMaxWidth().height(48.dp).clip(CircleShape).background(tint.copy(alpha = if (enabled) 1f else 0.4f)).clickable(enabled = enabled, onClick = onClick), contentAlignment = Alignment.Center) {
+    Box(modifier.fillMaxWidth().height(height).clip(CircleShape).background(tint.copy(alpha = if (enabled) 1f else 0.4f)).clickable(enabled = enabled, onClick = onClick), contentAlignment = Alignment.Center) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             glyph?.invoke()
             // the label is PlatformColors.background on the accent (black in the dark, white in the light), as iOS's Label is
@@ -808,28 +1029,313 @@ fun Composer(
     placeholder: String = "message", canSend: Boolean = value.isNotBlank(),
     /** ContentView: the prompt takes focus when the current thread is empty (the keyboard rises with a new chat). */
     focusRequester: FocusRequester? = null,
+    /**
+     * IMAGES.md §4d: the "+" (null: none) — the attach sheet on a model that reads images, the filtered where sheet on
+     * one that can't, tint on every model (IMAGES.md §4d) — and the picked images, each removable.
+     */
+    onAttach: (() -> Unit)? = null,
+    images: List<androidx.compose.ui.graphics.ImageBitmap> = emptyList(),
+    onRemoveImage: (Int) -> Unit = {},
+    /** Photos on their way into the strip (ChatViewModel.draftPending): a placeholder tile each, with a small spinner. */
+    pendingImages: Int = 0,
+    /**
+     * A paste that attaches images (ComposerPaste.images): the clip's type list, its items in order, and the data: URL its
+     * text-only items make, which attaches after them (ComposerPaste.dataUrlBeside).
+     */
+    onPasteImages: ((mimeTypes: List<String>, items: List<ai.teemoon.app.imaging.ComposerPaste.Item>, dataUrl: String?) -> Unit)? = null,
+    /** A paste whose text is one `data:` URL (IMAGES.md §4c): it is an image, never text. */
+    onPasteDataUrl: ((String) -> Unit)? = null,
+    /** The image / over-limit note: a caption inside the panel, under the strip, above the text (COMPOSER_PANEL.md). */
+    note: String? = null,
+    /** The bottom row's where chip and web chip, drawn icon-only at accessibility sizes (null: not shown). */
+    whereChip: (@Composable (iconOnly: Boolean) -> Unit)? = null,
+    webChip: (@Composable (iconOnly: Boolean) -> Unit)? = null,
+    /** The where chip carries a status (downloading, waiting, not downloaded): the web chip goes icon-only to give it room. */
+    whereStatus: Boolean = false,
+    /** The text's scroll (the 17s scroll with it); a snapshot sets a resting offset to show the top edge. */
+    textScroll: androidx.compose.foundation.ScrollState = androidx.compose.foundation.rememberScrollState(),
 ) {
-    Row(modifier.fillMaxWidth().defaultMinSize(minHeight = 48.dp).clip(RoundedCornerShape(24.dp)).background(TeemoonColors.secondaryBackground).padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
-        verticalAlignment = Alignment.Bottom, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        val style = MaterialTheme.typography.bodyLarge.copy(color = TeemoonColors.label)
+    // One panel (teemoon-ios docs/COMPOSER_PANEL.md @ 85c544c6; the maintainer 2026-11-12, "One panel, in 1.1.0"): the
+    // photos strip, the note, the text, then one bottom row — "+" · where chip · web chip … send/stop. Nothing floats
+    // beside or above it (it replaces dbf25b36's "+" outside and the chip row above).
+    val fontScale = androidx.compose.ui.platform.LocalDensity.current.fontScale
+    val iconOnly = ComposerPanel.iconOnlyChips(fontScale)
+    Column(modifier.fillMaxWidth().clip(RoundedCornerShape(ComposerSpacing.PANEL_RADIUS)).background(TeemoonColors.secondaryBackground)
+        .border(ComposerSpacing.PANEL_EDGE, TeemoonColors.separator, RoundedCornerShape(ComposerSpacing.PANEL_RADIUS))
+        .semantics { isTraversalGroup = true }.testTag("chat.composerPanel")) {
+    // IMAGES.md §4d: 64dp thumbnails with 14dp corners. A new one scales from 0.6 to 1 while it fades in; the x takes one
+    // away by the reverse (to 0.6, fading) while the ones after it slide over — the width shrinking with it — all on one
+    // spring (teemoon-ios d14c703a: duration 0.35 s, bounce 0.3 → damping 0.7, stiffness (2π/0.35)²). The last one leaving
+    // folds the strip in the same motion, the composer's height with it. A send takes the photos on its frame and only the height closes, with the keyboard. Thumbnails here
+    // when the composer first draws (a restored draft, a snapshot) don't grow. Each is known by its bitmap, never its
+    // position (ComposerThumbs): an x mid-animation acts on its own image at once. Remove animations: all instant.
+    // ComposerSpacing's air above and 24dp after, so the remove circle riding past a corner isn't clipped.
+    val keys = images.map(System::identityHashCode)
+    val firstThumbs = remember { keys.toSet() }
+    // the bitmaps by key, kept while one is leaving: it has gone from [images] by then
+    val bitmaps = remember { HashMap<Int, androidx.compose.ui.graphics.ImageBitmap>() }
+    images.forEach { bitmaps[System.identityHashCode(it)] = it }
+    var xed by remember { mutableStateOf(emptySet<Int>()) }
+    val shownBefore = remember { arrayOf(emptyList<ai.teemoon.app.imaging.ComposerThumbs.Shown>()) }
+    val shown = ai.teemoon.app.imaging.ComposerThumbs.next(shownBefore[0], keys, xed).also { shownBefore[0] = it }
+    // A photo that lands where its placeholder tile was takes the tile's place by fading in over it (the maintainer 2026-11-14,
+    // "so fade"): no grow, no scale from 0.6 — the tile already held the space. Counted as the tiles that went in the
+    // same composition the new keys came.
+    val tileTrack = remember { arrayOf(keys.toSet(), pendingImages) }
+    val fromTile = remember { mutableSetOf<Int>() }
+    var replacedNow = 0
+    // the placeholder tiles, each [id, leaving]: plain state read once per composition; a tile's fade-out ending bumps tileTick
+    val tiles = remember { mutableListOf<IntArray>() }
+    val tileSeq = remember { intArrayOf(0) }
+    // tiles there when the composer first draws (a share's chat opening with its photos still being read) are simply
+    // there, as first thumbnails don't grow; only later ones fade in
+    val firstTiles = remember { pendingImages }
+    var tileTick by remember { mutableStateOf(0) }
+    run {
+        val replaced = ((tileTrack[1] as Int) - pendingImages).coerceAtLeast(0)
+        @Suppress("UNCHECKED_CAST") val before = tileTrack[0] as Set<Int>
+        val landed = keys.filter { it !in before }.take(replaced)
+        fromTile += landed; replacedNow = landed.size
+        fromTile.retainAll(keys.toSet())
+        tileTrack[0] = keys.toSet(); tileTrack[1] = pendingImages
+    }
+    // a send takes every image at once (the maintainer 2026-11-13, "Ios way"): from that frame the strip draws nothing, as the text
+    // goes; the row it had keeps its place so the panel's height closes on the keyboard's frames
+    val lastRow = remember { arrayOf(emptyList<ai.teemoon.app.imaging.ComposerThumbs.Shown>()) }
+    val sent = ai.teemoon.app.imaging.ComposerThumbs.sent(shown, lastRow[0])
+    val drawn = ai.teemoon.app.imaging.ComposerThumbs.drawn(shown, lastRow[0]).also { if (shown.isNotEmpty()) lastRow[0] = shown }
+    bitmaps.keys.retainAll(drawn.map { it.key }.toSet())
+    val latestKeys by androidx.compose.runtime.rememberUpdatedState(keys)
+    val motion = Motion.playful<Float>()
+    // sizes never bounce (motion-pass item 3: the panel overshot its rest by 3.7 dp and crept back); only a
+    // thumbnail's scale keeps the playful spring
+    val sizeMotion = Motion.spatial<androidx.compose.ui.unit.IntSize>()
+    // the space closes on the thumbnails' spring, which ends with the keyboard (SendMotionTest: both settle ~345 ms after
+    // the tap); the last x-ed one also fades as it folds, a send's photos are gone already
+    androidx.compose.animation.AnimatedVisibility(visible = keys.isNotEmpty() || pendingImages > 0,
+        enter = androidx.compose.animation.expandVertically(sizeMotion) + androidx.compose.animation.fadeIn(Motion.fadeIn()),
+        exit = androidx.compose.animation.shrinkVertically(sizeMotion) + (if (sent) androidx.compose.animation.ExitTransition.None else androidx.compose.animation.fadeOut(Motion.fadeOut()))) {
+        androidx.compose.runtime.SideEffect { ComposerTrace.stripDrawn = if (sent) 0 else drawn.size }
+        androidx.compose.runtime.DisposableEffect(Unit) { onDispose { ComposerTrace.stripDrawn = 0 } }
+        Row(Modifier.graphicsLayer { alpha = if (sent) 0f else 1f }.testTag("chat.strip").semantics { traversalIndex = ComposerPanel.traversal(ComposerPanel.Item.STRIP); motionAlpha = if (sent) 0f else 1f }.horizontalScroll(androidx.compose.foundation.rememberScrollState())
+            .padding(start = ComposerSpacing.THUMBS_START, end = 24.dp - ComposerSpacing.THUMB_GAP, top = ComposerSpacing.THUMBS_TOP)) {
+            for (s in drawn) androidx.compose.runtime.key(s.key) {
+                val img = bitmaps[s.key]
+                val state = remember { androidx.compose.animation.core.MutableTransitionState(s.key in firstThumbs) }
+                state.targetState = !s.leaving
+                if (s.leaving && state.isIdle && !state.currentState) androidx.compose.runtime.LaunchedEffect(s.key) { xed = xed - s.key }
+                val tile = s.key in fromTile
+                if (img != null) androidx.compose.animation.AnimatedVisibility(state,
+                    enter = if (tile) androidx.compose.animation.EnterTransition.None else androidx.compose.animation.scaleIn(motion, initialScale = 0.6f) + androidx.compose.animation.fadeIn(Motion.fadeIn()) +
+                        androidx.compose.animation.expandHorizontally(sizeMotion, clip = false),
+                    exit = androidx.compose.animation.scaleOut(motion, targetScale = 0.6f) + androidx.compose.animation.fadeOut(Motion.fadeOut()) +
+                        androidx.compose.animation.shrinkHorizontally(sizeMotion, clip = false)) {
+                    // the gap after each thumbnail travels with it, so it closes with the slide, not after
+                    // from a tile: the photo fades in over the tile's fill, Motion's short fade; otherwise the scale-in above
+                    val fade by transition.animateFloat({ Motion.fadeIn() }, label = "tile-fade") { if (!tile || it == androidx.compose.animation.EnterExitState.Visible) 1f else 0f }
+                    Box(Modifier.padding(end = ComposerSpacing.THUMB_GAP)) {
+                        // the whole cell fades, its x with it (iOS fades the cell; the design review of d64e430f found the x
+                        // drawn at full strength over a bare tile); the tile's fill shows under it while it does
+                        Box(Modifier.size(64.dp).then(if (tile && fade < 1f) Modifier.clip(RoundedCornerShape(14.dp)).background(TeemoonColors.fill) else Modifier)) {
+                        Box(Modifier.fillMaxSize().graphicsLayer { alpha = fade }.testTag("chat.image").semantics { motionAlpha = fade }) {
+                            androidx.compose.foundation.Image(img, null, contentScale = androidx.compose.ui.layout.ContentScale.Crop, modifier = Modifier.fillMaxSize().clip(RoundedCornerShape(14.dp)))
+                            // the 48dp target's centre sits on the circle's: 20dp right of and 20dp above the TopEnd-aligned box's
+                            ImageRemoveButton({ ai.teemoon.app.imaging.ComposerThumbs.indexOf(latestKeys, s.key)?.let { i -> xed = xed + s.key; onRemoveImage(i) } },
+                                Modifier.align(Alignment.TopEnd).offset(x = 20.dp, y = (-20).dp).semantics { motionAlpha = fade })
+                        }
+                        }
+                    }
+                }
+            }
+            // a photo on its way: its placeholder, where the photo will land (the maintainer 2026-11-14, the approved prototype: 64 dp,
+            // the thumbnail's 14 dp corners, a small grey spinner). It fades in, and a failed read fades it out (iOS; the
+            // design review of d64e430f); one its photo lands on goes at once, the photo fading in over its fill.
+            run {
+                val live = tiles.filter { it[1] == 0 }
+                if (pendingImages > live.size) repeat(pendingImages - live.size) { tiles += intArrayOf(tileSeq[0]++, 0) }
+                else if (pendingImages < live.size) {
+                    val gone = live.size - pendingImages
+                    val swapped = minOf(replacedNow, gone)
+                    live.take(swapped).forEach { tiles.remove(it) }
+                    live.drop(swapped).take(gone - swapped).forEach { it[1] = 1 }
+                }
+            }
+            @Suppress("UNUSED_EXPRESSION") tileTick
+            for (t in tiles.toList()) androidx.compose.runtime.key("tile" + t[0]) {
+                val st = remember { androidx.compose.animation.core.MutableTransitionState(t[0] < firstTiles) }
+                st.targetState = t[1] == 0
+                if (t[1] == 1 && st.isIdle && !st.currentState) androidx.compose.runtime.LaunchedEffect(Unit) { tiles.remove(t); tileTick++ }
+                androidx.compose.animation.AnimatedVisibility(st, enter = androidx.compose.animation.fadeIn(Motion.fadeIn()), exit = androidx.compose.animation.fadeOut(Motion.fadeOut())) {
+                    // what the fade draws, for the motion check: the same transition and specs as the fade above
+                    val a by transition.animateFloat({ if (targetState == androidx.compose.animation.EnterExitState.Visible) Motion.fadeIn() else Motion.fadeOut() }, label = "tile") {
+                        if (it == androidx.compose.animation.EnterExitState.Visible) 1f else 0f
+                    }
+                    Box(Modifier.padding(end = ComposerSpacing.THUMB_GAP)) {
+                        Box(Modifier.size(64.dp).clip(RoundedCornerShape(14.dp)).background(TeemoonColors.fill).testTag("chat.image.pending")
+                            .semantics { contentDescription = "loading image"; motionAlpha = a }, contentAlignment = Alignment.Center) {
+                            androidx.compose.material3.CircularProgressIndicator(modifier = Modifier.size(20.dp), color = TeemoonColors.secondaryLabel, strokeWidth = 2.dp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // the image / over-limit note: under the strip, above the text, never truncated
+    note?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = TeemoonColors.secondaryLabel,
+        modifier = Modifier.fillMaxWidth().padding(start = ComposerSpacing.FIELD_START, end = ComposerSpacing.FIELD_START, top = if (images.isEmpty() && pendingImages == 0) ComposerSpacing.THUMBS_TOP else ComposerSpacing.NOTE_UNDER_STRIP).testTag("chat.imageNote")) }
+    val style = MaterialTheme.typography.bodyLarge.copy(color = TeemoonColors.label)
+    // The top 17 scrolls WITH the text (UITextView's textContainerInset): a field that scrolled within its own bounds
+    // stopped its text at a hard line 17 inside the panel and cut a glyph through there (pm, iOS's check-7 notes; iOS
+    // had the same bug). Scrolled, the text now runs on under the panel's edge. The 17 to the row stays outside the
+    // scroll, so the last line never sits on the chips, and the cap (the lines plus the top 17) shows whole lines.
+    val capLines = ComposerPanel.maxLines(fontScale)
+    val measurer = androidx.compose.ui.text.rememberTextMeasurer()
+    val capHeight = with(androidx.compose.ui.platform.LocalDensity.current) {
+        remember(style, capLines, fontScale) { measurer.measure("\n".repeat(capLines - 1), style).size.height }.toDp()
+    } + ComposerSpacing.TEXT_TOP
+    Column(Modifier.fillMaxWidth().padding(start = ComposerSpacing.FIELD_START, end = ComposerSpacing.FIELD_START, bottom = ComposerSpacing.TEXT_TO_ROW)
+        .heightIn(max = capHeight).verticalScroll(textScroll).padding(top = ComposerSpacing.TEXT_TOP)) {
+        // The field holds a TextFieldState so a paste can bring images (contentReceiver works only there); the prompt
+        // stays the caller's String. An outside change (a returned question, a send clearing it) keeps the caret where it
+        // was, held inside the new text — what the String field did (ComposerPinTest), not a whole-text replace's end.
+        val field = androidx.compose.foundation.text.input.rememberTextFieldState(value)
+        val latestValue by androidx.compose.runtime.rememberUpdatedState(value)
+        val latestChange by androidx.compose.runtime.rememberUpdatedState(onValueChange)
+        androidx.compose.runtime.LaunchedEffect(value) {
+            if (field.text.toString() != value) field.edit {
+                val was = selection
+                replace(0, length, value)
+                selection = androidx.compose.ui.text.TextRange(was.start.coerceAtMost(value.length), was.end.coerceAtMost(value.length))
+            }
+        }
+        androidx.compose.runtime.LaunchedEffect(field) {
+            androidx.compose.runtime.snapshotFlow { field.text.toString() }.collect { if (it != latestValue) latestChange(it) }
+        }
+        val paste = if (onPasteImages == null) Modifier else Modifier.contentReceiver { content ->
+            val clip = content.clipEntry.clipData
+            val items = (0 until clip.itemCount).map { clip.getItemAt(it) }
+            val pasteItems = items.map { ai.teemoon.app.imaging.ComposerPaste.Item(it.uri?.toString(), it.text?.toString()) }
+            val mimeTypes = clip.description.let { d -> (0 until d.mimeTypeCount).map { d.getMimeType(it) } }
+            fun isImage(item: android.content.ClipData.Item) = ai.teemoon.app.imaging.ComposerPaste.Item(item.uri?.toString(), null).isImage
+            // an image item's URL is not text (IMAGES.md §4c, Messages-like): the image items go to the composer and the
+            // paste puts in no text — a URL item beside them neither (the maintainer 2026-11-09)
+            if (ai.teemoon.app.imaging.ComposerPaste.images(mimeTypes, pasteItems).isNotEmpty()) {
+                val dataUrl = ai.teemoon.app.imaging.ComposerPaste.dataUrlBeside(pasteItems)
+                onPasteImages(mimeTypes, pasteItems, dataUrl)
+                return@contentReceiver null
+            }
+            // a clip whose text is one data: URL never reaches the field (IMAGES.md §4c): the text, caret and selection
+            // stay as they were, and the URL goes to the image intake
+            if (onPasteDataUrl != null) ai.teemoon.app.imaging.ComposerPaste.dataUrl(items.map { it.text?.toString() }, items.map { it.uri?.toString() })
+                ?.let { url -> onPasteDataUrl(url); return@contentReceiver null }
+            if (!content.hasMediaType(androidx.compose.foundation.content.MediaType.Image)) return@contentReceiver content
+            // text beside an image is text: an image item with no text never reaches the field as a URI, and nothing attaches
+            content.consume { isImage(it) && it.text == null }
+        }
         // The keyboard's action key is "send" (Android chat convention); a hardware return still breaks the line.
-        BasicTextField(value, onValueChange, modifier = Modifier.weight(1f).padding(vertical = 6.dp).then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier).testTag("chat.composer"), textStyle = style, maxLines = 6, cursorBrush = SolidColor(TeemoonColors.tint),
+        BasicTextField(field, modifier = Modifier.fillMaxWidth().semantics { traversalIndex = ComposerPanel.traversal(ComposerPanel.Item.TEXT) }.then(if (focusRequester != null) Modifier.focusRequester(focusRequester) else Modifier).then(paste).testTag("chat.composer"),
+            textStyle = style, lineLimits = androidx.compose.foundation.text.input.TextFieldLineLimits.MultiLine(), cursorBrush = SolidColor(TeemoonColors.tint),
             keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send, capitalization = KeyboardCapitalization.Sentences),
-            keyboardActions = KeyboardActions(onSend = { if (canSend && !streaming) onSend() }),
-            decorationBox = { inner -> Box { if (value.isEmpty()) Text(placeholder, style = style, color = TeemoonColors.tertiaryLabel); inner() } })
+            onKeyboardAction = { if (canSend && !streaming) onSend() },
+            decorator = { inner -> Box { if (field.text.isEmpty()) Text(placeholder, style = style, color = TeemoonColors.tertiaryLabel); inner() } })
+    }
+    // the bottom row, pinned as the text grows: "+" · where chip · web chip … send / stop
+    Row(Modifier.fillMaxWidth().padding(start = ComposerSpacing.ROW_EDGE, end = ComposerSpacing.ROW_EDGE, bottom = ComposerSpacing.ROW_EDGE),
+        verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(ComposerSpacing.ROW_GAP)) {
+        // "+" · where · web on the left, as wide as they need; only the where chip gives way (a spacer weighted beside it
+        // took half the row and squeezed the model's name to "…")
+        Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(ComposerSpacing.ROW_GAP)) {
+        // a 32dp glyph in a 48dp target (iOS 32 pt in 44 pt; Android's minimum target is 48dp), tint on every model (IMAGES.md §4d)
+        // every row item 34 tall (COMPOSER_PANEL.md @ 06c7e759); Compose widens a clickable under 48dp to the minimum touch
+        // target on its own, so the hit area stays 48dp without spreading the row
+        if (onAttach != null) Box(Modifier.size(ComposerSpacing.ROW_ITEM).clip(CircleShape).background(TeemoonColors.fill).clickable(onClick = onAttach)
+            .semantics { contentDescription = ai.teemoon.app.imaging.ImageCopy.ATTACH; role = androidx.compose.ui.semantics.Role.Button; traversalIndex = ComposerPanel.traversal(ComposerPanel.Item.ATTACH) }
+            .testTag("chat.attach"), contentAlignment = Alignment.Center) {
+            PlusGlyph(TeemoonColors.tint)
+        }
+        // the where chip takes what is left after the others, which never shrink (the spec's row budget)
+        whereChip?.let { chip -> Box(Modifier.weight(1f, fill = false).semantics { traversalIndex = ComposerPanel.traversal(ComposerPanel.Item.WHERE) }) { chip(iconOnly) } }
+        webChip?.let { chip -> Box(Modifier.semantics { traversalIndex = ComposerPanel.traversal(ComposerPanel.Item.WEB) }) { chip(iconOnly || whereStatus) } }
+        }
         if (streaming) {
-            Box(Modifier.size(32.dp).clip(CircleShape).background(TeemoonColors.tint).clickable(onClick = onStop).semantics { contentDescription = "stop" }.testTag("chat.stop"), contentAlignment = Alignment.Center) {
-                Box(Modifier.size(11.dp).clip(RoundedCornerShape(2.dp)).background(Color.White))
-
+            // stop: a 34 circle filled secondary, the square in the label colour
+            Box(Modifier.size(ComposerSpacing.ROW_ITEM).clip(CircleShape).background(TeemoonColors.fill).clickable(onClick = onStop).semantics { contentDescription = "stop"; traversalIndex = ComposerPanel.traversal(ComposerPanel.Item.SEND) }.testTag("chat.stop"), contentAlignment = Alignment.Center) {
+                Box(Modifier.size(11.dp).clip(RoundedCornerShape(2.dp)).background(TeemoonColors.label))
             }
         } else {
-            val tint = if (canSend) TeemoonColors.tint else TeemoonColors.gray.copy(alpha = 0.5f)
-            Box(Modifier.size(32.dp).clip(CircleShape).background(tint).clickable(enabled = canSend, onClick = onSend).testTag("chat.send"), contentAlignment = Alignment.Center) {
+            // send: a 34 circle filled with the accent, a white arrow; disabled, the accent fill at 30%
+            val fill = if (canSend) TeemoonColors.tint else TeemoonColors.tint.copy(alpha = 0.3f)
+            Box(Modifier.size(ComposerSpacing.ROW_ITEM).clip(CircleShape).background(fill).clickable(enabled = canSend, onClick = onSend).semantics { traversalIndex = ComposerPanel.traversal(ComposerPanel.Item.SEND) }.testTag("chat.send"), contentAlignment = Alignment.Center) {
                 // arrow.up, not a chevron: ArrowForward turned a quarter turn (the core icon set has no ArrowUpward).
                 Icon(Icons.AutoMirrored.Filled.ArrowForward, "send", tint = Color.White, modifier = Modifier.size(18.dp).rotate(-90f))
             }
         }
     }
+    }
+}
+
+/**
+ * The composer's spacing around the attached images and the "+" (the mock's V18 stripStyle; the maintainer 2026-11-12,
+ * "uneven" on the S44 builds, then "outside"): 16 from the card's top edge to the thumbnails', 8 from their bottom edge
+ * to the field row; the "+" a circle beside the card (IMAGES.md §4d @ 8919f6d7). The Pixel measured 18, 8 and 9.5 before (ComposerSpacingTest).
+ */
+object ComposerSpacing {
+    /** The panel: radius 30 and a 1dp hairline edge (COMPOSER_PANEL.md @ 06c7e759). */
+    val PANEL_RADIUS = 30.dp
+    /** A hairline is one device pixel, as iOS's; 1dp would draw three on the Pixel. */
+    val PANEL_EDGE = Dp.Hairline
+    /** The panel's top edge to the thumbnails', 17 as to the text. The remove circle rides 8dp above a thumbnail's corner, inside it. */
+    val THUMBS_TOP = 17.dp
+    /** Under the thumbnails, above the note. */
+    val ROW_TOP = 8.dp
+    /** The image note under the strip (iOS: 6 pt); alone, it sits where the strip would, [THUMBS_TOP] from the panel's top. */
+    val NOTE_UNDER_STRIP = 6.dp
+    /** The text: 17 from the top (or the strip / note above it) and 17 down to the row. */
+    val TEXT_TOP = 17.dp
+    val TEXT_TO_ROW = 17.dp
+    /** Every row item ("+", the chips, send, stop) is 34 tall; the chips have 14 at their sides. */
+    val ROW_ITEM = 34.dp
+    val CHIP_SIDE = 14.dp
+    /** 8 between the row's items, and 8 from it to the panel's left, right and bottom edges. */
+    val ROW_GAP = 8.dp
+    val ROW_EDGE = 8.dp
+    /** The panel's leading edge to the text and the note, and to the first thumbnail (IMAGES.md §4d @ 8919f6d7). */
+    val FIELD_START = 16.dp
+    val THUMBS_START = FIELD_START
+    /** Between thumbnails, iOS's 8. */
+    val THUMB_GAP = 8.dp
+}
+/**
+ * The one-panel composer's rules (teemoon-ios docs/COMPOSER_PANEL.md @ 85c544c6; the maintainer 2026-11-12): what the
+ * bottom row carries, how tall the text grows, when the chips go icon-only, and the order TalkBack reads it in.
+ */
+object ComposerPanel {
+    enum class Item { STRIP, TEXT, ATTACH, WHERE, WEB, SEND }
+
+    /** Android's accessibility sizes start here (its 1.5× font step; iOS's AX sizes): chips go icon-only, the text 4 lines. */
+    const val ACCESSIBILITY_SCALE = 1.5f
+
+    /** "+" · where · web … send; the web chip hides when the selected model can't take tools (new on both apps). */
+    fun bottomRow(modelTakesTools: Boolean): List<Item> = listOfNotNull(Item.ATTACH, Item.WHERE, Item.WEB.takeIf { modelTakesTools }, Item.SEND)
+
+    /** The text grows to this many lines, then scrolls inside with the caret kept visible. */
+    fun maxLines(fontScale: Float): Int = if (fontScale >= ACCESSIBILITY_SCALE) 4 else 6
+
+    /** At accessibility sizes the bottom row stays one row: the chips keep their glyphs and drop their words. */
+    fun iconOnlyChips(fontScale: Float): Boolean = fontScale >= ACCESSIBILITY_SCALE
+
+    /** TalkBack: the strip's thumbnails (each with its x), then the text, "+", where, web, send (or stop). */
+    val readingOrder = listOf(Item.STRIP, Item.TEXT, Item.ATTACH, Item.WHERE, Item.WEB, Item.SEND)
+    fun traversal(item: Item): Float = readingOrder.indexOf(item).toFloat()
+}
+
+
+/** SF Symbols' plus, drawn: two round-capped 2dp strokes, 14dp across. */
+@Composable
+fun PlusGlyph(color: Color) = androidx.compose.foundation.Canvas(Modifier.size(14.dp)) {
+    val w = size.width; val h = size.height; val stroke = 2.dp.toPx()
+    drawLine(color, androidx.compose.ui.geometry.Offset(w / 2, 0f), androidx.compose.ui.geometry.Offset(w / 2, h), strokeWidth = stroke, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+    drawLine(color, androidx.compose.ui.geometry.Offset(0f, h / 2), androidx.compose.ui.geometry.Offset(w, h / 2), strokeWidth = stroke, cap = androidx.compose.ui.graphics.StrokeCap.Round)
 }
 
 /** The check that marks the equipped row. */
@@ -877,6 +1383,83 @@ fun MoonGlyph(phase: Int = MoonPhase.index(), modifier: Modifier = Modifier) {
     }
 }
 
+/** What the composer asks the root to present as the attach sheet (IMAGES.md §4d). */
+data class AttachSheetRequest(
+    /** Left to right (ImageCopy.attachSheet). */
+    val buttons: List<String>,
+    /** "up to {n} images per message" when the composer is full: shown here, and the buttons don't act. */
+    val fullNote: String?,
+    /** A button's action, run once the sheet is dismissed — never a presentation over the sheet. */
+    val act: (String) -> Unit,
+    /** On a model that can't see images: "<model> can't see images." at the top (IMAGES.md §4d, 5722f76d). */
+    val cantSee: String? = null,
+    /** "choose an image-capable model", run once the sheet is dismissed: the where sheet, filtered. */
+    val chooseModel: () -> Unit = {},
+)
+
+/** The root's presenter for the attach sheet, as for the sources sheet; null in a preview or a test with no root. */
+val LocalAttachPresenter = androidx.compose.runtime.staticCompositionLocalOf<((AttachSheetRequest) -> Unit)?> { null }
+
+/** The attach sheet's resting top: its content's natural height, about half a phone screen. */
+fun attachSheetTops(screenHeightDp: Float): List<Float> = listOf((1f - 300f / screenHeightDp).coerceIn(SheetDetents.MEDIUM, 0.8f))
+
+/**
+ * The attach sheet (IMAGES.md §4d, the image-flow mock Version 18): two big buttons side by side, 112dp tall (taller
+ * when the largest text wraps a label, never cut) with 22dp corners, the glyph top-left and the semibold label bottom-left — take photo, choose photos — and the footnote under
+ * them. [onDismiss] closes the sheet before the button's action runs, so cancel in the camera or picker returns to the
+ * composer, not to the sheet.
+ */
+@Composable
+fun AttachSheet(request: AttachSheetRequest, onDismiss: () -> Unit) {
+    Column(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, top = 12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        // a model that can't see images: say so, and offer one that can — take photo and choose photos still attach
+        request.cantSee?.let { line ->
+            Text(line, style = MaterialTheme.typography.bodyMedium, color = TeemoonColors.secondaryLabel, modifier = Modifier.testTag("chat.attachSheet.cantSee"))
+            Text(ai.teemoon.app.imaging.CantSeeRoute.CHOOSE, style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold), color = TeemoonColors.tint,
+                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(12.dp)).clickable { onDismiss(); request.chooseModel() }
+                    .heightIn(min = 44.dp).wrapContentHeight(Alignment.CenterVertically).semantics { role = androidx.compose.ui.semantics.Role.Button }
+                    .testTag("chat.attachSheet.chooseModel"))
+        }
+        request.fullNote?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = TeemoonColors.secondaryLabel, modifier = Modifier.testTag("chat.attachSheet.note")) }
+        // both buttons as tall as the taller one when a label wraps
+        Row(Modifier.fillMaxWidth().height(androidx.compose.foundation.layout.IntrinsicSize.Min), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            request.buttons.forEach { label ->
+                Column(Modifier.weight(1f).heightIn(min = 112.dp).fillMaxHeight().clip(RoundedCornerShape(22.dp)).background(TeemoonColors.groupedCard)
+                    .clickable(enabled = request.fullNote == null) { onDismiss(); request.act(label) }
+                    .semantics(mergeDescendants = true) { role = androidx.compose.ui.semantics.Role.Button }
+                    .padding(16.dp).testTag("chat.attachSheet.$label"), verticalArrangement = Arrangement.SpaceBetween) {
+                    if (label == ai.teemoon.app.imaging.ImageCopy.TAKE_PHOTO) CameraGlyph(TeemoonColors.tint, 28.dp) else PhotoStackGlyph(TeemoonColors.tint, 28.dp)
+                    Text(label, style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold), color = TeemoonColors.label)
+                }
+            }
+        }
+        Text(ai.teemoon.app.imaging.ImageCopy.ATTACH_FOOTNOTE, style = MaterialTheme.typography.bodySmall, color = TeemoonColors.secondaryLabel)
+        SheetScrollEnd(16.dp)
+    }
+}
+
+/** SF `photo.on.rectangle`: a frame behind a photo (its frame, sun and hill). */
+@Composable
+private fun PhotoStackGlyph(tint: Color, sizeDp: Dp = 20.dp) = Canvas(Modifier.size(sizeDp)) {
+    val w = size.width; val h = size.height; val s = 1.6.dp.toPx()
+    drawPath(Path().apply { moveTo(w * 0.28f, h * 0.22f); lineTo(w * 0.28f, h * 0.14f); lineTo(w * 0.94f, h * 0.14f); lineTo(w * 0.94f, h * 0.66f); lineTo(w * 0.86f, h * 0.66f) },
+        tint, style = Stroke(s, cap = StrokeCap.Round, join = StrokeJoin.Round))
+    drawRoundRect(tint, Offset(w * 0.06f, h * 0.3f), Size(w * 0.72f, h * 0.56f), CornerRadius(w * 0.06f), style = Stroke(s))
+    drawCircle(tint, w * 0.06f, Offset(w * 0.28f, h * 0.48f), style = Stroke(s))
+    drawPath(Path().apply { moveTo(w * 0.78f, h * 0.76f); lineTo(w * 0.58f, h * 0.58f); lineTo(w * 0.26f, h * 0.86f) }, tint, style = Stroke(s, cap = StrokeCap.Round))
+}
+
+/** SF `camera`: the body with its viewfinder hump, and the lens. */
+@Composable
+private fun CameraGlyph(tint: Color, sizeDp: Dp = 20.dp) = Canvas(Modifier.size(sizeDp)) {
+    val w = size.width; val h = size.height; val s = 1.6.dp.toPx()
+    drawPath(Path().apply {
+        moveTo(w * 0.1f, h * 0.32f); lineTo(w * 0.32f, h * 0.32f); lineTo(w * 0.4f, h * 0.2f); lineTo(w * 0.6f, h * 0.2f); lineTo(w * 0.68f, h * 0.32f)
+        lineTo(w * 0.9f, h * 0.32f); lineTo(w * 0.9f, h * 0.82f); lineTo(w * 0.1f, h * 0.82f); close()
+    }, tint, style = Stroke(s, join = StrokeJoin.Round))
+    drawCircle(tint, w * 0.15f, Offset(w * 0.5f, h * 0.56f), style = Stroke(s))
+}
+
 /** ChatComposer's where chip: the locality glyph, the model in the label weight, the place in secondary, the up/down chevrons. */
 @Composable
 fun WhereChip(model: String?, place: String?, locality: WhereLocality?, onClick: (() -> Unit)?, modifier: Modifier = Modifier,
@@ -888,26 +1471,66 @@ fun WhereChip(model: String?, place: String?, locality: WhereLocality?, onClick:
     onLongClick: (() -> Unit)? = null,
     /** WhereChip.swift `needsDownload`: equipped, named, and unable to answer — "not downloaded", in red, because this state BLOCKS. */
     needsDownload: Boolean = false,
+    /** At accessibility sizes (COMPOSER_PANEL.md): the glyph and chevrons alone; the full label is the content description. */
+    iconOnly: Boolean = false,
+    /**
+     * Developer mode's reasoning level, after the name in secondary text ("glm-5p3 low"; the maintainer 2026-11-13, ReasoningUi). Never
+     * cut: the name gives way first. A status (download) replaces it, and at accessibility sizes it is spoken, not drawn.
+     */
+    level: String? = null,
 ) {
     // WhereChip.swift: with nothing equipped the chip fills with `ML.accent` (the fixed orange, so the label is white
     // on it) under `arrow.triangle.branch` — the one moment the chip leaves the chrome and BECOMES the accent, because
     // it is the only thing on the screen that can move the user forward. Equipped, it sits on the resting plate.
     val unconfigured = model == null
-    var m = modifier.height(36.dp).clip(CircleShape).background(if (unconfigured) TeemoonColors.tint else TeemoonColors.secondaryBackground)
+    // equipped: a plain capsule on the tertiary fill, so it reads inside the composer's panel (COMPOSER_PANEL.md)
+    var m = modifier.height(ComposerSpacing.ROW_ITEM).clip(CircleShape).background(if (unconfigured) TeemoonColors.tint else TeemoonColors.panelChip)
     // Tap still opens Where — switching models is what the chip is for and stays one tap; a long press gets the menu.
     if (onClick != null) m = if (onLongClick != null) m.combinedClickable(onClick = onClick, onLongClick = onLongClick) else m.clickable(onClick = onClick)
-    Row(m.padding(horizontal = 12.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+    m = m.semantics { contentDescription = listOfNotNull(model ?: "choose where", place?.lowercase(), level?.let { "${ai.teemoon.inference.ReasoningLevel.TITLE} $it" },
+        progress?.let { progressLabel ?: "downloading ${(it * 100).toInt()}%" } ?: "not downloaded".takeIf { needsDownload }).joinToString(" · ") }
+    // 14dp sides (COMPOSER_PANEL.md @ 06c7e759's table), 4dp between glyph, words and chevrons
+    Row(m.padding(horizontal = ComposerSpacing.CHIP_SIDE), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+        // a status (downloading, waiting, not downloaded) drops the glyph at every width: only phone models download, so the
+        // phone glyph says nothing the status doesn't, and the name needs the room (pm/ios 2026-11-12, option a); the
+        // content description keeps the place
+        val status = !unconfigured && (progress != null || needsDownload)
+        // a level drops it too (developer mode, the maintainer 2026-11-13): at 360dp the name lost 22dp to it and cut to "glm-5.3-…";
+        // the place is in the content description and the where sheet
         if (unconfigured) BranchGlyph(Color.White)
-        else locality?.let { LocalityGlyph(it, tint = TeemoonColors.secondaryLabel) }
-        if (model == null) Text("choose where", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = Color.White)
+        else if (!status && (level == null || iconOnly)) locality?.let { LocalityGlyph(it, tint = TeemoonColors.secondaryLabel) }
+
+        // accessibility sizes: the glyph alone, or with a status the status alone — no name (COMPOSER_PANEL.md @ cbacf674)
+        if (iconOnly && status) {
+            if (progress != null) Text(progressLabel ?: "downloading ${(progress * 100).toInt()}%", style = MaterialTheme.typography.labelMedium, color = TeemoonColors.secondaryLabel, maxLines = 1, softWrap = false)
+            else Text("not downloaded", style = MaterialTheme.typography.labelMedium, color = TeemoonColors.red, maxLines = 1, softWrap = false)
+        }
+        if (!iconOnly) { if (model == null) Text("choose where", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = Color.White)
         else {
-            Text(model, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = TeemoonColors.label, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false))
+            // while a download reports, the name keeps its width and the progress gives way (the design review of 7e43b5b0:
+            // "gemma 4 e4b" truncated to "gemm…" at 360dp); otherwise the name is what gives way, as before
+            // the name gives way before any status, down to a floor of 4 characters (pm, COMPOSER_PANEL.md's "glyph plus 4")
+            val nameStyle = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold)
+            val measurer = androidx.compose.ui.text.rememberTextMeasurer()
+            val floor = with(androidx.compose.ui.platform.LocalDensity.current) { measurer.measure(model.take(4) + "…", nameStyle).size.width.toDp() }
+            // a switch fades the name through, the old one out first, inside the same width rule (motion-pass item 8)
+            androidx.compose.animation.AnimatedContent(model, modifier = Modifier.weight(1f, fill = false).widthIn(min = floor), label = "chip-model",
+                transitionSpec = { (androidx.compose.animation.fadeIn(Motion.axisFadeIn()) togetherWith androidx.compose.animation.fadeOut(Motion.axisFadeOut()))
+                    .using(androidx.compose.animation.SizeTransform(clip = false)) }) { name ->
+                Text(name, style = nameStyle, color = TeemoonColors.label, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.testTag("chip.model"))
+            }
             // Tabular figures for the moving number only (trailingMonospaced: arriving && waiting == nil); on a word they
             // clipped the "fi" of "wi-fi".
-            if (progress != null) Text("· " + (progressLabel ?: "downloading ${(progress * 100).toInt()}%"), style = if (progressLabel == null) MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum") else MaterialTheme.typography.labelMedium, color = TeemoonColors.secondaryLabel, maxLines = 1)
-            else if (needsDownload) Text("· not downloaded", style = MaterialTheme.typography.labelMedium, color = TeemoonColors.red, maxLines = 1)
-            // The place only when there is no progress to report: model · place · downloading 5% is three facts in a capsule with room for two.
-            else place?.let { Text("· ${it.lowercase()}", style = MaterialTheme.typography.labelMedium, color = TeemoonColors.secondaryLabel, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f, fill = false)) }
+            // a status is never cut (pm): the name gives way first
+            if (level != null && progress == null && !needsDownload) Text(level, style = MaterialTheme.typography.labelMedium, color = TeemoonColors.secondaryLabel, maxLines = 1, softWrap = false)
+            if (progress != null) Text("· " + (progressLabel ?: "downloading ${(progress * 100).toInt()}%"), style = if (progressLabel == null) MaterialTheme.typography.labelMedium.copy(fontFeatureSettings = "tnum") else MaterialTheme.typography.labelMedium, color = TeemoonColors.secondaryLabel, maxLines = 1, softWrap = false)
+            // "not downloaded" is never cut: it is what blocks the send (iOS WhereChip, red); the name gives way before it
+            // (pm on the card: "not d…" was cut mid-word at 360dp)
+            else if (needsDownload) Text("· not downloaded", style = MaterialTheme.typography.labelMedium, color = TeemoonColors.red, maxLines = 1, softWrap = false)
+            // No place text in the composer's bottom row (COMPOSER_PANEL.md @ 85c544c6: "[▣ gemma 4 e2b ⌃]"; its row budget
+            // keeps the model's name whole at 360dp): the locality glyph says where, and the full label is the content
+            // description. With the place beside it the name truncated to "gemma …" at 412dp.
+        }
         }
         UpDownChevrons(if (unconfigured) Color.White.copy(alpha = 0.75f) else TeemoonColors.secondaryLabel)
     }

@@ -14,6 +14,9 @@ class TeemoonApplication : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        // The isolated image decoder runs in its own process with this Application too, and may touch nothing: no
+        // preferences, no files, no clipboard (IMAGES.md §2). Everything below is the app's, so it starts only here.
+        if (android.os.Process.isIsolated()) return
         DebugDiagnostics.install(this)   // StrictMode + JankStats, debug builds only (returns at once otherwise)
         // a copied key whose clear was pending when the process died without its alarm (a force-stop cancels both)
         Clipboard.onProcessStart(this)

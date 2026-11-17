@@ -23,7 +23,7 @@ class UiTestSeedingTest {
         override fun setCredential(apiKey: String, providerID: String) { keys[providerID] = apiKey }
     }
 
-    /** UITestHostSecrets @ v1.0.5: the two 1.0.2 presets seed like the others, from the same `~/.…_API_KEY` pair iOS reads. */
+    /** UITestHostSecrets @ v1.1.0: the two 1.0.2 presets seed like the others, from the same `~/.…_API_KEY` pair iOS reads. */
     @Test fun openRouterAndNvidiaSeedFromTheirHostKeyFiles() {
         assertEquals(listOf(".OPENROUTER_API_KEY", ".openrouter_api_key"), UiTestSeeding.keyFileNames("openrouter"))
         assertEquals(listOf(".NVIDIA_API_KEY", ".nvidia_api_key"), UiTestSeeding.keyFileNames("nvidia"))

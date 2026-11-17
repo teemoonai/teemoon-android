@@ -4,6 +4,7 @@ package ai.teemoon.chat.search
 
 import ai.teemoon.chat.search.ChatSearchGranularity.MESSAGES
 import ai.teemoon.chat.search.SearchTestSupport.record
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -58,6 +59,22 @@ class ChatSearchServiceTest {
         val m = record("retracted kettle answer", thread = "t", role = "assistant")
         service.didWrite(m); service.didDelete(listOf(m.messageID)); service.drainPendingWork()
         assertTrue(index.search("kettle", MESSAGES, 10).isEmpty()); assertTrue(index.indexedMessageIDs().isEmpty())
+    }
+
+    /**
+     * A retried reply and a Think Harder's replaced one reach the index through didDelete: deleted text like a deleted
+     * chat's, so its words leave the index's files, not wait in the WAL for a checkpoint (1.0.6 audit, developer note).
+     */
+    @Test fun didDelete_leavesTheTextInNoFile() = runTest {
+        val p = path(); val index = SearchTestSupport.index(p); val service = ChatSearchService(this, index)
+        service.didWrite(record("the kept question", thread = "t"))
+        val dropped = record("zanzibarquokka was the replaced reply", thread = "t", role = "assistant")
+        service.didWrite(dropped); service.drainPendingWork()
+        service.didDelete(listOf(dropped.messageID)); service.drainPendingWork()
+        assertTrue(index.search("zanzibarquokka", MESSAGES, 10).isEmpty())
+        for (f in listOf(p, File(p.path + "-wal"))) if (f.exists())
+            assertFalse("${f.name} still holds the deleted reply", String(f.readBytes(), Charsets.ISO_8859_1).contains("zanzibarquokka"))
+        assertEquals(1, index.search("kept", MESSAGES, 10).size)
     }
 
     @Test fun didDeleteThread_dropsThatThreadOnly() = runTest {
@@ -120,5 +137,41 @@ class ChatSearchServiceTest {
         val service = ChatSearchService(this, SearchTestSupport.index(path()), log = { logged.add(it) })
         service.reconcile(broken)
         assertTrue(logged.any { it.contains("reconcile failed") })
+    }
+
+    /**
+     * A8 (pm sweep 2026-11-06): reconcile ran outside the hook queue. A delete that landed while it was reading the
+     * store applied first, then reconcile wrote back the snapshot it had read — the deleted message stayed searchable
+     * until the next launch. Reconcile now takes its turn in the queue, so the delete applies after it.
+     */
+    @Test fun aDeleteDuringReconcileStaysDeleted() = runTest {
+        val index = SearchTestSupport.index(path()); val service = ChatSearchService(this, index)
+        val m = record("deleted mid-reconcile kettle", thread = "t")
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val source = object : ChatSearchSource {
+            override suspend fun indexableMessageIDs() = setOf(m.messageID)
+            override suspend fun records(ids: Set<String>): List<ChatMessageRecord> { gate.await(); return listOf(m) }
+        }
+        val reconciling = launch { service.reconcile(source) }
+        testScheduler.runCurrent()
+        service.didDelete(listOf(m.messageID))
+        gate.complete(Unit); reconciling.join(); service.drainPendingWork()
+        assertTrue("a deleted message must not come back from reconcile's snapshot", index.indexedMessageIDs().isEmpty())
+    }
+
+    /** A8: the queue's tail had no lock — two threads enqueuing at once chained off the same job and ran together. */
+    @Test fun hooksFromManyThreadsRunOneAtATime() = kotlinx.coroutines.runBlocking {
+        val real = SearchTestSupport.index(path())
+        val running = java.util.concurrent.atomic.AtomicInteger(); val most = java.util.concurrent.atomic.AtomicInteger()
+        val counted = object : ChatSearchIndexing by real {
+            override suspend fun index(records: List<ChatMessageRecord>) {
+                most.accumulateAndGet(running.incrementAndGet(), ::maxOf); Thread.sleep(1); real.index(records); running.decrementAndGet()
+            }
+        }
+        val service = ChatSearchService(kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default), counted)
+        val threads = (0 until 8).map { t -> Thread { repeat(25) { n -> service.didWrite(record("kettle $t $n", thread = "t")) } } }
+        threads.forEach { it.start() }; threads.forEach { it.join() }
+        repeat(50) { service.drainPendingWork() }
+        assertEquals("hooks overlapped", 1, most.get())
     }
 }

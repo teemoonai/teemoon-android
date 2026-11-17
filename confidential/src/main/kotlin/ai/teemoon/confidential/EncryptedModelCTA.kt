@@ -1,4 +1,4 @@
-// ports: teemoon/Presentation/EncryptedModelCTA.swift @ v1.0.5
+// ports: teemoon/Presentation/EncryptedModelCTA.swift @ v1.1.0
 package ai.teemoon.confidential
 
 import ai.teemoon.providers.Provider

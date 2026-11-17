@@ -1,12 +1,17 @@
 // ports: teemoonTests/UnconfiguredSearchTests.swift @ v1.0.1 (WebSearchOfferLifetime, PendingSearchRetry, GroundingToolAttachment;
-//        the tool-level suite is BraveWebSearchToolTest, the settings-screen suites ported with AddEditProviderModel/ProviderHealing)
+//        the tool-level suite is BraveWebSearchToolTest, the settings-screen suites ported with AddEditProviderModel/ProviderHealing);
+//        GroundingToolAttachment's on-device rows: teemoonTests/UnconfiguredSearchTests.swift @ 8494cdb9
 package ai.teemoon.app
 
 import ai.teemoon.inference.BraveWebSearchTool
 import ai.teemoon.inference.RequestResult
 import ai.teemoon.inference.ToolCallRecord
 import ai.teemoon.inference.WireMessage
+import ai.teemoon.providers.LocalModelCatalog
 import ai.teemoon.providers.Provider
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -74,6 +79,37 @@ class GroundingToolAttachmentTest {
         val llm = ChatGeneration(); llm.declineOffer("t", emptyList())
         assertEquals(1, llm.makeGroundingTools(Provider.fireworks, "k", "t").size)
     }
+    /**
+     * iOS GroundingToolAttachmentTests @ 8494cdb9. Measured there on the iPhone 16 Pro: the full schema is ~400 prefill
+     * tokens and put a new on-device chat's first token at 1.65 s against 0.30 s without it. Keyless it cannot search,
+     * so only `query` is sent.
+     */
+    @Test fun keylessOnDeviceSchemaIsQueryOnly() {
+        val tools = ChatGeneration().makeGroundingTools(Provider.local(LocalModelCatalog.all.first()), null, "t")
+        assertEquals(1, tools.size)
+        val tool = tools.first()
+        assertEquals("web_search", tool.name)
+        val schema = Json.parseToJsonElement(tool.parametersSchema).jsonObject
+        assertEquals(setOf("query"), schema["properties"]!!.jsonObject.keys)
+        val bytes = Json.encodeToString(JsonObject.serializer(), schema).toByteArray().size
+        assertTrue("keyless on-device schema is $bytes bytes", bytes < 300)
+    }
+    @Test fun keyedOnDeviceSchemaIsFull() {
+        assertTrue(ChatGeneration().makeGroundingTools(Provider.local(LocalModelCatalog.all.first()), "k", "t").first() is BraveWebSearchTool)
+    }
+    @Test fun onDeviceKeyTurnedOffAttachesNothing() {
+        assertTrue(ChatGeneration().makeGroundingTools(Provider.local(LocalModelCatalog.all.first()), null, "t", searchTurnedOff = true).isEmpty())
+    }
+    @Test fun cloudKeyTurnedOffStillAttaches() {
+        assertEquals(1, ChatGeneration().makeGroundingTools(Provider.fireworks, null, "t", searchTurnedOff = true).size)
+    }
+    /** The offer trigger keeps BraveWebSearchTool's keyless contract: the first query raises the offer, the reply is the policy. */
+    @Test fun theKeylessOnDeviceOfferRaisesTheOfferAndRepliesWithThePolicy() = kotlinx.coroutines.runBlocking {
+        val llm = ChatGeneration()
+        val tool = llm.makeGroundingTools(Provider.local(LocalModelCatalog.all.first()), null, "t").first()
+        assertEquals(BraveWebSearchTool.SEARCH_POLICY, tool.execute("""{"query":"weather in tokyo"}"""))
+        assertEquals("weather in tokyo", llm.unconfiguredSearchQuery); assertEquals("t", llm.unconfiguredSearchThreadID)
+    }
     @Test fun builtInGroundingNeverAttachesTheTool() {
         assertTrue(ChatGeneration().makeGroundingTools(Provider.braveAnswers, "k", "t").isEmpty())
     }
@@ -82,6 +118,19 @@ class GroundingToolAttachmentTest {
         val tool = llm.makeGroundingTools(Provider.fireworks, null, "t").first() as BraveWebSearchTool
         tool.onUnconfiguredSearch!!("weather in tokyo"); tool.onUnconfiguredSearch!!("second query")
         assertEquals("weather in tokyo", llm.unconfiguredSearchQuery); assertEquals("t", llm.unconfiguredSearchThreadID)
+    }
+    /**
+     * G1 (pm sweep 2026-11-06): an on-device tool runs inside LiteRT's loop, not the turn's coroutine, so a stopped
+     * turn's search can still call back during the next turn. Its keyless query must not raise an offer there.
+     */
+    @Test fun aStoppedTurnsToolCannotRaiseAnOfferInTheNextTurn() {
+        val llm = ChatGeneration()
+        llm.beginTurn(0)
+        val old = llm.makeGroundingTools(Provider.fireworks, null, "t").first() as BraveWebSearchTool
+        llm.stop(); llm.endTurn()
+        llm.beginTurn(1)
+        old.onUnconfiguredSearch!!("the stopped turn's query")
+        assertNull(llm.unconfiguredSearchQuery)
     }
 }
 
@@ -116,10 +165,10 @@ class ChatGenerationTurnTest {
     }
     @Test fun anEmptyReplyIsAnErrorWordedByWhetherSearchesRan() {
         val llm = ChatGeneration(); llm.beginTurn(0); llm.seedDebugInfo("near.ai", "m", null, "t", false)
-        assertEquals("near.ai returned an empty response. Ask again to retry.", llm.finishGeneration("near.ai", null, "t", emptyList(), null, 10)!!.userMessage)
+        assertEquals("near.ai sent an empty answer. ask again to retry.", llm.finishGeneration("near.ai", null, "t", emptyList(), null, 10)!!.userMessage)
         val again = ChatGeneration(); again.beginTurn(0); again.seedDebugInfo("near.ai", "m", null, "t", false)
         val two = listOf(ToolCallRecord("web_search", "{}", ""), ToolCallRecord("web_search", "{}", ""))
-        assertEquals("near.ai ran 2 searches but didn't write an answer. Ask again to retry.", again.finishGeneration("near.ai", null, "t", two, null, 10)!!.userMessage)
+        assertEquals("near.ai ran 2 searches but didn't write an answer. ask again to retry.", again.finishGeneration("near.ai", null, "t", two, null, 10)!!.userMessage)
         assertEquals("t", again.lastErrorThreadID)
     }
     @Test fun aCancelledEmptyTurnIsNotAnError() {
@@ -170,7 +219,8 @@ class PromptPrefixStabilityTest {
         val a = ChatGeneration.resolvePromptTemplates(AppSettings.DEFAULT_SYSTEM_PROMPT, morning)
         assertEquals(a, ChatGeneration.resolvePromptTemplates(AppSettings.DEFAULT_SYSTEM_PROMPT, laterThatDay))
         assertFalse(a.contains("{{datetime}}"))
-        assertFalse("no clock time in the system prompt", a.contains(":"))
+        // the private date line names its zone with an offset ("UTC+00:00"), which is not a clock time
+        assertFalse("no clock time in the system prompt", a.replace(Regex("UTC[+\u2212]\\d{2}:\\d{2}"), "").contains(":"))
     }
 
     /** iOS dateAndTheOlderDatetimeMeanTheSameDay: both templates resolve to the day. */
@@ -191,9 +241,9 @@ class PromptPrefixStabilityTest {
     /** iOS's exact bytes, "\n\n[Sent at h:mm a]", from the message's own timestamp: the same turn, the same note, every request. */
     @Test fun theNoteIsTheMessagesOwnTime() {
         val at = morning.toInstant().toEpochMilli()
-        val note = ChatGeneration.timeNote(at, ZoneId.of("UTC"))
+        val note = ChatGeneration.timeNote(at, ai.teemoon.providers.DisclosurePolicy(ai.teemoon.providers.DisclosurePolicy.Tier.PRIVATE, ZoneId.of("UTC")))
         assertEquals("\n\n[Sent at 9:02 AM]", note)
-        assertEquals(note, ChatGeneration.timeNote(at, ZoneId.of("UTC")))
+        assertEquals(note, ChatGeneration.timeNote(at, ai.teemoon.providers.DisclosurePolicy(ai.teemoon.providers.DisclosurePolicy.Tier.PRIVATE, ZoneId.of("UTC"))))
     }
 
     /** The history the second turn sends starts with exactly the bytes the first turn sent. */
@@ -253,5 +303,24 @@ class RequestDebugTextTest {
         gen.recordSuccess(RequestResult(url = null, requestHeaders = null, requestBodyJson = null, responseBody = "x", toolCalls = emptyList(),
             outputTokens = 5, teeVerification = null, isE2eeActive = false, localStats = stats), "Gemma 4 E2B", "m", "t")
         assertEquals(stats, gen.lastRequestDebugInfo?.localStats)
+    }
+
+    /**
+     * The maintainer 2026-11-12 (1.1.0, via pm): the prompt's time stops leaking the time zone and the language. A
+     * plain-TLS cloud gets the day in UTC and "[Sent at 16:42 UTC]"; a private destination local time with the zone named
+     * once; every formatter English whatever the phone's language (conformance/disclosure.json, DisclosurePolicy).
+     */
+    @Test fun aPlainTlsCloudGetsUtcAndEveryFormatterIsEnglish() {
+        val minimised = ai.teemoon.providers.DisclosurePolicy(ai.teemoon.providers.DisclosurePolicy.Tier.MINIMISED)
+        val at = java.time.ZonedDateTime.of(2026, 11, 13, 1, 42, 0, 0, java.time.ZoneId.of("Asia/Tokyo"))   // 2026-11-12 16:42 UTC
+        assertEquals("\n\n[Sent at 16:42 UTC]", ChatGeneration.timeNote(at.toInstant().toEpochMilli(), minimised))
+        assertEquals("the UTC day, not Tokyo's", "Thursday, November 12, 2026 (UTC)", ChatGeneration.resolvePromptTemplates("{{date}}", at, minimised))
+        val was = java.util.Locale.getDefault()
+        try {
+            java.util.Locale.setDefault(java.util.Locale.GERMANY)
+            val tokyo = ai.teemoon.providers.DisclosurePolicy(ai.teemoon.providers.DisclosurePolicy.Tier.PRIVATE, java.time.ZoneId.of("Asia/Tokyo"))
+            assertEquals("English on a German phone", "\n\n[Sent at 1:42 AM]", ChatGeneration.timeNote(at.toInstant().toEpochMilli(), tokyo))
+            assertEquals("Friday, November 13, 2026 (Asia/Tokyo, UTC+09:00)", ChatGeneration.resolvePromptTemplates("{{date}}", at, tokyo))
+        } finally { java.util.Locale.setDefault(was) }
     }
 }

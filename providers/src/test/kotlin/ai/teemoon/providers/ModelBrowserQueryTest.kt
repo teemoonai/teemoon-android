@@ -1,4 +1,4 @@
-// ports: teemoonTests/ModelBrowserQueryTests.swift @ v1.0.5 (all 13)
+// ports: teemoonTests/ModelBrowserQueryTests.swift @ v1.0.6 (all 13)
 package ai.teemoon.providers
 
 import org.junit.Assert.assertEquals
@@ -35,6 +35,7 @@ class ModelBrowserQueryTest {
         when {
             id.startsWith("own/") -> NearAIModelCatalog.Confidentiality.TEE_OWN
             id.startsWith("third/") -> NearAIModelCatalog.Confidentiality.TEE_THIRD_PARTY
+            id.startsWith("new/") -> NearAIModelCatalog.Confidentiality.UNKNOWN
             else -> NearAIModelCatalog.Confidentiality.PROXIED
         }
     }
@@ -77,9 +78,13 @@ class ModelBrowserQueryTest {
         val models = listOf(
             model("proxy/one", "V", "$3.00/$9.00"),
             model("own/one", "V", "$1.00/$2.00"),
-            model("third/one", "V", "$2.00/$4.00"))
+            model("third/one", "V", "$2.00/$4.00"),
+            model("new/one", "V", "$1.50/$3.00"))
         val grouped = listing(models, ModelBrowserQuery(), tiered = true)
-        assertEquals(listOf("TEE_OWN", "TEE_THIRD_PARTY", "PROXIED"), grouped.sections.map { it.id })
+        // A tier the catalogue has not confirmed is listed under its own header, never dropped (iOS 94488f2).
+        assertEquals(listOf("TEE_OWN", "TEE_THIRD_PARTY", "UNKNOWN", "PROXIED"), grouped.sections.map { it.id })
+        assertEquals("not yet confirmed", grouped.sections.first { it.id == "UNKNOWN" }.header)
+        assertEquals("every model is listed", models.size, grouped.sections.sumOf { it.rows.size })
         // The header says the tier, so the rows do not repeat it.
         assertTrue(grouped.sections.all { s -> s.rows.none { it.showsTier } })
         // Ranked, the headers are gone and each row carries its own tag.
@@ -185,5 +190,24 @@ class ModelBrowserQueryTest {
         assertEquals("5 models", listing(mixed, ModelBrowserQuery()).countLabel)
         assertEquals("1 model", listing(listOf(mixed[0]), ModelBrowserQuery()).countLabel)
         assertEquals("3 of 5", listing(mixed, ModelBrowserQuery(text = "beta")).countLabel)
+    }
+
+    /**
+     * IMAGES.md §4e "Into a provider's models" @ teemoon-ios bb2b89cf (the maintainer's Pixel, 2026-11-11): a filter the
+     * where sheet carried in stays on even when this list wouldn't offer it — every row reads images, or the saved list
+     * is still empty — so the browser never opens on "recommended" with the where filter gone.
+     */
+    @Test fun aFilterCarriedFromTheWhereSheetStaysOnWhenTheListDoesNotOfferIt() {
+        val vision = setOf(ModelCapability.VISION)
+        val allSee = listOf(model("a/one", "A", caps = vision), model("a/two", "A", caps = vision))
+        val q = ModelBrowserQuery(filters = setOf(ModelBrowserQuery.Filter.VISION))
+        val kept = ModelBrowserListing.of(allSee, q, tiered = false, carried = setOf(ModelBrowserQuery.Filter.VISION))
+        assertEquals("images", kept.activeSummary)
+        assertTrue(ModelBrowserQuery.Filter.VISION in kept.filters)
+        assertEquals(2, kept.shown)
+        val empty = ModelBrowserListing.of(emptyList(), q, tiered = false, carried = setOf(ModelBrowserQuery.Filter.VISION))
+        assertEquals("images", empty.activeSummary)
+        // not carried: the old rule — a filter every row satisfies is a control that does nothing
+        assertNull(ModelBrowserListing.of(allSee, q, tiered = false).activeSummary)
     }
 }

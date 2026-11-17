@@ -63,6 +63,21 @@ class TurnService : Service() {
     companion object {
         const val ONGOING_ID = 1
         const val RESULT_ID = 2
+        /**
+         * The tap targets' request codes. One code (0) with FLAG_UPDATE_CURRENT made every notification share one
+         * PendingIntent: the ongoing one (no chat) overwrote the result's "open this chat" extra (A1, 2026-11-06).
+         */
+        const val ONGOING_REQUEST = 1
+        const val RESULT_REQUEST = 2
+        private val turns = TurnsInFlight()
+
+        /**
+         * One result per chat (android-reply-ready-per-chat, the maintainer 2026-11-06): tagged by thread, so a second chat's
+         * reply no longer replaces the first's, and each with its own tap target, so each opens its own chat.
+         */
+        fun resultTag(threadId: String?): String = "reply:${threadId ?: ""}"
+        fun resultRequestCode(threadId: String?): Int =
+            if (threadId == null) RESULT_REQUEST else 1_000 + (threadId.hashCode() and 0x3fffffff)
         /** The thread a result notification opens; MainActivity reads it on create and on a new intent. */
         const val EXTRA_OPEN_THREAD = "open_thread"
 
@@ -101,6 +116,7 @@ class TurnService : Service() {
             channel(context)
             val i = Intent(context, TurnService::class.java)
             startsPending += 1; stopRequested = false
+            turns.began()
             // Refused when the dataSync time is used up (Android 15+) and in the other cases Android 12+ lists: the turn
             // then runs without the service, as it does when notifications are denied — only the protection is lost.
             runCatching { if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(i) else context.startService(i) }
@@ -112,9 +128,12 @@ class TurnService : Service() {
          * is something — TurnNotificationPolicy decides that, not this.
          */
         fun finish(context: Context, notification: TurnNotification, threadId: String?) {
-            if (startsPending > 0) stopRequested = true else context.stopService(Intent(context, TurnService::class.java))
             val nm = context.getSystemService(NotificationManager::class.java)
-            nm.cancel(ONGOING_ID)
+            // the service and the ongoing notification end with the last turn in flight, not the first (A1)
+            if (turns.ended()) {
+                if (startsPending > 0) stopRequested = true else context.stopService(Intent(context, TurnService::class.java))
+                nm.cancel(ONGOING_ID)
+            }
             if (notification is TurnNotification.None) return
             channel(context)
             val (title, body) = when (notification) {
@@ -126,25 +145,25 @@ class TurnService : Service() {
             // The moon, as the working one, with a badge: with one icon for both the status bar looked unchanged
             // when the answer came (2026-10-13). A dot for an answer, a "!" for a failure.
             val icon = if (notification is TurnNotification.Failed) R.drawable.ic_stat_moon_failed else R.drawable.ic_stat_moon_reply
-            runCatching { nm.notify(RESULT_ID, result(context, icon, title, body, threadId)) }
+            runCatching { nm.notify(resultTag(threadId), RESULT_ID, result(context, icon, title, body, threadId)) }
         }
 
-        internal fun open(context: Context, threadId: String?): PendingIntent {
+        internal fun open(context: Context, threadId: String?, requestCode: Int): PendingIntent {
             val i = Intent(context, MainActivity::class.java)
                 .setFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
             threadId?.let { i.putExtra(EXTRA_OPEN_THREAD, it) }
-            return PendingIntent.getActivity(context, 0, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            return PendingIntent.getActivity(context, requestCode, i, PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
         }
 
-        private fun base(context: Context, channel: TurnChannel, icon: Int, title: String, body: String?, threadId: String?) =
+        private fun base(context: Context, channel: TurnChannel, icon: Int, title: String, body: String?, threadId: String?, requestCode: Int) =
             Notification.Builder(context, channel.id)
                 .setSmallIcon(icon)
                 .setContentTitle(title)
-                .setContentIntent(open(context, threadId))
+                .setContentIntent(open(context, threadId, requestCode))
                 .apply { body?.let { setContentText(it) } }
 
         private fun ongoing(context: Context): Notification =
-            base(context, TurnChannels.WORKING, R.drawable.ic_stat_moon, TurnNotification.Working.title, TurnNotification.Working.body, null).setOngoing(true).setShowWhen(false)
+            base(context, TurnChannels.WORKING, R.drawable.ic_stat_moon, TurnNotification.Working.title, TurnNotification.Working.body, null, ONGOING_REQUEST).setOngoing(true).setShowWhen(false)
                 // Android 12+ holds a foreground service's notification back ~10 s unless asked not to (measured on
                 // the AVD 2026-10-13: 10.1 s), so the moon appeared seconds after Home. It is the sign that leaving
                 // is safe; it has to be there when they leave.
@@ -152,7 +171,7 @@ class TurnService : Service() {
                 .build()
 
         private fun result(context: Context, icon: Int, title: String, body: String?, threadId: String?): Notification =
-            base(context, TurnChannels.ANSWERS, icon, title, body, threadId).setAutoCancel(true)
+            base(context, TurnChannels.ANSWERS, icon, title, body, threadId, resultRequestCode(threadId)).setAutoCancel(true)
                 // The copy carries nothing of the chat already (TurnNotification.kt); this keeps the lock screen to the
                 // same words if it ever does — a secure lock screen shows the public version, not "contents hidden".
                 .setVisibility(Notification.VISIBILITY_PRIVATE)

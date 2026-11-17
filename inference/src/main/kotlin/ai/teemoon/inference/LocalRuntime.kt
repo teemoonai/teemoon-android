@@ -13,18 +13,28 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+/** GB to one decimal, both platforms (wherefilter.json phoneImages.refusals.now): MB / 1024. */
+internal fun gb(mb: Int) = String.format(java.util.Locale.US, "%.1f", mb / 1024.0)
+
 sealed class LocalInferenceError(message: String) : Exception(message) {
-    class ModelNotDownloaded(val id: String) : LocalInferenceError("$id isn't downloaded yet. Download it before starting a chat.")
-    class InsufficientMemory(val needMB: Int, val availableMB: Int) : LocalInferenceError("Not enough free memory to load this model (needs about $needMB MB, $availableMB MB available). Close some apps, or pick a smaller model.")
-    class LoadFailed(val detail: String) : LocalInferenceError("The model couldn't be loaded: $detail")
+    class ModelNotDownloaded(val id: String) : LocalInferenceError("$id isn't downloaded yet. download it before starting a chat.")
+    class InsufficientMemory(val needMB: Int, val availableMB: Int) : LocalInferenceError("not enough free memory to load this model (needs about $needMB mb, $availableMB mb free). close some apps, or pick a smaller model.")
+    class LoadFailed(val detail: String) : LocalInferenceError("the model couldn't be loaded: $detail")
+    /**
+     * IMAGES.md §4b (the maintainer 2026-11-12, run time): an image turn short of memory right now, on a phone that could
+     * have the room ("now"; never on a phone that can't — that is refused before the turn, permanently). [needMB] is what
+     * the gate asked for, [availableMB] what it read. DRAFT (wherefilter.json phoneImages.refusals.now).
+     */
+    class ImagesShortOfMemoryNow(val modelName: String, val needMB: Int, val availableMB: Int) : LocalInferenceError(
+        "$modelName needs about ${gb(needMB)} GB free for images; this phone has ${gb(availableMB)} GB free right now. close some apps and try again.")
     /**
      * The fixed part of the prompt — system message, tool descriptions, the message itself — is bigger than the
      * model's context window, so no amount of history trimming can make the turn fit. Raised BEFORE the runtime is
      * asked, with the cause named: the runtime's own "Input token ids are too long" says nothing about why.
      */
     class PromptTooLarge(val promptTokens: Int, val windowTokens: Int, val toolTokens: Int) : LocalInferenceError(
-        "This message needs about $promptTokens tokens and this model's window is $windowTokens." +
-            (if (toolTokens > windowTokens / 4) " Web search adds about $toolTokens of those — turn it off for this model, or pick a place with a larger window." else " Try a shorter message."))
+        "this message needs about $promptTokens tokens and this model's window is $windowTokens." +
+            (if (toolTokens > windowTokens / 4) " web search adds about $toolTokens of those — turn it off for this model, or pick a place with a larger window." else " try a shorter message."))
 }
 
 
@@ -71,13 +81,16 @@ class LocalEngineResidency {
  * the answer, the parser folded the first block and the second landed in the bubble as text (Pixel 10 Pro, Play
  * 1.0.4 (3910), 2026-10-12). Gemma 4 E2B calls tools 12/12 on iOS with thinking off (LocalModelCatalog.swift), so
  * off loses nothing measured. The flags stay so a test can pin them and a later iOS change has one place to land.
+ *
+ * No temperature: nothing passes a SamplerConfig, so LiteRT runs its own sampler, as on iOS. The 0.7 that sat here
+ * never reached the engine and is gone (the maintainer 2026-10-28, the Gallery-gap accepts). A greedy run builds its own
+ * SamplerConfig (rawGreedySpeculativeCompare); a spec field carried the old decodeGreedy's 0 nowhere.
  */
 object LocalDefaults {
     /** iOS `answerReserveTokens`: the runtime stops at the KV ceiling first on a small window. */
     const val MAX_TOKENS = 4800
     const val ENABLE_THINKING = false
     const val MAX_TOOL_ROUNDS = 2
-    const val TEMPERATURE = 0.7f
 }
 
 // MARK: - The runtime seam
@@ -93,8 +106,31 @@ data class LocalConversationSpec(
     val userText: String,
     val maxOutputTokens: Int,
     val enableThinking: Boolean,
-    val temperature: Float,
-)
+    /**
+     * IMAGES.md §4b: the turn's images, in the order attached, up to [MAX_IMAGES_PER_TURN] — teemoon's own JPEGs,
+     * re-encoded and at most 768 px, never bytes a user or an export supplied. Only an engine that
+     * [LocalEngineHandle.sees] is given any.
+     */
+    val userImages: List<ByteArray> = emptyList(),
+    /**
+     * IMAGES.md §4b @ 00f72739: each [history] turn's images, same order and length as [history] (empty for a turn with
+     * none) — the chat's earlier images, seeded with their turns so the model still has them (it kept text only, and a
+     * question about two earlier photos found neither: the maintainer's Pixel, 2026-11-12).
+     */
+    val historyImages: List<List<ByteArray>> = emptyList(),
+) {
+    /** Every image this request carries: the question's and the earlier ones (the memory check and reuse count them all). */
+    val requestImages: Int get() = userImages.size + historyImages.sumOf { it.size }
+
+    companion object {
+        /**
+         * Up to 10 images in one phone message (the maintainer 2026-11-12: pass the memory check → 10, fail → images off).
+         * The vision engine is built for this many (maxNumImages), so any count up to it runs on one engine. Pixel 10
+         * Pro, 2026-10-30 (854cae21): 2–10 images all named right, peak PSS 3.29–3.47 GB, flat from 4 to 10.
+         */
+        const val MAX_IMAGES_PER_TURN = 10
+    }
+}
 
 /** OpenAI wire roles → LiteRT's Gemini vocabulary: the assistant is MODEL, not assistant. */
 enum class LocalRole { SYSTEM, USER, MODEL, TOOL }
@@ -116,6 +152,10 @@ interface LocalEngineHandle {
     fun dropKept() {}
     /** How the last turn started, for the developer card: "reused (N turns)" or "rebuilt" (iOS fcfdfb0); null before any turn. */
     val lastConversation: String? get() = null
+    /** Whether this engine was built with its vision backend and can take [LocalConversationSpec.userImages]. */
+    val sees: Boolean get() = false
+    /** The KV window this engine was built with, when the factory chose a smaller one than asked (the CPU rung's); null = as asked. */
+    val contextTokens: Int? get() = null
 }
 
 /** Builds engines. The LiteRT-LM binding lives in :ondevice; tests use a scripted one. */
@@ -128,5 +168,10 @@ interface LocalEngineFactory {
      *   The engine tries the NPU and nothing else, and says so when it cannot.
      */
     suspend fun open(modelPath: String, contextTokens: Int, requireNpu: Boolean = false): LocalEngineHandle
+    /** IMAGES.md §4b: [vision] builds the engine with the vision executor, for a turn with an image; it then serves text too. */
+    suspend fun open(modelPath: String, contextTokens: Int, requireNpu: Boolean, vision: Boolean): LocalEngineHandle =
+        open(modelPath, contextTokens, requireNpu)
+    /** The window [open] would build for [requested] on the rung it would try first — what the search payload is sized to. */
+    fun contextTokensFor(modelPath: String, requested: Int, requireNpu: Boolean): Int = requested
     val backendLabel: String
 }

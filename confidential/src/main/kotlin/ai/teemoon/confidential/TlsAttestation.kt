@@ -1,18 +1,15 @@
-// ports: teemoon/Confidential/TLSAttestationVerifier.swift @ v1.0.1 (the TLSAttestation value type only)
+// ports: teemoon/Confidential/TLSAttestationVerifier.swift @ a09537fe (the TLSAttestation value type only)
 package ai.teemoon.confidential
 
 /** TLS-attestation outcome — whether HTTPS terminates in the model TEE. */
 sealed interface TlsAttestation {
     /** Connection provably terminates inside the attested TEE. */
     data object Verified : TlsAttestation
-    /**
-     * A genuine NEGATIVE binding — the live certificate does NOT match the
-     * attested fingerprint (possible MITM). Adversarial: a HARD failure.
-     */
+    /** The live certificate doesn't match the attested binding, or near.ai's evidence is malformed. HARD: blocks. */
     data class Failed(override val reason: String) : TlsAttestation
     /**
-     * The check couldn't be completed — request failed, no certificate,
-     * missing/unparseable fields. Fail-closed (still degrades) but NOT
+     * An outage, or teemoon's own fault. Malformed evidence is [Failed]
+     * (near-gate-nvidia-tls-split). Fail-closed (still degrades) but NOT
      * adversarial: a network blip must never be branded interception.
      */
     data class Inconclusive(override val reason: String) : TlsAttestation
@@ -20,7 +17,7 @@ sealed interface TlsAttestation {
     data object NotPerformed : TlsAttestation
 
     val isVerified: Boolean get() = this is Verified
-    /** True only for a genuine fingerprint mismatch — drives the RED hard tier. */
+    /** Drives the red, blocking tier. [Inconclusive] is soft (confirm-to-proceed), never hard. */
     val isHardFailure: Boolean get() = this is Failed
     /** Attempted and did not verify (either hard or inconclusive) — both degrade. */
     val isUnverified: Boolean get() = this is Failed || this is Inconclusive

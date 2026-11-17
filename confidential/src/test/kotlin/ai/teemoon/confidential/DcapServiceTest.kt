@@ -60,4 +60,21 @@ class DcapServiceTest {
         assertTrue(late.gateway is DcapVerification.Failed)
         assertTrue(service().verify(record()).gateway is DcapVerification.Verified)
     }
+
+    /**
+     * pm sweep 2026-11-06 (Android-only): `catch (e: Exception)` caught CancellationException too, so a cancelled check
+     * became Failed — a hard verdict — and kept running. A cancel must stay a cancel.
+     */
+    @Test fun aCancelledCheckIsACancelNotAFailedQuote() = runTest {
+        val cancelled = kotlinx.coroutines.CancellationException("switched away")
+        val byCollateral = DcapVerifier(CollateralProvider { throw cancelled }, kitEngine)
+        assertThrowsCancellation { byCollateral.verify("00", 0) }
+        val byEngine = DcapVerifier(CollateralProvider { ByteArray(0) }, DcapQvlEngine { _, _, _ -> throw cancelled })
+        assertThrowsCancellation { byEngine.verify("00", 0) }
+    }
+
+    private suspend fun assertThrowsCancellation(block: suspend () -> Any?) {
+        val outcome = runCatching { block() }
+        org.junit.Assert.assertTrue("expected a cancel, got $outcome", outcome.exceptionOrNull() is kotlinx.coroutines.CancellationException)
+    }
 }

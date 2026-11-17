@@ -3,7 +3,7 @@ package ai.teemoon.app
 import kotlinx.coroutines.flow.first
 
 // ports: teemoon/App/ContentView.swift (the `--uitesting` seeding task, seededCloudProvider) @ v1.0.1
-// ports: teemoon/App/UITestHostSecrets.swift @ v1.0.5 (the OpenRouter and NVIDIA key files and presets)
+// ports: teemoon/App/UITestHostSecrets.swift @ v1.1.0 (the OpenRouter and NVIDIA key files and presets)
 //        teemoon/App/UITestHostSecrets.swift (hostKeyFileNames, keyFromHostFile) @ v1.0.1
 
 import ai.teemoon.providers.AddEditProviderModel
@@ -127,6 +127,8 @@ object UiTestSeeding {
     const val EXTRA_OFFLINE = "seed_offline"
     /** The free memory (MB) the get section is told, so a journey's first run does not depend on the phone's other apps. */
     const val EXTRA_AVAILABLE_MB = "seed_available_mb"
+    /** The phone's RAM in GB that the "may not fit" floor reads (LocalMemory.belowFloor). */
+    const val EXTRA_RAM_GB = "seed_ram_gb"
     const val KEY_DIR = "uitest-host-keys"
 
     /** The bytes [EXTRA_CONFIG] plants, or null for an unknown name. `duplicates` is the fireworks preset saved twice. */

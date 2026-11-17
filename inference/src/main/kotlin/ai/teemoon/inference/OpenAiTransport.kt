@@ -4,6 +4,8 @@
 //        + onResponse at the response headers, for the provider wait of 9e090f8
 //        + ad960c7: a model that 400s on the effort field is asked once more without it; a key the person set in
 //          the provider's extra parameters wins over the effort fields
+//        + d623299c: return_prompt_token_ids and return_meta_info join the plaintext-reply keys a sealed request refuses
+//          (sha not bumped: the HTTPTransport.swift commits between are not audited here)
 //
 // The remote transport: one OpenAI-compatible chat/completions round-trip.
 //
@@ -103,10 +105,37 @@ class OpenAiTransport(
     private val json = Json { ignoreUnknownKeys = true }
 
     companion object {
-        /** The chat client: connect 15 s, the wait for headers, and no total bound. */
+        /**
+         * Under E2EE v2 near.ai's proxy returns some reply fields in plaintext, but only when the request asks for one
+         * (audit 2026-11-06, proxy 0be4ee8f; conformance/e2ee-request-keys.json). A sealed request carrying any of these
+         * keys, at any depth, is refused before the wire; top_logprobs rides with logprobs. teemoon never adds them —
+         * this is the guard for a place's extra parameters, which no screen sets today. iOS d623299c (audit, sglang
+         * 3eccc307 serving_chat.py:2047): return_prompt_token_ids alone makes the whole conversation's prompt token ids
+         * come back in plaintext at v2; return_meta_info joins it. `stop` stays allowed — it echoes only the user's own
+         * stop string. conformance/e2ee-request-keys.json holds the same list; keep them equal.
+         */
+        val PLAINTEXT_REPLY_KEYS = setOf(
+            "prompt_logprobs", "return_token_ids", "return_prompt_text", "return_hidden_states", "logprobs", "top_logprobs",
+            "return_prompt_token_ids", "return_meta_info",
+        )
+        /** …and a sealed request goes only to chat completions (`logprobs` leaks on /v1/completions). */
+        const val SEALED_PATH_SUFFIX = "/chat/completions"
+
+        private fun keysAtAnyDepth(e: JsonElement): Set<String> = when (e) {
+            is JsonObject -> e.keys + e.values.flatMap { keysAtAnyDepth(it) }
+            is JsonArray -> e.flatMap { keysAtAnyDepth(it) }.toSet()
+            else -> emptySet()
+        }
+
+        /** The chat client: connect 15 s, the wait for headers (and for the upload), and no total bound. */
         fun chatClient(): OkHttpClient = TeemoonHttp.builder()
             .connectTimeout(15, TimeUnit.SECONDS)
             .readTimeout(StreamTimeouts.HEADER_WAIT_MS, TimeUnit.MILLISECONDS)   // the wait for headers; the stream's own bound is set on its source
+            // The upload's idle bound is the header wait too, as iOS's timeoutIntervalForRequest covers both. OkHttp's default
+            // is 10 s with no bytes moving, and an image turn carries the earlier images (4 × ~0.9 MB at 2048 px): on
+            // the maintainer's Pixel the fourth image message failed "SocketTimeoutException: timeout" on every retry (2026-10-28),
+            // the exact error a 10 s stall raises here, while the same bodies sent from the Mac passed.
+            .writeTimeout(StreamTimeouts.HEADER_WAIT_MS, TimeUnit.MILLISECONDS)
             .callTimeout(0, TimeUnit.MILLISECONDS)   // no total bound: a long stream must be allowed to finish
             .build()
 
@@ -195,7 +224,7 @@ class OpenAiTransport(
             // The decrypt hook is non-throwing; failure is recorded on the parser and thrown by the loop.
             val decrypt: ((String) -> String?)? = if (isE2EEActive) codec?.let { c -> { ciphertext: String -> c.decryptField(ciphertext) } } else null
             fun decryptionFailed() = LlmError(LlmError.Source.Provider(providerName),
-                "The encrypted response could not be decrypted, so it was not displayed. Try again — if this keeps happening, re-verify the connection from the lock icon.",
+                "the encrypted answer couldn't be decrypted, so it isn't shown. try again. if it keeps happening, re-verify from the lock icon.",
                 url = endpoint, requestHeaders = headers, requestBodyJson = prettyBody, responseBody = parser.decryptFailureSample?.let { "undecryptable field: $it" }, underlyingError = E2EEError.DecryptionFailed)
 
             // Elision runs HERE, on the stream, so raw markup never reaches the UI even for a beat.
@@ -203,6 +232,7 @@ class OpenAiTransport(
             val raw = StringBuilder()
             val reasoning = StringBuilder()
             var finishReason: String? = null
+            var endedWithoutDone = false
             // Raw response text for signature content binding: near.ai signs sha256 over the response lines re-joined
             // with "\n" (streaming) or the whole raw body (non-streaming) — captured exactly as received, blank
             // SSE separator lines included.
@@ -235,6 +265,7 @@ class OpenAiTransport(
                 // Stream closed right after `data: [DONE]\n` with no terminator. The signed form still includes the event's blank line.
                 if (parser.sawDone && !rawResponseText.endsWith("\n\n")) rawResponseText.append('\n')
                 // Stream ended without [DONE]: flush whatever the parser still buffers.
+                endedWithoutDone = !parser.sawDone
                 if (!parser.sawDone) for (event in parser.consume("\n\n", decrypt)) if (event is SseEvent.Content) raw.append(event.text)
                 if (parser.decryptFailed) throw decryptionFailed()
             } else {
@@ -271,6 +302,7 @@ class OpenAiTransport(
                 toolCalls = structured.ifEmpty { textCalls },
                 isTextBasedToolCall = structured.isEmpty() && textCalls.isNotEmpty(),
                 wasTruncated = finishReason == "length",
+                finishReason = finishReason, endedWithoutDone = endedWithoutDone,
                 completionTokens = parser.completionTokens,
                 report = TurnReport(url = endpoint, requestHeaders = headers, requestBodyJson = prettyBody, sealedBodyJson = sealedBody,
                     isE2eeActive = isE2EEActive, verify = verify,
@@ -357,7 +389,7 @@ class OpenAiTransport(
     private fun consumeNonStreamingResponse(body: String, parser: SseStreamParser, decrypt: ((String) -> String?)?, headers: Map<String, String>, prettyBody: String, decryptionFailed: () -> LlmError): NonStreaming {
         val root = runCatching { json.parseToJsonElement(body).jsonObject }.getOrNull()
         val choice = root?.get("choices")?.let { runCatching { it.jsonArray.firstOrNull()?.jsonObject }.getOrNull() }
-            ?: throw LlmError(LlmError.Source.Provider(providerName), "$providerName returned an unreadable response.", url = endpoint, requestHeaders = headers, requestBodyJson = prettyBody, responseBody = body)
+            ?: throw LlmError(LlmError.Source.Provider(providerName), "$providerName sent an answer teemoon couldn't read.", url = endpoint, requestHeaders = headers, requestBodyJson = prettyBody, responseBody = body)
         // The same fields the streaming path would have carried in deltas — ids, usage, and the sealed fields.
         (root["id"] as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotEmpty() }?.let { parser.chatCompletionId = it }
         (root["usage"] as? JsonObject)?.let { u -> runCatching { u["completion_tokens"]?.jsonPrimitive?.content?.toInt() }.getOrNull()?.let { parser.completionTokens = it } }
@@ -389,6 +421,11 @@ class OpenAiTransport(
      * under an E2EE promise. Internal so the regression tests can drive each mode.
      */
     internal fun e2eeSealedBody(plaintextBody: ByteArray, codec: E2EEStreamCodec, headers: Map<String, String> = emptyMap()): Pair<ByteArray, Map<String, String>> {
+        // Mode 0: a request that would ask for a reply field in the clear, or go anywhere but chat completions, is not
+        // sealed at all — the same refusal, nothing on the wire.
+        val path = runCatching { endpoint.toHttpUrl().encodedPath }.getOrNull()
+        val asks = runCatching { keysAtAnyDepth(json.parseToJsonElement(String(plaintextBody, Charsets.UTF_8))) }.getOrDefault(emptySet()).intersect(PLAINTEXT_REPLY_KEYS)
+        if (path?.endsWith(SEALED_PATH_SUFFIX) != true || asks.isNotEmpty()) throw encryptionFailedError(headers, plaintextBody, E2EEError.EncryptionFailed)
         val sealed = try { codec.encryptedBodyIfChanged(plaintextBody) } catch (e: Exception) {
             // Mode 1: encryption itself threw (bad key, RNG failure, …).
             throw encryptionFailedError(headers, plaintextBody, e as? E2EEError ?: E2EEError.EncryptionFailed)
@@ -400,7 +437,7 @@ class OpenAiTransport(
 
     private fun encryptionFailedError(headers: Map<String, String>, plaintextBody: ByteArray, cause: E2EEError) = LlmError(
         LlmError.Source.Provider(providerName),
-        "The request could not be encrypted, so it was not sent. Try again — if this keeps happening, re-verify the connection from the lock icon.",
+        "the request couldn't be encrypted, so it wasn't sent. try again. if it keeps happening, re-verify from the lock icon.",
         url = endpoint, requestHeaders = headers, requestBodyJson = String(plaintextBody, Charsets.UTF_8), underlyingError = cause)
 
     private fun Map<String, Any>.toJson(): JsonElement = JsonObject(mapValues { (_, v) -> v.toJson() })

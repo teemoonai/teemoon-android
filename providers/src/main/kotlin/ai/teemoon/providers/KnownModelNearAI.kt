@@ -1,4 +1,4 @@
-// ports: teemoon/Providers/Provider+Presets.swift @ v1.0.4 (what still ships once the catalogues are gone:
+// ports: teemoon/Providers/Provider+Presets.swift @ 5b40a389 (what still ships once the catalogues are gone:
 //        near.ai's attested-3p id set and Brave's one fixed row; fireworksPrices lives with FireworksAdapter.kt)
 package ai.teemoon.providers
 
@@ -30,6 +30,8 @@ private val NEAR_AI_ATTESTED_THIRD_PARTY_IDS: Set<String> = setOf(
     "deepseek/deepseek-v3.2", "minimax/minimax-m2.5", "moonshotai/kimi-k2.5",
     "moonshotai/kimi-k2.6", "moonshotai/kimi-k3", "qwen/qwen3-32b",
     "qwen/qwen3.5-397b-a17b", "z-ai/glm-5",
+    // iOS 5b40a389: near.ai serves it attested third-party; by its `z-ai/` namespace alone it read own fleet (E2EE).
+    "z-ai/glm-5.3",
 )
 
 /**

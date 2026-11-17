@@ -25,6 +25,10 @@ adb shell rm -rf "$remote" >/dev/null 2>&1 || true
 # Pin ANDROID_SERIAL when a phone is plugged in too — a connected run targets every attached device.
 classes=(ai.teemoon.app.UserJourneysTest ai.teemoon.app.GroundedTurnTest)
 status=0
+# NO HIDDEN CRASHES: Gradle's status alone passed a class whose instrumentation crashed part-way when the result
+# still read failures="0" — the journeys after the crash never ran, so none failed. Each class's result directory and
+# Gradle output go to tools/check_instrumentation.py, which holds them to the class's @Test count and the run's words.
+results=app/build/outputs/androidTest-results/connected/debug; logs="${OUT:-build/journey-goldens}.logs"; mkdir -p "$logs"
 # The notification prompt (POST_NOTIFICATIONS, asked at the first send) covers the app on a fresh install, and every
 # later step then finds no compose hierarchy — two "failed" classes on 2026-10-02 that were a system dialog. Granted
 # up front; harmless when the app is not installed yet (the first class installs it, and the grant then follows).
@@ -32,9 +36,12 @@ adb shell pm grant "$app_id" android.permission.POST_NOTIFICATIONS >/dev/null 2>
 for cls in "${classes[@]}"; do
   args=(-Pandroid.testInstrumentationRunnerArguments.class=$cls -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true ${GRADLE_EXTRA:-})
   [ "$mode" = record ] && args+=(-Pandroid.testInstrumentationRunnerArguments.goldens=record)
-  set +e; ./gradlew -q :app:connectedDebugAndroidTest "${args[@]}"; s=$?; set -e
+  rm -rf "$results"; log="$logs/${cls##*.}.gradle.log"
+  set +e; ./gradlew -q :app:connectedDebugAndroidTest "${args[@]}" 2>&1 | tee "$log"; s=${PIPESTATUS[0]}; set -e
   adb shell pm grant "$app_id" android.permission.POST_NOTIFICATIONS >/dev/null 2>&1 || true
   [ $s -ne 0 ] && { echo "$cls FAILED"; status=$s; }
+  set +e; python3 -I tools/check_instrumentation.py "$results" --source "app/src/androidTest/kotlin/ai/teemoon/app/${cls##*.}.kt" --log "$log"; c=$?; set -e
+  if [ $c -ne 0 ]; then echo "$cls CRASHED (instrumentation did not run to completion)"; if [ $status -eq 0 ]; then status=1; fi; fi
 done
 case "$mode" in
   record)

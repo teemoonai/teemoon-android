@@ -1,12 +1,16 @@
 // ports: teemoon/Inference/LiteRTTransport.swift @ v1.0.4 — the transport over the LocalEngineFactory seam (the
 //        LiteRT-LM binding itself is :ondevice's LiteRtLmEngineFactory); EngineCache.building: one build per key,
 //        shared; the engine is discarded when the turn ends, never under it
-// ports: teemoon/Inference/LiteRTTransport.swift @ a6ce6e8 (thinking, thinkingReserveTokens, strippingInlineThought, the
+// ports: teemoon/Inference/LiteRTTransport.swift @ afc4327 (residentServes; the vision executor only for an image turn, IMAGES.md §4b)
+// ports: teemoon/Inference/LiteRTTransport.swift @ v1.0.6 (thinking, thinkingReserveTokens, strippingInlineThought, the
 //        "thinking" header, wasTruncated at the cap; 7cd8c10's ThinkingConfig for Think Harder)
 //
 // On-device inference: the on-device GenerationTransport. Tool calling is wired
 // through LiteRTToolBridge; the shared GenerationEngine loop sits above.
+// history images: teemoon/Inference/LiteRTTransport.swift @ 29d48870 (IMAGES.md §4b @ 00f72739).
 package ai.teemoon.inference
+
+import kotlinx.coroutines.sync.withLock
 
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
@@ -48,6 +52,15 @@ class LocalEngineCache(
      */
     private val building = HashMap<Key, Deferred<LocalEngineHandle>>()
     private var evictionPending = false
+    /**
+     * One build at a time (A5, pm sweep 2026-11-06). Each build evicts what is resident before it loads, but two at
+     * once (a warm-up of one bundle, a turn on another) each evicted only what was there before either started, and
+     * both kept their engine. Serialised, the second evicts the first. It also keeps the runtime's process-global
+     * speculative-decoding flag, set per open, from being set by one build under the other.
+     */
+    private val buildLock = kotlinx.coroutines.sync.Mutex()
+    /** Bumped by every eviction asked for: a build that finishes after one knows its engine was evicted while it loaded. */
+    private var evictions = 0L
     private var forgetPending = false
     val residentCount: Int get() = synchronized(this) { engines.size }
 
@@ -61,7 +74,9 @@ class LocalEngineCache(
      * performs it.
      */
     fun evictAll() {
-        if (gate.isBusy) { synchronized(this) { if (engines.isNotEmpty()) { evictionPending = true; log("[litert] eviction deferred until the turn ends") } }; return }
+        // A build in flight has nothing resident yet: counted, so the engine it finishes with is not kept against this.
+        synchronized(this) { evictions += 1 }
+        if (gate.isBusy) { synchronized(this) { if (engines.isNotEmpty() || building.isNotEmpty()) { evictionPending = true; log("[litert] eviction deferred until the turn ends") } }; return }
         evictNow()
     }
 
@@ -88,17 +103,18 @@ class LocalEngineCache(
 
     private fun publish() { residency.update(engines.keys.map { it.path }.toSet()) }
 
-    suspend fun engine(path: String, contextTokens: Int, sizeMB: Int, headroomMB: Int, requireNpu: Boolean = false): LocalEngineHandle {
+    suspend fun engine(path: String, contextTokens: Int, sizeMB: Int, headroomMB: Int, requireNpu: Boolean = false, vision: Boolean = false): LocalEngineHandle {
         val key = Key(path, contextTokens)
         val (job, owner) = synchronized(this) {
-            engines[key]?.let { return it }
+            engines[key]?.takeIf { residentServes(it.sees, vision) }?.let { return it }
             building[key]?.let { return@synchronized it to false }
             CompletableDeferred<LocalEngineHandle>().also { building[key] = it } to true
         }
-        if (!owner) return job.await()
+        // A shared build that came out text-only cannot run an image turn: build again, with vision.
+        if (!owner) return job.await().takeIf { residentServes(it.sees, vision) } ?: engine(path, contextTokens, sizeMB, headroomMB, requireNpu, vision)
         val done = job as CompletableDeferred<LocalEngineHandle>
         try {
-            val handle = build(key, path, contextTokens, sizeMB, headroomMB, requireNpu)
+            val handle = buildLock.withLock { build(key, path, contextTokens, sizeMB, headroomMB, requireNpu, vision) }
             done.complete(handle)
             return handle
         } catch (t: Throwable) {
@@ -109,23 +125,44 @@ class LocalEngineCache(
         }
     }
 
-    private suspend fun build(key: Key, path: String, contextTokens: Int, sizeMB: Int, headroomMB: Int, requireNpu: Boolean): LocalEngineHandle {
+    private suspend fun build(key: Key, path: String, contextTokens: Int, sizeMB: Int, headroomMB: Int, requireNpu: Boolean, vision: Boolean): LocalEngineHandle {
         if (!fileExists(path)) throw LocalInferenceError.ModelNotDownloaded(File(path).name)
         // ONE ENGINE RESIDENT AT A TIME, evicted BEFORE the memory gate runs — otherwise the gate measures memory an
         // engine nobody is using still holds. Published before the gate, which can throw: nothing is warm at this point.
+        // Includes this key's own text-only engine when an image turn asks for vision (iOS afc4327).
         synchronized(this) {
-            for (other in engines.keys.toList()) if (other != key) { log("[litert] evicting ${File(other.path).name} to make room"); engines.remove(other)?.let { runCatching { it.close() } } }
+            for (other in engines.keys.toList()) { log("[litert] evicting ${File(other.path).name}${if (other == key) " (text-only; this turn has an image)" else ""} to make room"); engines.remove(other)?.let { runCatching { it.close() } } }
             publish()
         }
         memoryCheck(sizeMB + headroomMB)
+        val epoch = synchronized(this) { evictions }
         val start = nowMs()
-        val handle = factory.open(path, contextTokens, requireNpu)
+        val handle = factory.open(path, contextTokens, requireNpu, vision)
         val took = nowMs() - start
         log("[litert] engine ready in ${took}ms")
-        synchronized(this) { engines[key] = handle; residency.recordLoad(path, took); publish() }
+        val evictedWhileLoading = synchronized(this) {
+            val evicted = evictions != epoch
+            // Under a turn (it holds the gate while its engine builds) the turn needs it: kept, and evicted when the
+            // turn ends. With no turn — a warm-up — nobody is using it: not kept against the eviction.
+            if (evicted && !gate.isBusy) return@synchronized true
+            if (evicted) evictionPending = true
+            engines[key] = handle; residency.recordLoad(path, took); publish()
+            false
+        }
+        if (evictedWhileLoading) {
+            runCatching { handle.close() }
+            log("[litert] evicted while loading — not kept")
+            throw kotlinx.coroutines.CancellationException("the engine was evicted while it loaded")
+        }
         return handle
     }
 }
+
+/**
+ * Whether a resident engine can run this turn: a vision engine serves text too, so only an image turn on a text-only
+ * engine rebuilds. The engine decides vision at creation (iOS LiteRTTransport.residentServes @ afc4327).
+ */
+fun residentServes(residentVision: Boolean, wantsVision: Boolean): Boolean = residentVision || !wantsVision
 
 class LiteRTTransport(
     /** Path to the `.litertlm` bundle — one packaged file. */
@@ -152,10 +189,25 @@ class LiteRTTransport(
      * which the factory never reads; the NPU bundle writes it inline, held back while it streams and stripped below.
      */
     private val thinking: Boolean = LocalDefaults.ENABLE_THINKING,
-    private val temperature: Float = LocalDefaults.TEMPERATURE,
     private val backendLabel: String = "gpu",
     /** This bundle is NPU-compiled and runs on the NPU alone; see LocalEngineFactory.open. */
     private val requireNpu: Boolean = false,
+    /**
+     * the maintainer 2026-10-26 (a): the general file an NPU bundle's image turns run on (it carries the vision encoder; the NPU
+     * bundle does not). Null when [modelPath] is the general file itself, or the general file is not downloaded.
+     */
+    private val imageModelPath: String? = null,
+    private val imageSizeMB: Int = estimatedSizeMB,
+    /**
+     * IMAGES.md §4b, option (c): what a vision load and its image turns take from availMem (LocalModel.visionLoadMB). An image
+     * turn's load asks the memory gate for this + headroom instead of the file's size; short, the turn is refused with
+     * [LocalInferenceError.ImagesShortOfMemoryNow]. Null: the file's size, as a text load.
+     */
+    private val visionLoadMB: Int? = null,
+    /** The model's name as the refusal says it ("gemma 4 e2b"). */
+    private val modelName: String = "this model",
+    /** An image turn begins (true) and ends (false): PhoneImageLedger's in-flight mark, so a kill mid-turn is found at launch. */
+    private val onImageTurn: (begins: Boolean) -> Unit = {},
     private val log: (String) -> Unit = {},
 ) : GenerationTransport {
 
@@ -164,19 +216,46 @@ class LiteRTTransport(
     }
 
     private suspend fun turn(messages: List<Map<String, Any>>, includeTools: Boolean, tools: List<Tool>, onPartial: (String) -> Unit): TurnResult {
-        val engine = cache.engine(modelPath, contextTokens, estimatedSizeMB, headroomMB, requireNpu)
         // SEED the transcript, do not REPLAY it. sendMessage GENERATES a full response to each message — replaying the
         // history produced a complete generation per prior turn (minutes vs ~15 s, "still thinking, 60s and rising").
         // The system message and the initial messages populate the history WITHOUT generating.
         val systemText = messages.firstOrNull { it["role"] == "system" }?.get("content") as? String
         val systemMessage = systemText?.takeIf { it.isNotEmpty() }
-        val lastText = (messages.lastOrNull()?.get("content") as? String) ?: ""
+        // A turn with images arrives as a content array (wireContent): its text parts, and every image's bytes in order.
+        val lastContent = messages.lastOrNull()?.get("content")
+        val lastText = textOf(lastContent)
+        val lastImages = imagesOf(lastContent)
+        // IMAGES.md §4b @ 00f72739: earlier turns carry their images too (ImageHistory.applyOnDevice chose them), and any
+        // image in the request, the question's or an earlier one, needs the vision engine, the memory check and the mark.
         val prior = messages.dropLast(1).filter { it["role"] != "system" }
+        val anyImages = lastImages.isNotEmpty() || prior.any { imagesOf(it["content"]).isNotEmpty() }
+        // IMAGES.md §4b: only a turn with an image asks for the vision executor. On a Tensor phone that turn runs the
+        // general file instead of the NPU bundle (one engine resident at a time: the NPU engine is closed for it).
+        val imageOnGeneral = anyImages && imageModelPath != null
+        val requested = if (imageOnGeneral) DEFAULT_CONTEXT_TOKENS else contextTokens
+        if (anyImages) onImageTurn(true)
+        try {
+        val engine = try {
+            if (imageOnGeneral) cache.engine(imageModelPath, requested, visionLoadMB ?: imageSizeMB, headroomMB, requireNpu = false, vision = true)
+            else cache.engine(modelPath, requested, if (anyImages) visionLoadMB ?: estimatedSizeMB else estimatedSizeMB, headroomMB, requireNpu, vision = anyImages)
+        } catch (e: LocalInferenceError.InsufficientMemory) {
+            // the memory check (option c): an image turn short of the vision load says so, not "close some apps"
+            if (!anyImages) throw e
+            log("[litert] image turn refused: needs ${e.needMB} MB, ${e.availableMB} MB available")
+            throw LocalInferenceError.ImagesShortOfMemoryNow(modelName, e.needMB, e.availableMB)
+        }
+        // The window the engine was BUILT with: the CPU rung takes 4096 whatever was asked (BackendLadder.contextTokens).
+        // Budgeting by the request would hand a 4096 engine an 8192 prompt, and the runtime's refusal names no cause.
+        val contextTokens = engine.contextTokens ?: requested
         // The answer reserve was sized for an 8192 window; an NPU bundle's window is 4096, where 4800 would leave
         // the history budget negative and drop every prior turn. Reserve a third of a small window instead.
         val answerReserve = minOf(ANSWER_RESERVE_TOKENS, contextTokens / 3)
-        val history = trimmedHistory(prior, budgetTokens = contextTokens - estimatedTokens(systemMessage ?: "") - estimatedTokens(lastText) - answerReserve, log = log)
-            .mapNotNull { m -> (m["content"] as? String)?.takeIf { it.isNotEmpty() }?.let { role(m["role"] as? String) to it } }
+        // a turn with images was a content array: its text and its images both seed (§4b @ 00f72739; it was dropped whole)
+        val seeded = trimmedHistory(prior, budgetTokens = contextTokens - estimatedTokens(systemMessage ?: "") - estimatedTokens(lastText) - lastImages.size * VISION_TOKENS_PER_IMAGE - answerReserve, log = log)
+            .map { m -> Triple(role(m["role"] as? String), textOf(m["content"]), imagesOf(m["content"])) }
+            .filter { (_, text, images) -> text.isNotEmpty() || images.isNotEmpty() }
+        val history = seeded.map { (role, text, _) -> role to text }
+        val historyImages = seeded.map { it.third }
         val executed = ArrayList<ToolCallRecord>()
         // The developer card's phase line (TurnPhase): the runtime runs the tool loop, so this transport times it.
         val phases = ArrayList<TurnPhase>()
@@ -202,14 +281,14 @@ class LiteRTTransport(
         // message — cannot be trimmed, and the runtime's refusal ("Input token ids are too long") names no cause. On a
         // 4096 window the web tool alone is most of the budget; the user needs to be told THAT, not shown a JNI code.
         val toolTokens = shims.sumOf { estimatedTokens(it.descriptionJson) }
-        val fixedTokens = estimatedTokens(systemMessage ?: "") + estimatedTokens(lastText) + toolTokens
+        val fixedTokens = estimatedTokens(systemMessage ?: "") + estimatedTokens(lastText) + toolTokens + lastImages.size * VISION_TOKENS_PER_IMAGE
         if (fixedTokens + MIN_ANSWER_TOKENS > contextTokens) {
             log("[litert] prompt of ~$fixedTokens tokens (tools ~$toolTokens) cannot fit a $contextTokens window")
             throw LocalInferenceError.PromptTooLarge(fixedTokens, contextTokens, toolTokens)
         }
         // A thought counts against the cap too (~400 tokens a question, iOS measured): room for one on top of the answer.
         val cap = if (thinking) maxTokens + THINKING_RESERVE_TOKENS else maxTokens
-        val spec = LocalConversationSpec(systemMessage, history, shims, lastText, cap, thinking, temperature)
+        val spec = LocalConversationSpec(systemMessage, history, shims, lastText, cap, thinking, userImages = lastImages, historyImages = historyImages)
         val answer = StringBuilder()
         // Tool-call markup must never stream to the user — same machine as the SSE path. Always enabled: a small local
         // model may emit tool syntax whether or not tools were offered this turn. Stream the ELIDED accumulation, never
@@ -245,7 +324,10 @@ class LiteRTTransport(
         inlineThought.finish().takeIf { it.isNotEmpty() }?.let { elision.append(it) }
         if (elision.finish().isNotEmpty()) emitAnswerOnly()
         val bench = engine.benchmark()
-        bench?.let { log("[litert] ttft=${it.timeToFirstTokenSeconds}s prefill=${it.prefillTokens}tok (${it.prefillTokensPerSecond.toInt()}tok/s) · decode=${it.decodeTokens}tok (${it.decodeTokensPerSecond.toInt()}tok/s)") }
+        // No ttft: getBenchmarkInfo's is the CONVERSATION's first turn and never updates on a reused one (Pixel 10 Pro,
+        // 2026-10-26: 1.29 s on all five turns of a reused CPU chat), while its prefill and decode figures do. iOS
+        // dropped it from its line the same way (6777498). The card's first-token time is this transport's own firstTokenAt.
+        bench?.let { log("[litert] prefill=${it.prefillTokens}tok (${it.prefillTokensPerSecond.toInt()}tok/s) · decode=${it.decodeTokens}tok (${it.decodeTokensPerSecond.toInt()}tok/s)") }
         val records = synchronized(executed) { executed.toList() }
         if (records.isNotEmpty()) log("[litert] executed ${records.size} tool call(s)")
         // The inline thought goes, all of it when the cap cut it off: never the reply, never reasoning for the
@@ -265,12 +347,13 @@ class LiteRTTransport(
             // The developer panel's equivalent of a request for a turn that never made one: url stays null, the messages
             // actually sent and the runtime settings ARE the request.
             report = TurnReport(url = null,
-                requestHeaders = mapOf("runtime" to "LiteRT-LM", "model" to File(modelPath).name, "backend" to backendLabel, "context-tokens" to contextTokens.toString(), "tools-offered" to (if (includeTools) tools.size.toString() else "0"),
+                requestHeaders = mapOf("runtime" to "LiteRT-LM", "model" to File(if (imageOnGeneral) imageModelPath else modelPath).name, "backend" to backendLabel, "context-tokens" to contextTokens.toString(), "tools-offered" to (if (includeTools) tools.size.toString() else "0"),
                     "thinking" to if (thinking) "on" else "off") + listOfNotNull(engine.lastConversation?.let { "conversation" to it }),
                 requestBodyJson = prettyRequest(messages, if (includeTools) tools else emptyList()), isE2eeActive = false, executedToolCalls = records, verify = null,
                 firstTokenAt = firstTokenAt, firstVisibleTokenAt = firstVisibleAt, phases = synchronized(phases) { phases.toList() },
                 localStats = bench?.let { LocalTurnStats(engine.backend ?: backendLabel, engine.speculative, it.prefillTokens, it.prefillTokensPerSecond) }),
         )
+        } finally { if (anyImages) onImageTurn(false) }
     }
 
     companion object {
@@ -289,16 +372,31 @@ class LiteRTTransport(
         fun strippingInlineThought(raw: String): String = raw.replace(INLINE_THOUGHT, "")
         /** The least room an answer is worth starting with. Below this the turn is refused up front rather than cut off mid-sentence. */
         const val MIN_ANSWER_TOKENS = 256
+        /** IMAGES.md §4b: the vision tokens an image costs in the prompt (iOS's budget; to be tuned by measurement). */
+        const val VISION_TOKENS_PER_IMAGE = 280
 
         /** Deliberately PESSIMISTIC: Gemma 4 averages ~6.3 characters per token, so dividing by 4 over-estimates, which keeps the prompt under a hard ceiling. */
         fun estimatedTokens(text: String): Int = maxOf(1, text.length / 4)
+
+        /** A message's text: the string, or a content array's text parts (wireContent). */
+        fun textOf(content: Any?): String = when (content) {
+            is String -> content
+            is List<*> -> content.mapNotNull { (it as? Map<*, *>)?.takeIf { p -> p["type"] == "text" }?.get("text") as? String }.joinToString("\n\n")
+            else -> ""
+        }
+
+        /** A content array's images, in order: each data URL's bytes. */
+        fun imagesOf(content: Any?): List<ByteArray> = (content as? List<*>).orEmpty()
+            .mapNotNull { ((it as? Map<*, *>)?.get("image_url") as? Map<*, *>)?.get("url") as? String }
+            .mapNotNull { url -> url.substringAfter(";base64,", "").takeIf { it.isNotEmpty() }?.let { runCatching { java.util.Base64.getDecoder().decode(it) }.getOrNull() } }
 
         /** Keeps the most RECENT turns that fit: a follow-up depends on the message before it, not the first one. */
         fun trimmedHistory(messages: List<Map<String, Any>>, budgetTokens: Int, log: (String) -> Unit = {}): List<Map<String, Any>> {
             if (budgetTokens <= 0) return emptyList()
             val kept = ArrayList<Map<String, Any>>(); var used = 0
             for (message in messages.asReversed()) {
-                val cost = estimatedTokens((message["content"] as? String) ?: "")
+                // an earlier turn's images count as the vision tokens they prefill (§4b @ 00f72739)
+                val cost = estimatedTokens(textOf(message["content"])) + imagesOf(message["content"]).size * VISION_TOKENS_PER_IMAGE
                 if (used + cost > budgetTokens) break
                 used += cost; kept.add(0, message)
             }

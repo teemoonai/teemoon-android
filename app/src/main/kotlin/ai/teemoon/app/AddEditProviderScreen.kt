@@ -23,11 +23,8 @@ import ai.teemoon.providers.OllamaDownloadCenter
 import ai.teemoon.providers.Provider
 import ai.teemoon.providers.metaLabel
 import ai.teemoon.providers.presetDescription
-import androidx.compose.animation.core.RepeatMode
 import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
 import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -74,7 +71,6 @@ import ai.teemoon.providers.ProviderCapability
 import ai.teemoon.providers.WhereLocality
 import ai.teemoon.providers.WhereProviderPresentation
 import androidx.compose.animation.core.Animatable
-import androidx.compose.animation.core.LinearEasing
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.text.BasicTextField
@@ -102,6 +98,8 @@ fun AddEditProviderScreen(
     /** In-flight pulls, every endpoint; the screen keeps the ones for THIS host (`downloadingHere`). */
     downloads: List<OllamaDownloadCenter.Download> = emptyList(),
     onCancelDownload: (String) -> Unit = {},
+    /** The where sheet's filters when it opened this form (IMAGES.md §4e "Into a provider's models"): the model rows carry them. */
+    showOnly: Set<ai.teemoon.providers.ModelBrowserQuery.Filter> = emptySet(),
 ) {
     // The model is plain Kotlin; a version counter re-reads it after every mutation. The counter only invalidates THIS
     // scope — the sections below take the model by reference and are marked non-skippable, or a fetch result would
@@ -174,7 +172,7 @@ fun AddEditProviderScreen(
                 LaunchedEffect(model.keyFocusRequest) {
                     if (model.keyFocusRequest == 0) return@LaunchedEffect
                     runCatching { keyFocus.requestFocus() }
-                    shake.snapTo(0f); shake.animateTo(1f, tween(400, easing = LinearEasing))
+                    shake.snapTo(0f); shake.animateTo(1f, Motion.shake())
                 }
                 InsetField(model.apiKey, { mutate { model.apiKey = it } }, model.apiKeyPlaceholder, secret = !model.showAPIKey, sensitive = true, singleLine = !model.showAPIKey,
                     // ShakeEffect: 8pt · sin(t · 3π) across the 0.4 s — one horizontal "no"
@@ -211,7 +209,7 @@ fun AddEditProviderScreen(
         // modelSection: only once there is an endpoint to ask; a fixed-answer endpoint shows a connection check instead
         if (model.scope == AddEditProviderModel.Scope.FULL && model.fullEndpointURL != null) {
             if (model.fixedModelID != null) ConnectionCheckSection(model) { scope.launch { model.probe(userInitiated = true); version++ } }
-            else ModelListSection(model, downloads, onCancelDownload, onDownload,
+            else ModelListSection(model, downloads, onCancelDownload, onDownload, showOnly,
                 onPick = { m -> mutate { model.model = m.id; model.autofillPlaceLabel() } },
                 onProbe = { scope.launch { model.probe(userInitiated = true); version++ } },
                 onManualModel = { mutate { model.model = it } },
@@ -293,7 +291,7 @@ private fun PresetSection(model: AddEditProviderModel, onSelect: (String) -> Uni
             InsetRow(p.name.lowercase(), subtitle = WhereProviderPresentation.presetCaption(p)?.lowercase(),
                 onClick = { if (!selected) onSelect(p.name) },
                 leading = { LocalityGlyph(WhereLocality.CLOUD, tint = TeemoonColors.tint) },
-                titleTags = if (ProviderCapability.END_TO_END_ENCRYPTION in p.capabilities) ({ E2EETag() }) else null,
+                titleTags = if (p.claimsEndToEndEncryption) ({ E2EETag() }) else null,
                 trailing = { if (selected) SelectedCheck() })
         }
         InsetRow("custom", subtitle = "any endpoint serving /v1/chat/completions", onClick = { if (model.selectedPresetName.isNotEmpty()) onSelect("") },
@@ -329,6 +327,7 @@ private fun ConnectionCheckSection(model: AddEditProviderModel, onProbe: () -> U
 @NonSkippableComposable   // reads the plain model by reference: strong skipping would compare the same instance and skip the fetch result
 private fun ModelListSection(
     model: AddEditProviderModel, downloads: List<OllamaDownloadCenter.Download>, onCancelDownload: (String) -> Unit, onDownload: (() -> Unit)?,
+    showOnly: Set<ai.teemoon.providers.ModelBrowserQuery.Filter>,
     onPick: (KnownModel) -> Unit, onProbe: () -> Unit, onManualModel: (String) -> Unit, onAskDelete: (KnownModel) -> Unit,
 ) {
     var showAll by remember { mutableStateOf(false) }
@@ -336,6 +335,8 @@ private fun ModelListSection(
     val downloadingHere = downloads.filter { d -> host != null && runCatching { URI(d.baseUrl).host }.getOrNull() == host }
     val blocked = model.probeBlockedOnMissingKey
     SectionLabel("model", style = MaterialTheme.typography.titleMedium)
+    // the where sheet's filter, in its own words, so a short list says why it is short
+    if (showOnly.isNotEmpty()) GroupFooter("≡ " + ai.teemoon.providers.WhereFilter.control(showOnly))
     InsetGroup {
         downloadingHere.forEach { d -> DownloadingModelRow(d) { onCancelDownload(d.id) } }   // in-flight pulls sit at the TOP — the most active item
         val fetchRow: @Composable () -> Unit = {
@@ -343,10 +344,11 @@ private fun ModelListSection(
                 leading = { RefreshGlyph(TeemoonColors.tint) }, modifier = Modifier.alpha(if (blocked) 0.4f else 1f))   // EXPLICIT DIM: 40%, one dim across the app meaning "you cannot tap this"
         }
         val picker: @Composable () -> Unit = {
-            val shown = if (showAll) model.fetchedModels else model.recommendedModels
+            val shown = model.shownModels(showAll, showOnly)
             shown.forEach { m -> ModelRow(m, selected = m.id == model.model, warm = m.id in model.loadedModelIDs, showTier = model.showsInlineTiers, onPick = { onPick(m) }, onDelete = if (model.isOllama) ({ onAskDelete(m) }) else null) }
             // "all N models" opens the catalogue browser on iOS; here the group expands in place (docs/ANDROID_NATIVE.md)
-            if (model.fetchedModels.size > 3) InsetRow(if (showAll) "fewer" else "all ${model.fetchedModels.size} models", onClick = { showAll = !showAll }, chevron = !showAll)
+            val count = model.modelCount(showOnly)
+            if (count > 3) InsetRow(if (showAll) "fewer" else "all $count models", onClick = { showAll = !showAll }, chevron = !showAll)
         }
         when (val c = model.conn) {
             AddEditProviderModel.ConnState.Testing -> SpinnerRow("connecting…")
@@ -404,7 +406,8 @@ private fun ModelRow(m: KnownModel, selected: Boolean, warm: Boolean, showTier: 
         if (sub.isNotEmpty()) Text(sub, style = MaterialTheme.typography.bodySmall, color = TeemoonColors.secondaryLabel, maxLines = 1)
         if (selected) SelectedCheck()
     }) }
-    if (onDelete != null) TrailingSwipe("delete", onDelete, content = row) else row()
+    // iOS ProviderModelSection: `.swipeActions(edge: .trailing, allowsFullSwipe: false)` — a full swipe only opens
+    if (onDelete != null) TrailingSwipe("delete", onDelete, allowsFullSwipe = false, content = row) else row()
 }
 
 /** The "ink ladder": e2ee is filled + shield (proven), attested-third-party a hairline outline, proxied bare text. */
@@ -418,13 +421,16 @@ fun ConfidentialityTag(tier: NearAIModelCatalog.Confidentiality) {
         // NOT "unverified": it IS attested, just on hardware that isn't near.ai's own. Name the fact, not a verdict.
         NearAIModelCatalog.Confidentiality.TEE_THIRD_PARTY -> Text("tee · third-party", style = small, color = TeemoonColors.secondaryLabel, modifier = Modifier.border(1.dp, TeemoonColors.secondaryLabel.copy(alpha = 0.35f), CircleShape).padding(horizontal = 6.dp, vertical = 3.dp))
         NearAIModelCatalog.Confidentiality.PROXIED -> Text("proxied", style = small, color = TeemoonColors.secondaryLabel)
+        // Claims nothing, as proxied reads: the catalogue has not tiered it yet (iOS 9862a35; the words are pending
+        // the maintainer's review). It comes from the tier's own label, so the tag and the section header cannot disagree.
+        NearAIModelCatalog.Confidentiality.UNKNOWN -> Text(tier.label, style = small, color = TeemoonColors.secondaryLabel)
     }
 }
 
 /** WarmDot: ambient "loaded in the server's memory" — a green dot breathing between full and 45%, not a badge. */
 @Composable
 fun WarmDot() {
-    val a by rememberInfiniteTransition(label = "warm").animateFloat(1f, 0.45f, infiniteRepeatable(tween(1300), RepeatMode.Reverse), label = "warmAlpha")
+    val a by rememberInfiniteTransition(label = "warm").animateFloat(1f, 0.45f, Motion.breath(1300), label = "warmAlpha")
     Box(Modifier.size(6.dp).clip(CircleShape).background(TeemoonColors.verified.copy(alpha = a)))
 }
 

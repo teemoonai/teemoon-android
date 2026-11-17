@@ -1,5 +1,6 @@
 // ports: teemoon/Presentation/WhereGetPolicy.swift @ v1.0.4
 // ports: teemoon/Presentation/WhereGetPolicy.swift @ v1.0.4 (catalogCount, presetTrailingText, canBrowse by live source)
+// ports: teemoon/Presentation/WhereGetPolicy.swift @ f3773d9 (recommendedPhoneModel reads the RAM floor)
 package ai.teemoon.providers
 
 /**
@@ -26,6 +27,12 @@ class WhereGetPolicy(
      * asks the providers, not the filesystem; this is the one question only the filesystem can answer.
      */
     val deviceFileMissing: (LocalModel) -> Boolean = { false },
+    /**
+     * Whether the provider has a key, answered without opening it (ProviderCredentials.KeyFacts.forBrowsing). Null asks
+     * [credentialFor] and [credentialForEndpoint], which open the key — fine in a test, a Keystore round trip per row in
+     * the sheet.
+     */
+    val keyPresent: ((Provider) -> Boolean)? = null,
 ) {
     data class HomeInfo(
         val kind: LocalServerKind,
@@ -81,6 +88,7 @@ class WhereGetPolicy(
 
     fun hasKey(provider: Provider): Boolean {
         if (!provider.requiresAPIKey) return true
+        keyPresent?.let { return it(provider) }
         if (credentialFor(provider).trim().isNotEmpty()) return true
         return credentialForEndpoint(provider.endpoint).trim().isNotEmpty()
     }
@@ -215,7 +223,7 @@ class WhereGetPolicy(
             return if (filter == WhereLocality.HOME && machines.size < 2) null else name
         }
         val caption = WhereProviderPresentation.placeCaption(forProvider)
-        if (ProviderCapability.END_TO_END_ENCRYPTION !in forProvider.capabilities &&
+        if (!forProvider.claimsEndToEndEncryption &&
             !forProvider.isFixedAnswerService &&
             caption == WhereProviderPresentation.canonicalName(forProvider)
         ) {
@@ -232,15 +240,20 @@ class WhereGetPolicy(
         return info.warm.contains(modelID)
     }
 
-    /** Orange caption: a near.ai model that is proxied, not enclave. */
-    fun warnsUnencryptedNear(provider: Provider): Boolean =
-        provider.isNearAI &&
-            ProviderCapability.END_TO_END_ENCRYPTION !in provider.capabilities
+    /**
+     * Orange caption: only a state that needs the user — a missing download, a failed pull. A near.ai model that isn't
+     * end-to-end encrypted (the proxied or third-party tier) is an ordinary choice and reads muted, as every other
+     * non-E2EE place (review item where-near-unencrypted-muted, the maintainer 2026-11-07). The trust chip's colours are
+     * unchanged.
+     */
+    @Suppress("UNUSED_PARAMETER") fun captionWarns(provider: Provider, missingDownload: Boolean, pullFailed: Boolean): Boolean =
+        missingDownload || pullFailed
 
     companion object {
         /**
-         * Catalog leader if it fits; null means do not hero a download that would fail.
-         * `availableMB == 0` is "API silent" — do not block (previews, simulator).
+         * Catalog leader unless the phone is below its RAM floor; null means do not hero a download that would fail.
+         * The same rule as the "may not fit" label, never free memory at the moment the sheet draws (iOS f3773d9).
+         * `totalBytes <= 0` is "API silent" — do not block (previews).
          */
         fun recommendedPhoneModel(
             /**
@@ -251,11 +264,10 @@ class WhereGetPolicy(
              * happened to be on the phone the day it was recorded.
              */
             catalog: List<LocalModel>,
-            availableMB: Int,
+            totalBytes: Long,
         ): LocalModel? {
             val model = catalog.firstOrNull() ?: return null
-            if (availableMB <= 0) return model
-            return if (availableMB >= model.sizeMB + LocalMemory.headroomMB) model else null
+            return if (LocalMemory.belowFloor(model, totalBytes)) null else model
         }
     }
 }

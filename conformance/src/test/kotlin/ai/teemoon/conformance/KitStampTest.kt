@@ -15,7 +15,12 @@ import java.io.File
  * certifying itself.
  */
 class KitStampTest {
-    private val classes = listOf("crypto", "quotes", "collateral", "sigstore", "nras", "tls", "streams", "catalogs", "brave", "signatures", "requests")
+    /**
+     * iOS ConformanceVectors.kitVersionByClass @ e4546ef1: "A file whose bytes change gets its own bump, so a vendored
+     * copy can't drift under an unchanged number." A class named here carries its own stamp; the rest carry the pin.
+     */
+    private val kitVersionByClass = mapOf("catalogs" to "0.5.7")
+    private val classes = listOf("crypto", "quotes", "collateral", "sigstore", "nras", "tls", "streams", "catalogs", "brave", "signatures", "requests", "refusals", "redaction", "errorcopy")
 
     private fun portsKitVersion(): String? {
         var dir: File? = File(".").absoluteFile
@@ -33,7 +38,7 @@ class KitStampTest {
             val doc = Json.parseToJsonElement(stream!!.reader().readText()).jsonObject
             assertEquals(cls, doc["fixtureClass"]!!.jsonPrimitive.content)
             assertEquals("teemoon-ios", doc["sourceOfTruth"]!!.jsonPrimitive.content)
-            assertEquals("$cls.json kitVersion", pinned, doc["kitVersion"]!!.jsonPrimitive.content)
+            assertEquals("$cls.json kitVersion", kitVersionByClass[cls] ?: pinned, doc["kitVersion"]!!.jsonPrimitive.content)
         }
     }
 }

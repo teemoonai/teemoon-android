@@ -13,6 +13,10 @@ class EnclaveGrouping(
     val modelLayerManifest: String?,
     val modelLayerVerification: ModelLayerVerification?,
     val audit: AuditIndex = AuditIndex.shared,
+    /** (a) has bound the action log to the hardware: only then may its captions call it signed (near-trust-scope). */
+    val actionLogBound: Boolean = true,
+    /** Intel's DCAP verdict is still out: a locally checked quote's seal waits in the pending style (trust-pending-state). */
+    val hardwarePending: Boolean = false,
 ) {
     val exposure: PlaintextExposure
         get() = PlaintextExposure.analyze(modelLayerManifest, attestation?.gpuNodeComposeManifest)
@@ -29,7 +33,7 @@ class EnclaveGrouping(
             group(host = "gateway", role = "gateway enclave", primary = false,
                 mrConfig = attestation?.composeHash, quoteVerified = attestation?.quoteVerification?.isVerified,
                 verified = verified, thirdParty = thirdParty, failures = failures, includeLocalEngine = false, exposure = null),
-        )
+        ).map { if (hardwarePending && it.quoteVerified == true) it.copy(quotePending = true) else it }
     }
 
     val provenanceLists: Pair<List<ImageRef>, List<ImageRef>>
@@ -70,9 +74,8 @@ class EnclaveGrouping(
         for (e in entries) {
             if (e.kind == ImageEntry.Kind.LOCAL) continue
             e.auditURL = audit.scopedImageAuditURL(inScope = exposure != null, image = e.name, digestFull = e.digestFull)
-            if (exposure != null && e.auditURL == null && e.kind == ImageEntry.Kind.TAG_PINNED) {
-                e.tag?.let { e.auditURL = audit.tagAuditURL(e.name, it) }
-            }
+            // no tag-page link: a tag page reviews whatever the tag named then, not the bytes running (trust-audit-tag-pages,
+            // the maintainer 2026-11-06)
             if (exposure != null) {
                 e.digestFull?.let { df -> audit.imageSourceLink(e.name, df)?.let { src -> e.links = e.links + RunLink(src.title, src.url) } }
                 if (e.kind == ImageEntry.Kind.THIRD_PARTY || e.kind == ImageEntry.Kind.TAG_PINNED) {
@@ -107,7 +110,8 @@ class EnclaveGrouping(
         }
         if (entries.isEmpty() && mrConfig == null) return null
         val measurementCaption = if (exposure != null) attestation?.gpuNodeComposeManifest?.let { MeasuredConfig.allowedEnvsCaption(it) } else null
-        val configAuditURL = mrConfig?.let { audit.measuredAuditURL(it) }
+        // the measurement's review only over a quote that verified (trust-audit-links-gated, the maintainer 2026-11-06)
+        val configAuditURL = mrConfig?.takeIf { quoteVerified == true }?.let { audit.measuredAuditURL(it) }
         val recipeCard: EnclaveGroup.RecipeCard?
         if (exposure != null) {
             val inner = modelLayerManifest
@@ -123,7 +127,9 @@ class EnclaveGrouping(
                 fileSHA = attestation?.modelFileHash,
                 yamlLink = modelComposeYamlLink(),
                 verification = modelLayerVerification,
-                auditURL = attestation?.modelComposePath?.let { p -> attestation.modelFileHash?.let { audit.manifestAuditURL(p, it) } })
+                // "this exact file" only for a recipe that hashed to it (trust-audit-links-gated, the maintainer 2026-11-06)
+                auditURL = if (modelLayerVerification != ModelLayerVerification.VERIFIED) null
+                    else attestation?.modelComposePath?.let { p -> attestation.modelFileHash?.let { audit.manifestAuditURL(p, it) } })
         } else recipeCard = null
         val egress = ArrayList<NodeFinding>()
         if (exposure != null) {
@@ -150,7 +156,7 @@ class EnclaveGrouping(
         return EnclaveGroup(
             id = role, role = role, primary = primary,
             binding = "the hardware seals a fingerprint (mr_config) of this enclave's compose file into its quote — proof it booted exactly the images below, and the operator can't swap in anything else without changing that fingerprint.",
-            deployment = if (primary) attestation?.deploymentCaption else null,
+            deployment = if (primary) attestation?.deploymentCaption(signed = actionLogBound) else null,
             mrConfig = mrConfig, quoteVerified = quoteVerified, images = entries,
             plaintextCaption = exposure?.groupCaption,
             measurementCaption = measurementCaption,

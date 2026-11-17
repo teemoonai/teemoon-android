@@ -1,5 +1,5 @@
-// ports: teemoon/Confidential/DCAPVerifier.swift @ 9722921 (DCAPVerification, DCAPTcbStatus — value types only)
-//        teemoon/Confidential/DCAPService.swift @ 9722921 (RecordDCAPVerification and its rollups; the
+// ports: teemoon/Confidential/DCAPVerifier.swift @ v1.0.6 (DCAPVerification, DCAPTcbStatus — value types only)
+//        teemoon/Confidential/DCAPService.swift @ v1.0.6 (RecordDCAPVerification and its rollups; the
 //        service that runs dcap-qvl over a record is DcapService.kt)
 package ai.teemoon.confidential
 
@@ -7,15 +7,23 @@ package ai.teemoon.confidential
 sealed interface DcapVerification {
     /** Quote verified; [tcbStatus] is Intel's TCB verdict ("UpToDate", "OutOfDate", …). */
     data class Verified(val tcbStatus: DcapTcbStatus, val mrConfigIdHex: String, val reportDataHex: String) : DcapVerification
+    /** Evidence against the quote: it is malformed, unsigned, chained wrong, or rejected by dcap-qvl. */
     data class Failed(val reason: String) : DcapVerification
+    /**
+     * Couldn't check: Intel's collateral didn't arrive or couldn't be read, or our verifier broke. Not evidence;
+     * soft — the send asks (near-send-gate-rule, the maintainer 2026-11-06; iOS DCAPVerification.unchecked). Never a pass.
+     */
+    data class Unchecked(val reason: String) : DcapVerification
 
     val isVerified: Boolean get() = this is Verified
+    val isUnchecked: Boolean get() = this is Unchecked
 
-    /** Hard failure = quote didn't verify (incl. no collateral) or TCB outside the allow-list. */
+    /** Hard failure = evidence: the quote didn't verify, or its TCB is outside the allow-list. Unchecked is not. */
     val isHardFailure: Boolean
         get() = when (this) {
             is Verified -> !tcbStatus.isAccepted
             is Failed -> true
+            is Unchecked -> false
         }
 }
 
@@ -64,6 +72,11 @@ data class RecordDcapVerification(
     val gateway: DcapVerification? = null,
     val model: DcapVerification? = null,
     val gpu: DcapVerification? = null,
+    /**
+     * The GPU node's compose-manager quote (NearTrustScope (a)). Not among [present]: its failure is (a)'s mismatch,
+     * reported there, not a second DCAP line.
+     */
+    val manager: DcapVerification? = null,
 ) {
     private val present: List<DcapVerification> get() = listOfNotNull(gateway, model, gpu)
 
@@ -72,6 +85,10 @@ data class RecordDcapVerification(
      * (incl. unavailable collateral) or a TCB status outside the allow-list.
      */
     val hasHardFailure: Boolean get() = present.any { it.isHardFailure }
+    /** Some quote couldn't be checked (Intel's collateral didn't arrive): soft, the send asks. */
+    val hasUnchecked: Boolean get() = present.any { it.isUnchecked }
+    /** The first quote that couldn't be checked, and why. */
+    val uncheckedReason: String? get() = present.firstNotNullOfOrNull { (it as? DcapVerification.Unchecked)?.reason }
 
     /** The least-trusted TCB status among verified quotes (for the sheet row). */
     val worstTcbStatus: DcapTcbStatus?
@@ -104,7 +121,7 @@ data class RecordDcapVerification(
                         !outcome.tcbStatus.isAccepted ->
                             return "$label quote — TCB status ${outcome.tcbStatus.rawValue} is not accepted (only up to date or out of date)"
                     }
-                    null -> Unit
+                    is DcapVerification.Unchecked, null -> Unit   // not a failure: see uncheckedReason
                 }
             }
             return null

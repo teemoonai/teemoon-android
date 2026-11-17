@@ -1,4 +1,4 @@
-// ports: teemoon/Confidential/AttestationSummary.swift @ v1.0.1 (everything but StepState, its own file;
+// ports: teemoon/Confidential/AttestationSummary.swift @ v1.0.1, the code pillar's verified line @ 0c3708c (everything but StepState, its own file;
 //        runResult / verificationRun are the VerificationRun.swift extension, in VerificationRun.kt)
 package ai.teemoon.confidential
 
@@ -105,6 +105,11 @@ data class AttestationSummary(
      * rather than an unearned claim.
      */
     val e2eeIntact: Boolean = false,
+    /** No image could be checked: the pass settled inconclusive with nothing kept (trust-provenance-unchecked). */
+    val provenanceUnchecked: Boolean = false,
+    /** modelNodeAudit: "only you … can read" is said only over a reviewed build (trust-leaks-wording, iOS 8bfe33cb). */
+    val auditState: EverydayAuditState? = null,
+    val leaksExposure: String? = null,
 ) {
 
     // MARK: Header content
@@ -165,14 +170,21 @@ data class AttestationSummary(
 
     val headerSubtitle: String
         get() {
-            if (state == AttestationState.VERIFYING && timedOut) {
+            // Only a record with a key has anything encrypted to it; with none, the plain verifying line (pm sweep
+            // 2026-11-06: the timed-out line claimed encryption with no record and no key; its rewording is on review).
+            if (state == AttestationState.VERIFYING && timedOut && attestation?.modelEd25519PubKey != null) {
                 return "messages are encrypted, but the destination can’t be confirmed yet."
             }
             return when (state) {
                 AttestationState.OK -> when (runResult) {
                     SectionResult.FAILED -> "we couldn’t confirm this conversation is sealed. treat it as unencrypted until it re-verifies."
                     SectionResult.FLAGGED -> "your session is sealed, but one check couldn’t be completed. read it before you trust this chat."
-                    else -> "only you and the attested TEE hardware can read these messages."
+                    else -> when {
+                        auditState == EverydayAuditState.LEAKS && leaksExposure != null -> "${AuditedSealText.LEAKS_LEAD} $leaksExposure"
+                        provenanceUnchecked -> PROVENANCE_UNCHECKED_HEADER
+                        auditState != EverydayAuditState.REVIEWED -> AuditedSealText.NOT_REVIEWED
+                        else -> "only you and the attested TEE hardware can read these messages."
+                    }
                 }
                 AttestationState.DEGRADED -> {
                     if (degradeIsHardFailure) return "a security check failed — treat this chat as unverified until it re-verifies."
@@ -272,6 +284,14 @@ data class AttestationSummary(
     /** E2EE key cryptographically bound to the model TEE's TDX quote report_data. */
     val e2eeKeyBound: Boolean? get() = attestation?.e2eeKeyBoundToModelTEE
 
+    /** The key matches report_data but the quote's signature or chain failed (T6): not bound, and said so. */
+    val keyInUnverifiedQuote: Boolean
+        get() = attestation?.e2eeKeyInModelReportData == true && attestation.modelQuoteVerification?.isVerified == false
+
+    /** DCAP or NVIDIA hasn't answered: the seal can't be claimed yet, however the key binding reads (Q4, iOS). */
+    val hardwareChecksPending: Boolean
+        get() = listOf(dcapState, nrasState).any { it == StepState.LIVE || it == StepState.PENDING }
+
     /** Whether the provider routes through a separate GPU node. */
     val hasGPUNode: Boolean
         get() {
@@ -286,7 +306,6 @@ data class AttestationSummary(
      * unreachable — this is supplementary, not a security failure, since the
      * model TEE is verified via gateway.
      */
-    val gpuTdxValid: Boolean? get() = attestation?.gpuQuoteVerification?.isVerified
 
     /** Whether the GPU row should be shown at all. */
     val showGPURow: Boolean
@@ -296,15 +315,11 @@ data class AttestationSummary(
             return hasGPUNode || attestation.gpuArch != null
         }
 
-    val gpuTdxDetail: String
-        get() {
-            val gpuV = attestation?.gpuQuoteVerification ?: return "GPU node unreachable — verified via gateway"
-            return when {
-                gpuV.isVerified -> "TDX quote verified on device"
-                !gpuV.signatureValid -> "TDX signature verification failed"
-                else -> gpuV.certChainError ?: "Certificate chain invalid"
-            }
-        }
+    /**
+     * The expert card's GPU row is NVIDIA's result in every state; never the GPU node's Intel TDX line (A2, the maintainer
+     * 2026-11-08; iOS 123d0b28). It said "TDX quote verified on device" once NVIDIA had passed.
+     */
+    val gpuRowDetail: String get() = nrasDetail
 
     /**
      * Response ECDSA signature — true if all verified, false if any mismatch, null if no data yet.
@@ -353,21 +368,21 @@ data class AttestationSummary(
             return when (imageProvenance) {
                 is ManifestProvenance.AllVerified -> StepState.DONE
                 is ManifestProvenance.Incomplete -> StepState.STUCK
-                null -> if (state == AttestationState.VERIFYING) StepState.LIVE else StepState.PENDING
+                null -> if (provenanceUnchecked) StepState.UNCHECKED else if (state == AttestationState.VERIFYING) StepState.LIVE else StepState.PENDING
             }
         }
 
     val provenanceDetail: String
         get() = when (val p = imageProvenance) {
             is ManifestProvenance.AllVerified -> {
-                val sidecars = if (p.thirdParty.isEmpty()) "" else " · ${p.thirdParty.size} third-party sidecar(s) pinned by manifest"
-                "${p.verified.size} near.ai image(s) signed by its published workflow$sidecars"
+                val sidecars = if (p.thirdParty.isEmpty()) "" else " · ${counted(p.thirdParty.size, "third-party sidecar")} pinned by manifest"
+                "${p.verified.size} near.ai ${if (p.verified.size == 1) "image" else "images"} signed by its published workflow$sidecars"
             }
             is ManifestProvenance.Incomplete -> {
                 val total = p.verified.size + p.failures.size
-                "${p.failures.size} of $total near.ai image(s) unverified — ${namedFailures(p.failures)}"
+                "${p.failures.size} of $total near.ai ${if (total == 1) "image" else "images"} unverified — ${namedFailures(p.failures)}"
             }
-            null -> "Checking image provenance…"
+            null -> if (provenanceUnchecked) PROVENANCE_UNCHECKED_STEP else "Checking image provenance…"
         }
 
     /**
@@ -395,6 +410,8 @@ data class AttestationSummary(
             val v = dcapVerification ?: return if (state == AttestationState.VERIFYING) StepState.LIVE else StepState.PENDING
             return when {
                 v.hasHardFailure -> StepState.STUCK
+                // Intel couldn't be asked: the orange "couldn't check", not a failure's red (trust-unchecked-glyph)
+                v.hasUnchecked -> StepState.UNCHECKED
                 v.allPresentVerified -> StepState.DONE
                 else -> StepState.STUCK
             }
@@ -404,6 +421,8 @@ data class AttestationSummary(
         get() {
             val dcap = dcapVerification ?: return "Checking quote with Intel PCS…"
             if (dcap.hasHardFailure) return dcap.failureReason ?: "Quote failed DCAP verification (or collateral unavailable)"
+            // a quote Intel couldn't check never reads as the verified TCB of the others (near-send-gate-rule)
+            dcap.uncheckedReason?.let { return it }
             return when (dcap.worstTcbStatus) {
                 DcapTcbStatus.UP_TO_DATE -> "QE binding + TCB verified, up to date"
                 DcapTcbStatus.OUT_OF_DATE -> "Genuine hardware — TCB behind on Intel platform updates"
@@ -415,18 +434,19 @@ data class AttestationSummary(
     /**
      * NVIDIA NRAS row state: null = hidden (no GPU evidence in the record),
      * DONE = NVIDIA verdict PASS + evidence nonce matched, STUCK = failed (bad
-     * verdict, nonce mismatch, or NRAS unreachable — fail-closed), LIVE/PENDING
-     * = still checking.
+     * verdict, nonce mismatch), UNCHECKED = NRAS unreachable, LIVE/PENDING =
+     * still checking.
      */
     val nrasState: StepState?
         get() {
-            if (attestation?.nvidiaPayload == null) return null
+            // a verdict with no payload is the missing-evidence couldn't-check (S37 B4): the row must show it
+            if (attestation?.nvidiaPayload == null && nrasVerification == null) return null
             return when (nrasVerification) {
                 is NrasVerification.Verified -> StepState.DONE
-                // Both a genuine rejection and an unreachable check are unverified (the
-                // session degrades either way); the hard-vs-soft distinction drives the
-                // hero severity, not this per-row glyph.
-                is NrasVerification.Failed, is NrasVerification.Inconclusive -> StepState.STUCK
+                // Both are unverified (the session degrades either way), but only a rejection is red: NVIDIA
+                // unreachable is the orange "couldn't check", as Intel's is (trust-unchecked-glyph, pm 2026-11-06).
+                is NrasVerification.Failed -> StepState.STUCK
+                is NrasVerification.Inconclusive -> StepState.UNCHECKED
                 null -> if (state == AttestationState.VERIFYING) StepState.LIVE else StepState.PENDING
             }
         }
@@ -435,7 +455,8 @@ data class AttestationSummary(
         get() = when (val n = nrasVerification) {
             is NrasVerification.Verified -> "NVIDIA confirmed genuine attested GPUs for this request"
             is NrasVerification.Failed -> n.reason
-            is NrasVerification.Inconclusive -> n.reason
+            // A2: a node that sent no GPU evidence says exactly that; the banner keeps S37's reason line
+            is NrasVerification.Inconclusive -> if (n.reason == NrasVerification.EVIDENCE_ABSENT) NO_NVIDIA_EVIDENCE else n.reason
             null -> "Checking GPU evidence with NVIDIA…"
         }
 
@@ -524,8 +545,10 @@ data class AttestationSummary(
         get() = listOf(hardwarePillar, codePillar, privacyPillar).filter { it.checks.isNotEmpty() }
 
     private fun pillarState(checks: List<PillarCheck>): PillarState {
-        if (checks.any { it.state == StepState.STUCK }) return PillarState.ATTENTION
-        if (state == AttestationState.VERIFYING) return PillarState.CHECKING
+        if (checks.any { it.state == StepState.STUCK || it.state == StepState.UNCHECKED }) return PillarState.ATTENTION
+        // A row not yet answered keeps its pillar checking in every state (T1, iOS 2fe36fa3): "confirmed by Intel and
+        // NVIDIA" waits for both.
+        if (state == AttestationState.VERIFYING || checks.any { it.state == StepState.PENDING || it.state == StepState.LIVE }) return PillarState.CHECKING
         return PillarState.VERIFIED
     }
 
@@ -555,7 +578,6 @@ data class AttestationSummary(
                     if (gwCertChainValid == false) (attestation?.quoteVerification?.certChainError ?: "Chain invalid") else "Chains to Intel’s SGX Root CA"),
                 boolRow("Attestation freshness", nonceEchoed, nonceDetail),
                 stepRow("NVIDIA GPU attestation", nrasState, nrasDetail),
-                if (showGPURow) boolRow("GPU secure enclave", gpuTdxValid, gpuTdxDetail, showWhilePending = false) else null,
             )
             val st = pillarState(checks)
             val line = when (st) {
@@ -576,7 +598,9 @@ data class AttestationSummary(
             )
             val st = pillarState(checks)
             val line = when (st) {
-                PillarState.VERIFIED -> "The enclave booted near.ai’s published open-source code — nothing swapped in."
+                // the maintainer approved these words 2026-10-30 (review page: trust-code-claim); iOS 0c3708c. Must not claim the running manager: the phone
+                // checks the compose's default image, not the digest compose-manager logged starting (1.2).
+                PillarState.VERIFIED -> "Every image the measured launch config names traces to near.ai’s published source."
                 PillarState.ATTENTION -> "Some running code could not be traced to near.ai’s published source."
                 PillarState.CHECKING -> "Tracing the running images to near.ai’s published source…"
             }
@@ -658,10 +682,10 @@ data class AttestationSummary(
     val provenanceEvidence: String?
         get() = when (val p = imageProvenance) {
             is ManifestProvenance.AllVerified -> {
-                val sidecars = if (p.thirdParty.isEmpty()) "" else " · ${p.thirdParty.size} third-party sidecar(s) pinned"
+                val sidecars = if (p.thirdParty.isEmpty()) "" else " · ${counted(p.thirdParty.size, "third-party sidecar")} pinned"
                 val repos = p.verified.mapNotNull { it.sourceRepo }.toSortedSet().map { it.replace("https://github.com/", "") }
                 val source = if (repos.isEmpty()) "github.com/nearai" else repos.joinToString(", ")
-                "${p.verified.size} image(s) → $source$sidecars"
+                "${counted(p.verified.size, "image")} → $source$sidecars"
             }
             is ManifestProvenance.Incomplete ->
                 "${p.failures.size} of ${p.verified.size + p.failures.size} unverified — ${namedFailures(p.failures)}"
@@ -712,11 +736,11 @@ data class AttestationSummary(
         codeIdentityValid?.let { lines.add("Code identity (manifest ↔ MRCONFIGID): ${if (it) "Verified" else "FAILED"}") }
         when (val p = imageProvenance) {
             is ManifestProvenance.AllVerified -> {
-                val sidecars = if (p.thirdParty.isEmpty()) "" else ", ${p.thirdParty.size} third-party sidecar(s) digest-pinned"
-                lines.add("Image provenance (Sigstore/Rekor): Verified (${p.verified.size} near.ai image(s)$sidecars)")
+                val sidecars = if (p.thirdParty.isEmpty()) "" else ", ${counted(p.thirdParty.size, "third-party sidecar")} digest-pinned"
+                lines.add("Image provenance (Sigstore/Rekor): Verified (${p.verified.size} near.ai ${if (p.verified.size == 1) "image" else "images"}$sidecars)")
             }
             is ManifestProvenance.Incomplete ->
-                lines.add("Image provenance (Sigstore/Rekor): INCOMPLETE (${p.failures.size} of ${p.verified.size + p.failures.size} near.ai image(s) unverified)")
+                lines.add("Image provenance (Sigstore/Rekor): INCOMPLETE (${p.failures.size} of ${p.verified.size + p.failures.size} near.ai ${if (p.verified.size + p.failures.size == 1) "image" else "images"} unverified)")
             null -> Unit
         }
         nonceEchoed?.let { lines.add("Attestation freshness (nonce echo): ${if (it) "Verified" else "FAILED"}") }
@@ -737,6 +761,8 @@ data class AttestationSummary(
     }
 
     companion object {
+        /** The GPU row for a model node that sent no nvidia_payload (A2); the banner keeps [NrasVerification.EVIDENCE_ABSENT]. */
+        const val NO_NVIDIA_EVIDENCE = "no nvidia evidence in this attestation"
         /**
          * Names the failing images and why, bounded so the line stays readable:
          * e.g. "`glm51-sgl-awq-tp4-patched` (no published attestation (GitHub
@@ -764,3 +790,11 @@ data class AttestationSummary(
             get() = DateTimeFormatter.ofLocalizedTime(FormatStyle.SHORT).withZone(ZoneId.systemDefault())
     }
 }
+
+/** trust-provenance-unchecked (the maintainer 2026-11-06): the step, in place of the spinner, when GitHub didn't answer. */
+const val PROVENANCE_UNCHECKED_STEP = "couldn't check the running code right now — github didn't answer. teemoon will try again."
+/** …and the trust screen's header line. The chip keeps "end-to-end encrypted": the seal is fine. */
+const val PROVENANCE_UNCHECKED_HEADER = "sealed to the model's hardware on the way in. teemoon couldn't check the running code against public source just now."
+
+/** "1 image", "2 images": a count with its noun, never "image(s)" (pm, 2026-11-06). */
+internal fun counted(n: Int, noun: String): String = "$n $noun${if (n == 1) "" else "s"}"

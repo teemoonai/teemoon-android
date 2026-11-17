@@ -83,6 +83,9 @@ data class ChatFadeBand(val chipTop: Double, val chipBottom: Double, val insetHe
  * The glass edges (GlassEdgeFadeView): a frost of the content, not a glass plate — a full-width glass effect reads as
  * a card; this is a progressive blur under a progressive dim. Each stop is a location along the overlay, a blur
  * weight, and the dim (system background) alpha.
+ *
+ * iOS's edges, kept ported and tested. Android draws none of this since 2026-11-13: its edges are solid, so the "hard
+ * edge" warning below is about a clip under glass, not Android's opaque bar (docs/ANDROID_NATIVE.md, Transcript edges).
  */
 object ChatGlassFade {
     data class Stop(val location: Double, val blur: Double, val dim: Double)

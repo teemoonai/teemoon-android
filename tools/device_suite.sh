@@ -21,15 +21,20 @@ if [ "$app_id" = ai.teemoon.e2e ]; then
   trap 'adb uninstall ai.teemoon.e2e.test >/dev/null 2>&1; adb uninstall ai.teemoon.e2e >/dev/null 2>&1; echo "uninstalled ai.teemoon.e2e"' EXIT
 fi
 run_one() {  # $1 = class[#method]
-  rm -f "$results"/TEST-*.xml
+  # the whole directory: a stale test-result.pb or exit-code file from the last class would be read as this one's
+  rm -rf "$results"
   # NotificationPermissionJourneyTest needs the permission NOT granted, and revoking it kills the app — so from here
   case "$1" in NotificationPermissionJourneyTest*) adb shell pm revoke "$app_id" android.permission.POST_NOTIFICATIONS >/dev/null 2>&1 ;; esac
   # GRADLE_EXTRA=-Pteemoon.e2eId=true on the dev phone: the test app installs as ai.teemoon.e2e, beside the store
   # build and the owner's release-signed teemoon dev (which a debug build cannot replace without wiping it)
-  ./gradlew -q :app:connectedDebugAndroidTest "-Pandroid.testInstrumentationRunnerArguments.class=ai.teemoon.app.$1" -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true ${GRADLE_EXTRA:-} >/dev/null 2>&1
+  # The output is kept, not discarded: a crashed instrumentation says so there ("Process crashed") and nowhere the XML
+  # has to admit it. Gradle's exit status is kept for the same reason.
+  local log="$out/${1//#/.}.gradle.log"
+  ./gradlew :app:connectedDebugAndroidTest "-Pandroid.testInstrumentationRunnerArguments.class=ai.teemoon.app.$1" -Pandroid.injected.androidTest.leaveApksInstalledAfterRun=true ${GRADLE_EXTRA:-} >"$log" 2>&1
+  local gradle_status=$?
   case "$1" in NotificationPermissionJourneyTest*) adb shell pm grant "$app_id" android.permission.POST_NOTIFICATIONS >/dev/null 2>&1 ;; esac
   local f; f=$(ls "$results"/TEST-*.xml 2>/dev/null | head -1)
-  [ -z "$f" ] && { echo "$1: NO RESULT (build failed?)" | tee -a "$summary"; return 1; }
+  [ -z "$f" ] && { echo "$1: NO RESULT (build failed? see $log)" | tee -a "$summary"; return 1; }
   local line; line="$1: $(grep -o '<testsuite [^>]*>' "$f" | grep -o 'tests="[0-9]*"\|failures="[0-9]*"\|errors="[0-9]*"\|time="[0-9.]*"' | tr '\n' ' ')"
   echo "$line" | tee -a "$summary"
   # each class's report is kept (the next run_one clears the directory), and every failure is listed with its first line
@@ -42,16 +47,23 @@ for m in re.finditer(r'<testcase name="([^"]*)"[^>]*>\s*<failure[^>]*>(.*?)</fai
     t = html.unescape(m.group(2)); at = [l.strip()[3:] for l in t.splitlines() if 'Test.kt:' in l and 'ai.teemoon.app.' in l][:1]
     print(f"    {m.group(1)}: {t.strip().splitlines()[0][:220]} {' @ ' + at[0] if at else ''}")
 PY
-  grep -q 'failures="0"' "$f" && grep -q 'errors="0"' "$f"
+  # NO HIDDEN CRASHES: a crashed or restarted instrumentation can leave failures="0" behind — the tests after the crash
+  # never ran, so none failed. The checker holds the XML to the class's @Test count and the run's own words.
+  local cls="${1%%#*}"; local -a margs=(); [ "$1" != "$cls" ] && margs=(--method "${1#*#}")
+  python3 -I tools/check_instrumentation.py "$results" --source "app/src/androidTest/kotlin/ai/teemoon/app/$cls.kt" ${margs[@]+"${margs[@]}"} \
+    --log "$log" --gradle-status "$gradle_status" | sed 's/^/    /' | tee -a "$summary"
+  local crash=${PIPESTATUS[0]}
+  grep -q 'failures="0"' "$f" && grep -q 'errors="0"' "$f" && [ "$crash" -eq 0 ]
 }
 for c in "${classes[@]}"; do
   if [ $record -eq 1 ]; then
     for m in $(grep -o '@Test fun [A-Za-z0-9_]*' "app/src/androidTest/kotlin/ai/teemoon/app/$c.kt" | awk '{print $3}'); do
       adb shell rm -f /sdcard/rec.mp4; adb shell "screenrecord --time-limit 180 /sdcard/rec.mp4" >/dev/null 2>&1 &
       rec=$!; sleep 1
-      if run_one "$c#$m"; then :; else failed=1; fi
+      ok=1; run_one "$c#$m" || { ok=0; failed=1; }
       adb shell pkill -INT screenrecord >/dev/null 2>&1; wait $rec 2>/dev/null; sleep 2
-      if [ $failed -eq 1 ] && ! grep -q "$c#$m: .*failures=\"0\"" "$summary"; then adb pull /sdcard/rec.mp4 "$out/$c.$m.mp4" >/dev/null 2>&1 && echo "    recording: $out/$c.$m.mp4" | tee -a "$summary"; fi
+      # judged by run_one, not by the summary's failures="0": a crashed test can read failures="0" and needs its video most
+      if [ $ok -eq 0 ]; then adb pull /sdcard/rec.mp4 "$out/$c.$m.mp4" >/dev/null 2>&1 && echo "    recording: $out/$c.$m.mp4" | tee -a "$summary"; fi
     done
   else
     run_one "$c" || failed=1

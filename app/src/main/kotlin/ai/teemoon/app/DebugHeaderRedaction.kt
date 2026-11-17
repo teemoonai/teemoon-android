@@ -1,4 +1,4 @@
-// ports: teemoon/Views/Chat/DebugHeaderRedaction.swift @ v1.0.1
+// ports: teemoon/Views/Chat/DebugHeaderRedaction.swift @ 6094a24 (iOS took this file's rule there: stored keys and a provider's auth header name)
 //
 // Credentials never leave the device through a copied debug card. The display
 // path is verbatim except under the UI-test host; the COPY path always masks.

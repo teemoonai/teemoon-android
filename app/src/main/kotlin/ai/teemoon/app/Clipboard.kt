@@ -19,6 +19,12 @@ object Clipboard {
         manager(context)?.setPrimaryClip(ClipData.newPlainText("teemoon", text))
     }
 
+    /** An image (the viewer's "copy"): replaces a pending key clear like a text copy does. */
+    fun copy(context: Context, clip: ClipData) {
+        revoke(); cancelPending(context.applicationContext)
+        manager(context)?.setPrimaryClip(clip)
+    }
+
     /** How long a copied credential may sit on the clipboard, in seconds. iOS sets an expiration; here the clip is cleared. */
     const val SENSITIVE_LIFETIME_SECONDS = 120L
     /** The clear's delay; ClipboardClearTest shortens it. */

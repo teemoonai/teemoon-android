@@ -94,4 +94,37 @@ class TurnNotificationTest {
         assertTrue("the result is the news: a chime with nothing on screen was missed on 2026-10-13", answers.headsUp)
         for (c in TurnChannels.ALL) { assertEquals(c.name.lowercase(), c.name); assertEquals(c.description.lowercase(), c.description) }
     }
+
+    /**
+     * A1 (pm sweep 2026-11-06): view models are per chat, so two chats can answer at once. The first to end stopped the
+     * service and dropped the ongoing notification while the other was still streaming. Only the last one does.
+     */
+    @Test fun onlyTheLastTurnInFlightEndsTheService() {
+        val turns = TurnsInFlight()
+        turns.began(); turns.began()
+        assertFalse("another chat is still answering", turns.ended())
+        assertTrue(turns.ended())
+        assertTrue("an end with nothing in flight never goes negative", turns.ended())
+        turns.began(); assertTrue(turns.ended())
+    }
+
+    /**
+     * A1: every tap target was request code 0 with FLAG_UPDATE_CURRENT, so the ongoing notification's intent (no chat)
+     * overwrote the result's "open this chat" extra. The ongoing and the result now have their own.
+     */
+    @Test fun theOngoingAndTheResultHaveTheirOwnTapTargets() {
+        assertTrue(TurnService.ONGOING_REQUEST != TurnService.RESULT_REQUEST)
+    }
+
+    /**
+     * android-reply-ready-per-chat (the maintainer 2026-11-06): one result per chat, each opening its own. Two chats finishing
+     * while away were one notification, the second replacing the first, its tap opening the second chat only.
+     */
+    @Test fun eachChatsResultHasItsOwnNotificationAndTapTarget() {
+        assertTrue(TurnService.resultTag("a") != TurnService.resultTag("b"))
+        val a = TurnService.resultRequestCode("a"); val b = TurnService.resultRequestCode("b")
+        assertTrue("two chats, two tap targets", a != b)
+        assertEquals("the same chat replaces its own", a, TurnService.resultRequestCode("a"))
+        for (code in listOf(a, b, TurnService.resultRequestCode(null))) assertTrue(code != TurnService.ONGOING_REQUEST)
+    }
 }

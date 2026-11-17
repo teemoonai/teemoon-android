@@ -33,6 +33,17 @@ class AttestationSummaryTest {
         attestationFetchFailed = attestationFetchFailed, imageProvenance = imageProvenance,
     )
 
+    /**
+     * pm sweep 2026-11-06 (Android-only): timed out with no record, nothing is encrypted to anything yet, so the
+     * timed-out subtitle may not say "messages are encrypted". It falls through to the plain verifying line (no new
+     * words); the replacement wording is on pm's review page.
+     */
+    @Test fun timedOutWithNoRecordClaimsNoEncryption() {
+        val none = makeSummary(attestation = null, state = AttestationState.VERIFYING, timedOut = true)
+        assertFalse(none.headerSubtitle.contains("encrypted"))
+        assertEquals("confirming this conversation runs inside sealed hardware.", none.headerSubtitle)
+    }
+
     // MARK: - All checks pass
 
     @Test fun allChecksPass_previewRecord() {

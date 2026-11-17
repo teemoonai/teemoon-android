@@ -15,7 +15,7 @@ object RequestDebugText {
         info.effortLevel?.let { parts += it }   // "effort high" / "thinking on", the card's words (iOS 7cd8c10)
         info.url?.let { parts += "\n--- URL ---\n${DebugHeaderRedaction.copyURLString(it)}" }
         info.requestHeaders?.takeIf { it.isNotEmpty() }?.let { parts += "\n--- Headers ---\n${DebugHeaderRedaction.copyHeaderBlock(it)}" }
-        info.requestBodyJson?.let { parts += "\n--- Request Body ---\n${if (info.isE2EEActive) ToolCallDebugFormat.compactRequestBody(it) else it}" }
+        info.requestBodyJson?.let { parts += "\n--- Request Body ---\n${ai.teemoon.app.imaging.ImageBodyText.summarize(if (info.isE2EEActive) ToolCallDebugFormat.compactRequestBody(it) else it)}" }
         info.toolCalls.forEachIndexed { i, tc ->
             var sig = ToolCallDebugFormat.toolCallSignature(tc.name, tc.arguments, tc.result)
             ToolCallDebugFormat.toolCallSubtitle(tc.name, tc.arguments)?.let { sig += " $it" }

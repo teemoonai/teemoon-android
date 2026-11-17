@@ -31,7 +31,7 @@ class TrustLadderSectionsTest {
         assertTrue(ImageRowPresentation.recipeVerdict(ModelLayerVerification.HASH_MISMATCH, 0)!!.contains("do not trust"))
         assertNull(ImageRowPresentation.recipeVerdict(null, 0))
         val images = listOf(img("a/engine"), img("b/otel", ImageEntry.Kind.TAG_PINNED))
-        assertEquals("pins 1 of 2 images by content digest — 1 (otel) by tag only: its running bytes can change without changing the hash verified above. see its row.",
+        assertEquals("names 1 of 2 images by content digest — 1 (otel) by tag only: its running bytes can change without changing the hash verified above. see its row.",
             ImageRowPresentation.recipeScopeCaption(ModelLayerVerification.VERIFIED, images))
         assertNull(ImageRowPresentation.recipeScopeCaption(ModelLayerVerification.VERIFIED, listOf(img("a"))))
         assertTrue(ImageRowPresentation.collapsible(img("b/otel", ImageEntry.Kind.TAG_PINNED)))
@@ -46,5 +46,12 @@ class TrustLadderSectionsTest {
         val x = ExpertSections()
         assertTrue(x.limits.isEmpty())   // the empty value carries nothing; make() fills it from the session
         assertTrue(ExpertSections.LIMITS_SUBTITLE.contains("named, not hidden"))
+    }
+
+    /** An image name wraps at "/" and "@" only — never cut mid-word at 200% (A6 screen check, pm 2026-11-06). */
+    @org.junit.Test fun anImageNameBreaksOnlyAfterASlashOrBeforeAnAt() {
+        val shown = ImageRowPresentation.breakable("nearaidev/compose-manager@sha256:abc")
+        org.junit.Assert.assertEquals("nearaidev/\u200Bcompose-manager\u200B@sha256:abc", shown)
+        org.junit.Assert.assertEquals("what's copied reads the same", "nearaidev/compose-manager@sha256:abc", shown.replace("\u200B", ""))
     }
 }

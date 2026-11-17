@@ -142,7 +142,7 @@ object WhereProviderPresentation {
         WhereLocality.HOME -> placeCaption(forProvider)
         // A sealed cloud (near.ai) shows its canonical name — the title block already states the guarantee; any
         // other cloud shows the place caption, which for a fixed-answer service is its one-line description.
-        WhereLocality.CLOUD -> if (ProviderCapability.END_TO_END_ENCRYPTION in forProvider.capabilities || forProvider.isNearAI) canonicalName(forProvider) else placeCaption(forProvider)
+        WhereLocality.CLOUD -> if (forProvider.claimsEndToEndEncryption || forProvider.isNearAI) canonicalName(forProvider) else placeCaption(forProvider)
     }
 
     fun placeCaption(forProvider: Provider): String {
@@ -174,7 +174,7 @@ object WhereProviderPresentation {
                     return "single turn q&a, fast built-in search"
                 }
                 val name = canonicalName(forProvider)
-                if (ProviderCapability.END_TO_END_ENCRYPTION in forProvider.capabilities) {
+                if (forProvider.claimsEndToEndEncryption) {
                     return "$name · end-to-end encrypted"
                 }
                 // Only stated where it's a real distinction the user can act on:

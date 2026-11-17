@@ -46,6 +46,10 @@ data class TurnResult(
      * the model finished. Only the transport knows its own cap.
      */
     val wasTruncated: Boolean = false,
+    /** The stream's finish_reason as sent ("stop", "length", "content_filter", …); null when none came. */
+    val finishReason: String? = null,
+    /** The stream closed with no `[DONE]` (G4: with no finish_reason either, the reply was cut short). */
+    val endedWithoutDone: Boolean = false,
     val completionTokens: Int? = null,
     /** Transport-specific reporting and verification for this turn. */
     val report: TurnReport = TurnReport(),
@@ -185,10 +189,14 @@ class GenerationEngine(
 
     // MARK: - The loop
 
-    suspend fun run(initialMessages: List<WireMessage>, prompt: String): String {
+    /** The last round's result once [run] returns: how the reply ended (G4), read by the reply machine. */
+    var lastTurn: TurnResult? = null
+        private set
+
+    suspend fun run(initialMessages: List<WireMessage>, prompt: String, promptImages: List<WireImage> = emptyList()): String {
         val messages = ArrayList<Map<String, Any>>()
-        initialMessages.forEach { messages.add(mapOf("role" to it.role, "content" to it.content)) }
-        messages.add(mapOf("role" to "user", "content" to prompt))
+        initialMessages.forEach { messages.add(mapOf("role" to it.role, "content" to wireContent(it.content, it.images))) }
+        messages.add(mapOf("role" to "user", "content" to wireContent(prompt, promptImages)))
 
         val rounds = ToolRoundPolicy(maxToolRounds)
         var textToolCallRoundHappened = false
@@ -243,6 +251,7 @@ class GenerationEngine(
                 events.onAwaitingModel(thisTurn, false)
                 events.onAwaitingResponse(thisTurn, null)
             }
+            lastTurn = turn   // the reply's end (finish_reason, [DONE]) as the last round saw it
             turn.report.responseAt?.let { phases += TurnPhase(TurnPhase.Kind.RESPONSE, it, request = thisTurn, tokens = turn.report.promptTokens, cachedTokens = turn.report.cachedPromptTokens) }
             turn.report.firstTokenAt?.let { phases += TurnPhase(TurnPhase.Kind.FIRST_TOKEN, it, request = thisTurn) }
             turn.report.firstVisibleTokenAt?.let { phases += TurnPhase(TurnPhase.Kind.FIRST_ANSWER, it, request = thisTurn) }
@@ -336,13 +345,13 @@ class GenerationEngine(
 
             // Containment net: strip any residual tool-call markup recovery didn't
             // consume (unregistered tool, no handler yet, truncated call) so it can
-            // never leak into the answer. Log removals — never a silent drop.
+            // never leak into the answer. Log removals — never a silent drop — as COUNTS, as iOS does: the fragments
+            // are model text that can echo the user's question, and a warning goes to the log (audit gardener #1).
             val sanitized = ToolMarkupContainment.sanitize(textSoFar)
             if (sanitized.removed.isNotEmpty()) {
                 events.onWarning(
                     "[containment] stripped ${sanitized.removed.size} residual tool-markup " +
-                        "fragment(s) from the answer (unrecovered/unknown format): " +
-                        sanitized.removed.take(4).joinToString(" | "))
+                        "fragment(s) from the answer (unrecovered/unknown format), ${sanitized.removed.sumOf { it.length }} chars")
             }
             val finalText = sanitized.clean
             // Emit the canonical text last, so the final snapshot the UI keeps
@@ -370,9 +379,9 @@ class GenerationEngine(
                 lateScope.launch { verify()?.let { logVerification(it); events.onVerified(it) } }
                 null
             } else verify?.invoke()?.also { logVerification(it) }
-            // iOS LOGS this (HTTPTransport.swift); here the warning rides the callback so the owner sees it without
-            // a log — an Android divergence, and a deliberate one: see docs/ANDROID_NATIVE.md. The provider is named
-            // as iOS names it, because a user with several places configured cannot act on "the server".
+            // iOS LOGS this (HTTPTransport.swift); here it rides the callback and the app logs it (TurnWarnings), as
+            // iOS does. The provider is named as iOS names it, because a reader of the log with several places
+            // configured cannot act on "the server".
             report.promptBudget?.takeIf { it.looksTruncated }?.let {
                 val who = report.providerName?.let { n -> "$n " }.orEmpty()
                 events.onWarning("[context] ${who}evaluated only ${it.evaluated} input tokens of an estimated ${it.sentEstimate} — the server is discarding the front of the prompt (system prompt and question go first). Raise its context window; for Ollama that is OLLAMA_CONTEXT_LENGTH.")

@@ -20,7 +20,7 @@ import androidx.room.RoomDatabase
  * removing or renaming a column, changing a type, changing a primary key —
  * needs an explicit Migration plus a MigrationTestHelper test.
  */
-@Database(entities = [ThreadEntity::class, MessageEntity::class], version = 1, exportSchema = true)
+@Database(entities = [ThreadEntity::class, MessageEntity::class, AttachmentEntity::class], version = 3, exportSchema = true)
 abstract class ChatDatabase : RoomDatabase() {
     abstract fun chatDao(): ChatDao
 
@@ -101,9 +101,37 @@ abstract class ChatDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * 1 → 2 (1.1.0, IMAGES.md §1, the maintainer approved 2026-10-25): images. It ONLY creates the attachments table and its
+         * index; threads and messages are not touched, so every chat opens as it was. The SQL is Room's own for
+         * [AttachmentEntity] (schemas/…/2.json); ChatMigrationTest opens a version-1 store under it and checks every
+         * row. A 1.0.6 build opening a version-2 store fails its migration and crashes — never a wipe.
+         */
+        val MIGRATION_1_2 = object : androidx.room.migration.Migration(1, 2) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("CREATE TABLE IF NOT EXISTS `attachments` (`id` TEXT NOT NULL, `message_id` TEXT NOT NULL, `idx` INTEGER NOT NULL, `mime` TEXT NOT NULL, `width` INTEGER NOT NULL, `height` INTEGER NOT NULL, `path` TEXT NOT NULL, `thumbnail` BLOB NOT NULL, PRIMARY KEY(`id`), FOREIGN KEY(`message_id`) REFERENCES `messages`(`id`) ON UPDATE NO ACTION ON DELETE CASCADE )")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_attachments_message_id` ON `attachments` (`message_id`)")
+            }
+        }
+
+        /**
+         * 2 → 3 (1.1.0, the maintainer approved 2026-11-06): two nullable columns, `messages.status` (G3) and
+         * `messages.sentBeforeConfirmed` (sent-before-confirmed-mark). Nothing is rewritten:
+         * every existing row reads null, which means complete. ChatMigrationTest opens version-2 and version-1 stores
+         * under it and checks every row. A 1.1.0 build before this one opening a version-3 store fails and crashes — never a wipe.
+         */
+        val MIGRATION_2_3 = object : androidx.room.migration.Migration(2, 3) {
+            override fun migrate(db: androidx.sqlite.db.SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `status` TEXT")
+                // the sent-before-confirmed mark (the maintainer's typed yes, 2026-11-06), folded in while v3 is unshipped
+                db.execSQL("ALTER TABLE `messages` ADD COLUMN `sentBeforeConfirmed` TEXT")
+            }
+        }
+
         /** The store's one builder: the app's database and the device tests' scratch stores are opened alike. */
         fun builder(context: Context, name: String): RoomDatabase.Builder<ChatDatabase> =
             Room.databaseBuilder(context.applicationContext, ChatDatabase::class.java, name)
+                .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
                 .addCallback(secureDelete)
                 // No fallbackToDestructiveMigration. See the class comment.
     }

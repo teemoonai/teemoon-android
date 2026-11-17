@@ -106,7 +106,11 @@ class LocalModelStorage(private val baseDirectory: File, private val catalog: Li
         // The NPU file refused once on this phone: the general file or nothing. Never the NPU file on the general ladder.
         if (npuUnusable(repoID)) return generalRef()
         LocalModelCatalog.npuBundle(model, socModel)?.takeIf { isInstalled(model, it) }?.let { bundle ->
-            return LocalRef(repoID, directory(repoID).path, bundle.sizeMB, npuFile(model, bundle).path, requiresNpu = true, contextTokens = bundle.maxTokens)
+            // A bundle with the vision encoder (the Snapdragon 8 Elite's) runs its own image turns. Tensor's carry none
+            // (the maintainer 2026-10-26 (a)): its image turns run the general file when it is downloaded too — text stays on the NPU.
+            val general = if (bundle.seesImages) null else generalRef()
+            return LocalRef(repoID, directory(repoID).path, bundle.sizeMB, npuFile(model, bundle).path, requiresNpu = true, contextTokens = bundle.maxTokens,
+                imageBundleFile = general?.bundleFile, imageSizeMB = general?.sizeMB, npuSeesImages = bundle.seesImages)
         }
         if (isInstalled(model) && model.fileName == model.generalFileName) return LocalRef(repoID, directory(repoID).path, model.sizeMB, file(model).path)
         // A device catalog names the NPU file; a phone that downloaded the general one before that keeps running it.
@@ -119,7 +123,18 @@ class LocalModelStorage(private val baseDirectory: File, private val catalog: Li
      */
     data class LocalRef(val id: String, val directory: String, val sizeMB: Int, val bundleFile: String, val requiresNpu: Boolean = false,
         /** The bundle's own context ceiling, or null for the general bundle, which takes whatever the transport asks for. */
-        val contextTokens: Int? = null)
+        val contextTokens: Int? = null,
+        /** An NPU bundle's image turns: the general file beside it, when that is downloaded too (it carries the vision encoder). */
+        val imageBundleFile: String? = null,
+        val imageSizeMB: Int? = null,
+        /** The NPU bundle carries the vision encoder itself (NpuBundle.seesImages): its image turns stay on it. */
+        val npuSeesImages: Boolean = false,
+    ) {
+        /** IMAGES.md §4b: this ref can run an image turn — the general file, an NPU bundle that sees images, or one with the general file beside it. */
+        val seesImages: Boolean get() = !requiresNpu || npuSeesImages || imageBundleFile != null
+        /** An NPU bundle without vision, alone: images need the general file as a second download (the maintainer 2026-10-26, (a)). */
+        val imagesNeedSecondDownload: Boolean get() = requiresNpu && !npuSeesImages && imageBundleFile == null
+    }
 
     /**
      * Deletes downloaded bundles for models the catalog no longer lists. A

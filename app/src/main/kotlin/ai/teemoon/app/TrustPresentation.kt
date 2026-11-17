@@ -1,8 +1,8 @@
 // ports: teemoon/Views/Chat/TrustLadderView.swift @ v1.0.4 (summary / verdict / modelName / quant / isPaused derivations),
-//        teemoon/Views/Chat/TrustLadderView+Hero.swift @ v1.0.1 (heroColor, metaLine, modelNodeAuditState),
+//        teemoon/Views/Chat/TrustLadderView+Hero.swift @ v1.0.1 (heroColor, metaLine), @ 8bfe33cb, b3d90fac (modelNodeAudit),
 //        teemoon/Views/Chat/TrustLadderView+None.swift @ v1.0.4 (the three not-attestable screens' copy),
 //        teemoon/Views/Chat/E2EETitleBlock.swift @ v1.0.1 (the chip: TrustVerdict.chipMode + chipCaption),
-//        teemoon/Views/Chat/ChatView.swift @ v1.0.4 (e2eeAlertTitle / e2eeAlertMessage / the alert's buttons),
+//        teemoon/Views/Chat/ChatView.swift @ v1.0.4 (e2eeAlertTitle; the message and buttons are SendChoices.kt @ f600e4e),
 //        teemoon/Views/PlatformChrome.swift @ v1.0.1 (DeviceNoun)
 //
 // SendPrep / prepareSend used to be duplicated here as well as in
@@ -33,6 +33,7 @@ import ai.teemoon.confidential.ImageEntry
 import ai.teemoon.confidential.TrustChipMode
 import ai.teemoon.confidential.TrustVerdict
 import ai.teemoon.confidential.VerificationSection
+import ai.teemoon.confidential.TrustSendPolicy
 import ai.teemoon.confidential.selfVerifyScript
 import ai.teemoon.confidential.verificationRun
 import ai.teemoon.confidential.everydayAuditState
@@ -53,9 +54,10 @@ enum class TrustTone { OK, VERIFYING, ADVISORY, FAILED, NEUTRAL }
  * a tenth of users and for every screenshot pasted into a bug report, so the
  * state is always legible as text — the caption is TrustVerdict's.
  */
-data class TrustChipModel(val label: String, val tone: TrustTone, val mode: TrustChipMode) {
+/** [sealed]: a soft state in which the send stays sealed — the caption's lock is closed (orange), not open (trust-caption-sealed). */
+data class TrustChipModel(val label: String, val tone: TrustTone, val mode: TrustChipMode, val sealed: Boolean = false) {
     companion object {
-        fun from(mode: TrustChipMode, state: AttestationState, unpublishedButSealed: Boolean): TrustChipModel {
+        fun from(mode: TrustChipMode, state: AttestationState, unpublishedButSealed: Boolean, softButSealed: Boolean = false): TrustChipModel {
             val tone = when (mode) {
                 TrustChipMode.VERIFIED -> TrustTone.OK
                 TrustChipMode.VERIFYING -> TrustTone.VERIFYING
@@ -65,7 +67,8 @@ data class TrustChipModel(val label: String, val tone: TrustTone, val mode: Trus
                 // NONE means the provider cannot be attested at all — an absence, not a failure; it must not borrow failure's red.
                 TrustChipMode.ON_DEVICE, TrustChipMode.SELF_HOSTED, TrustChipMode.NONE -> TrustTone.NEUTRAL
             }
-            return TrustChipModel(TrustVerdict.chipCaption(mode, state, unpublishedButSealed), tone, mode)
+            val sealed = mode == TrustChipMode.SOFT_DEGRADE && softButSealed
+            return TrustChipModel(TrustVerdict.chipCaption(mode, state, unpublishedButSealed, sealed), tone, mode, sealed)
         }
     }
 }
@@ -96,6 +99,8 @@ data class TrustSnapshot(
     /** The send option appears ONLY for soft degrades, with an honest label per mode. */
     val bypassLabel: String?,
     val e2eeDegradedReason: String?,
+    /** The send question's actions in order, the way out last (E2EESendChoice.choices). */
+    val sendChoices: List<E2EESendChoice> = emptyList(),
     /** The proof rung: near.ai's documented checks over this session, plus teemoon's own — VerificationRun.kt, as data. */
     val proof: List<VerificationSection> = emptyList(),
     /** The expert chain (TrustChain.expert); the everyday chain is derived from the verdict's claims. */
@@ -106,6 +111,10 @@ data class TrustSnapshot(
     val selfVerifyScript: String? = null,
     /** The expert rung's evidence sections (TrustLadderView+Sections), as data. */
     val expert: ExpertSections = ExpertSections(),
+    /** What the composer asks with: a confirm already given for this record and reason doesn't ask again (near-send-gate-rule). */
+    val composerPolicy: TrustSendPolicy = verdict.sendPolicy,
+    /** Sending is blocked, or the record is stale and unconfirmed: the everyday chain shows nothing green (TrustChain.everyday). */
+    val chainHalted: Boolean = false,
 )
 
 /** One evidence row: "intel tdx quote · done · detail". */
@@ -129,25 +138,39 @@ data class ExpertSections(
     val residualEveryday: String = "",
     /** TrustLadderView+Sections.trustRow(icon, text): the SF symbol name beside each residual-trust line. */
     val residualExpert: List<Pair<String, String>> = emptyList(),
+    /** Trust scope for the model enclave's record (near-trust-scope's rows); null when the record has none. */
+    val scope: ai.teemoon.confidential.NearTrustScope? = null,
 ) {
     companion object {
-        const val TRANSPORT_SUBTITLE = "the transport-layer half — complementary to E2EE, independently verifiable."
+        /**
+         * A1 (the maintainer 2026-11-08, approved on the review page; iOS 123d0b28): the TLS card is teemoon's separate probe
+         * of the model node's host. The chat goes through near.ai's gateway, which isn't pinned: never say it is.
+         */
+        const val TRANSPORT_TITLE = "model node's tls key"
+        const val TRANSPORT_SUBTITLE = "teemoon's own probe, separate from your chat. your messages go through near.ai's gateway over ordinary tls, sealed end-to-end to the model's key."
+        const val TRANSPORT_LABEL = "model node's certificate"
         const val LIMITS_SUBTITLE = "what this build does not do — named, not hidden."
-        /** MeasuredConfig.bindingNote — under every image that carries parsed compose lines. */
-        const val BINDING_NOTE = "parsed live from the inner compose — pinned by the attested action log and hash-checked on this device. the CPU's boot measurement alone does not cover this file."
 
         fun make(session: ConfidentialSession, summary: AttestationSummary, modelName: String, providerName: String, audit: AuditIndex = AuditIndex.shared, nowMs: Long = System.currentTimeMillis()): ExpertSections {
-            val groups = EnclaveGrouping(session.attestation, session.imageProvenance, session.modelLayerManifest, session.modelLayerVerification, audit).groups()
+            // until (a) binds the action log, nothing on the screen calls it signed (near-trust-scope, the maintainer 2026-11-06)
+            val groups = EnclaveGrouping(session.attestation, session.imageProvenance, session.modelLayerManifest, session.modelLayerVerification, audit,
+                actionLogBound = session.nearScope?.deployLogBinding == ai.teemoon.confidential.DeployLogBinding.Bound,
+                hardwarePending = session.dcapPending).groups()
             val hardware = ArrayList<EvidenceItem>()
             if (session.attestation != null) {
                 summary.dcapState?.let { hardware += EvidenceItem("intel tdx quote", it, summary.dcapDetail) }
-                if (summary.showGPURow) hardware += EvidenceItem((session.attestation?.gpuModelName ?: "nvidia gpu").lowercase(), summary.nrasState ?: StepState.PENDING, summary.gpuTdxDetail)
+                if (summary.showGPURow) hardware += EvidenceItem((session.attestation?.gpuModelName ?: "nvidia gpu").lowercase(), summary.nrasState ?: StepState.PENDING, summary.gpuRowDetail)
             }
             val transport = when (val tls = session.tlsAttestation) {
-                null, TlsAttestation.NotPerformed -> null   // no direct host — not applicable
-                TlsAttestation.Verified -> EvidenceItem("tls into the enclave", StepState.DONE, "the connection terminates inside the enclave — the tls cert fingerprint is bound into the attestation `report_data`.")
-                is TlsAttestation.Failed -> EvidenceItem("tls into the enclave", StepState.STUCK, tls.reason)
-                is TlsAttestation.Inconclusive -> EvidenceItem("tls into the enclave", StepState.STUCK, "${tls.reason} — could not complete")
+                // asked and not answered: shown as checking (trust-pending-state Q2, the maintainer 2026-11-06), words already shipped
+                null -> if (session.tlsPending) EvidenceItem(TRANSPORT_LABEL, StepState.PENDING, "checking the model node's certificate…") else null
+                TlsAttestation.NotPerformed -> null   // no direct host — not applicable
+                TlsAttestation.Verified -> EvidenceItem(TRANSPORT_LABEL, StepState.DONE, "teemoon's probe of the model node's host saw a certificate whose key is bound into that node's attestation (`report_data`). your chat doesn't use this connection: it goes through near.ai's gateway, which isn't pinned.")
+                is TlsAttestation.Failed -> EvidenceItem(TRANSPORT_LABEL, StepState.STUCK, "probe of the model node: ${tls.reason}")
+                // couldn't complete is the orange "couldn't check"; only a mismatch is red (trust-unchecked-glyph)
+                // teemoon's own fault reads the approved line alone (trust-verifier-error: nothing added), as the NVIDIA row does
+                is TlsAttestation.Inconclusive -> EvidenceItem(TRANSPORT_LABEL, StepState.UNCHECKED,
+                    if (tls.reason == ai.teemoon.confidential.NrasVerification.TEEMOON_FAULT) tls.reason else "probe of the model node: ${tls.reason} — could not complete")
             }
             val limits = arrayListOf(
                 "gateway domain — standard WebPKI only" to "the completions.near.ai domain is not certificate-pinned; a mis-issued public cert would be accepted.",
@@ -160,6 +183,7 @@ data class ExpertSections(
                 knownCodeIntro = "running $modelName's pinned, published build — its operator can't swap in a version that logs your chats.",
                 enclaveGroups = groups,
                 knownCodeEmpty = if (groups.isNotEmpty()) null else if (session.attestationState == AttestationState.VERIFYING) "resolving image provenance…" else "no verified image set available.",
+                scope = session.nearScope,
                 auditStamp = AuditIndexStamp.make(hasIndex = audit.index != null, updated = audit.index?.updated, loadedAtMs = audit.loadedAtMs, nowMs = nowMs),
                 hardware = hardware,
                 hardwareSubtitle = "real, tamper-resistant chips — vouched for by Intel and NVIDIA themselves, not by $providerName.",
@@ -205,8 +229,8 @@ data class GlossaryEntry(val id: String, val title: String, val definition: Stri
                 "operator can’t read into." +
                 "\n\n" +
                 "before each conversation, teemoon checks **Intel- and NVIDIA-signed proofs** that the hardware is " +
-                "genuine, that it booted near.ai’s published open-source code, and that your connection is encrypted " +
-                "all the way into that sealed hardware." +
+                "genuine, that the images its launch config names are near.ai’s published source, and that your connection is " +
+                "encrypted all the way into that sealed hardware." +
                 "\n\n" +
                 "it runs the same checks near.ai documents — automatically, on your live data — and **shows you the " +
                 "signed values** so you can re-verify everything yourself.",
@@ -265,6 +289,7 @@ object PrimerBanner {
 
 fun trustSnapshot(session: ConfidentialSession, provider: Provider?, timedOut: Boolean = false, audit: AuditIndex? = null): TrustSnapshot {
     val state = session.attestationState
+    val nodeAudit = modelNodeAudit(session, audit)
     val summary = AttestationSummary(
         attestation = session.attestation, state = state, timedOut = timedOut, provider = provider,
         lastRequestUsedE2EE = session.lastRequestUsedE2EE, lastE2EEFailReason = session.lastE2EEFailReason,
@@ -272,23 +297,32 @@ fun trustSnapshot(session: ConfidentialSession, provider: Provider?, timedOut: B
         gatewayTrustResponseCount = session.gatewayTrustResponseCount, attestationFetchFailed = session.attestationFetchFailed,
         imageProvenance = session.imageProvenance, dcapVerification = session.dcapVerification, nrasVerification = session.gpuAttestation,
         tlsAttestation = session.tlsAttestation, modelLayerVerification = session.modelLayerVerification,
-        degradeIsHardFailure = session.degradeIsHardFailure, e2eeIntact = session.e2eeBindingIntact)
+        degradeIsHardFailure = session.degradeIsHardFailure, e2eeIntact = session.e2eeBindingIntact, provenanceUnchecked = session.provenanceUnchecked,
+        auditState = nodeAudit.state, leaksExposure = nodeAudit.leaksExposure)
     val modelName = modelDisplayName(session, provider)
     val providerName = provider?.name ?: "this provider"
     val isOnDevice = provider?.isLocal == true
     val isSelfHosted = provider?.isSelfHosted == true
     val isPaused = session.requiresE2EEConfirmation
-    val auditState = modelNodeAuditState(session, audit)
+    val auditState = nodeAudit.state
     val verdict = TrustVerdict.make(TrustVerdict.Input(
         attestationState = state, requiresConfirmation = isPaused, degradeIsHardFailure = session.degradeIsHardFailure,
         mismatchedResponseCount = session.effectiveMismatchCount, modelName = modelName, quant = session.modelArtifact?.quant,
         providerDisplayName = providerName, isLocal = isOnDevice, isSelfHosted = isSelfHosted,
-        e2eeKeyBound = summary.e2eeKeyBound, provenanceState = summary.provenanceState, provenanceDetail = summary.provenanceDetail,
+        e2eeKeyBound = summary.e2eeKeyBound, provenanceUnchecked = session.provenanceUnchecked, hardwareChecksPending = summary.hardwareChecksPending, provenanceState = summary.provenanceState, provenanceDetail = summary.provenanceDetail,
         responseSigState = summary.responseSigState, hasSigningAddress = session.attestation?.signingAddress != null,
         quantDrift = session.modelArtifact?.quantDrift == true, auditState = auditState,
         deviceBoundary = DeviceNoun.BOUNDARY, deviceSubject = DeviceNoun.SUBJECT,
-        e2eeDegradedReason = session.e2eeDegradedReason, unpublishedButSealed = session.unpublishedOnlyButE2EEIntact))
-    val chip = TrustChipModel.from(verdict.chipMode, state, session.unpublishedOnlyButE2EEIntact)
+        e2eeDegradedReason = session.e2eeDegradedReason, unpublishedButSealed = session.unpublishedOnlyButE2EEIntact,
+        leaksExposure = nodeAudit.leaksExposure))
+    // The chip reads chipState, the gate attestationState (S30): once "send anyway" answered a pending ask a send may
+    // leave while checks run, so the chip must not read verifying then (formal/ ChipNeverVerifyingAtSend).
+    val chipState = session.chipState
+    val chipMode = if (chipState == state) verdict.chipMode else TrustVerdict.chipMode(TrustVerdict.Input(
+        attestationState = chipState, requiresConfirmation = isPaused, degradeIsHardFailure = session.degradeIsHardFailure,
+        mismatchedResponseCount = session.effectiveMismatchCount, modelName = modelName, quant = session.modelArtifact?.quant,
+        providerDisplayName = providerName, isLocal = isOnDevice, isSelfHosted = isSelfHosted))
+    val chip = TrustChipModel.from(chipMode, chipState, session.unpublishedOnlyButE2EEIntact, softButSealed = !session.degradeIsHardFailure && session.softButSealed)
     // A published LEAKS review demotes a green hero to advisory: the seal still passes (never red — red is positive
     // evidence of an integrity break), but "only it can read this" cannot render green over a review that found the
     // operator's logs get a copy. Audit `incomplete` deliberately does NOT touch the hero.
@@ -305,25 +339,24 @@ fun trustSnapshot(session: ConfidentialSession, provider: Provider?, timedOut: B
     val none = if (state != AttestationState.NONE) null else noneScreen(session, provider, modelName, providerName, isOnDevice, isSelfHosted)
     val hard = session.degradeIsHardFailure
     val provenanceOnly = session.provenanceBlockedButE2EEIntact
-    val alertTitle = when {
-        hard -> "verification failed — sending blocked"
-        provenanceOnly -> "couldn't verify the running code"
-        else -> "end-to-end encryption unavailable"
-    }
-    val cause = session.e2eeDegradedReason ?: "E2EE could not be established for this provider."
-    val alertMessage = when {
-        provenanceOnly -> "your message would still be sealed to the model's verified hardware key — but one running image on this server couldn't be verified as published code. re-verifying may reach a different server of this model."
-        // Hard break: name the cause AND state the policy — there is no bypass.
-        hard -> "$cause Sending is blocked until this re-verifies — this could mean the enclave was tampered with or the connection intercepted."
-        else -> cause
-    }
+    // A soft state in which the send would still go out sealed asks "still checking near.ai's hardware", never
+    // "end-to-end encryption unavailable · send unencrypted" — with a peer present that sent sealed anyway
+    // (near-send-gate-rule, the maintainer 2026-11-06; the predicate is the send's own: ConfidentialSession.softButSealed).
+    // An inconclusive provenance lookup asks "couldn't confirm near.ai's software" (S30). The question is SendChoices.kt's E2EEAsk.
+    val ask = E2EEAsk.make(hardFailure = hard, pendingAsk = null, provenanceUnchecked = session.provenanceUncheckedAsks,
+        softButSealed = session.softButSealed, provenanceBlocked = provenanceOnly, cause = session.e2eeDegradedReason, tierGaveUp = session.tierGaveUp)
+    val alertTitle = ask.title
+    val sendChoices = ask.choices
+    val alertMessage = ask.message
     // When E2EE is intact and only provenance failed, a send is still sealed end-to-end, so "send unencrypted" would be false and scarier than the truth.
-    val bypassLabel = if (hard) null else if (provenanceOnly) "send anyway (still encrypted)" else "send unencrypted"
-    return TrustSnapshot(state, summary, verdict, chip, isPaused, modelName, providerName, heroTone, metaLine, none, alertTitle, alertMessage, bypassLabel, session.e2eeDegradedReason,
+    val bypassLabel = sendChoices.firstOrNull { it is E2EESendChoice.SendAnyway }?.label
+    return TrustSnapshot(state, summary, verdict, chip, isPaused, modelName, providerName, heroTone, metaLine, none, alertTitle, alertMessage, bypassLabel, session.e2eeDegradedReason, sendChoices,
         proof = if (state == AttestationState.NONE) emptyList() else summary.verificationRun, expertNodes = expertNodes,
         reportText = summary.shareText(session.e2eeMessageCount, session.verifiedResponseCount, session.mismatchedResponseCount, session.gatewayTrustResponseCount),
         selfVerifyScript = summary.selfVerifyScript,
-        expert = if (state == AttestationState.NONE) ExpertSections() else ExpertSections.make(session, summary, modelName, providerName, audit ?: AuditIndex.shared))
+        expert = if (state == AttestationState.NONE) ExpertSections() else ExpertSections.make(session, summary, modelName, providerName, audit ?: AuditIndex.shared),
+        composerPolicy = session.sendPolicyAfterConfirmations,
+        chainHalted = verdict.sendPolicy == TrustSendPolicy.BLOCK || session.recordStaleUnconfirmed)
 }
 
 /**
@@ -339,25 +372,48 @@ fun modelDisplayName(session: ConfidentialSession, provider: Provider?): String 
     return raw.split('/').lastOrNull { it.isNotEmpty() } ?: raw
 }
 
-/** The everyday audit rollup over the rows whose code can read the unlocked message: plaintext touchers, the in-enclave engine, the guest OS. */
-fun modelNodeAuditState(session: ConfidentialSession, audit: AuditIndex?): EverydayAuditState? {
-    if (session.attestation == null || audit == null) return null
+/** The model enclave's everyday audit state, and the exposure summary of the first leaking page (iOS ModelNodeAudit, 8bfe33cb). */
+data class ModelNodeAudit(val state: EverydayAuditState?, val leaksExposure: String?)
+
+/**
+ * The everyday audit rollup over the rows whose code can read the unlocked message: plaintext touchers, the in-enclave
+ * engine, the guest OS. Never read by the send gate.
+ */
+fun modelNodeAudit(session: ConfidentialSession, audit: AuditIndex?): ModelNodeAudit {
+    val none = ModelNodeAudit(null, null)
+    if (session.attestation == null || audit == null) return none
     val group = EnclaveGrouping(session.attestation, session.imageProvenance, session.modelLayerManifest, session.modelLayerVerification, audit)
-        .groups().firstOrNull { it.primary } ?: return null
+        .groups().firstOrNull { it.primary } ?: return none
     val relevant = group.images.filter { it.plaintextRole != null || it.kind == ImageEntry.Kind.LOCAL || it.kind == ImageEntry.Kind.GUEST_OS }
-    if (relevant.isEmpty()) return null
-    val urls = relevant.mapNotNull { it.auditURL } + listOfNotNull(group.configAuditURL, group.recipe?.auditURL)
-    val classes = urls.mapNotNull { audit.verdictClass(it) }
-    return everydayAuditState(classes, allTouchersCovered = relevant.all { it.auditURL != null })
+    if (relevant.isEmpty()) return none
+    // the pages that judge THIS chat: its path's revisions and images, a sibling's recipe leak dropped (iOS b3d90fac)
+    val scope = session.nearScope
+    val urls = ai.teemoon.confidential.ModelNodeAuditPath.onPath(relevant.mapNotNull { it.auditURL } + listOfNotNull(group.configAuditURL, group.recipe?.auditURL),
+        scope?.chatPath, scope?.runningServices?.mapNotNull(ai.teemoon.confidential.ChatPath::sourceOf).orEmpty(), audit)
+    // A week-old index is no index for the everyday claim; the expert stamp still shows its age (trust-audit-claim).
+    if (!audit.isFreshForEveryday) return ModelNodeAudit(EverydayAuditState.INCOMPLETE, null)
+    // a page with no class, or one this build doesn't know, stays in as a gap (null) — it used to be dropped
+    val classes = urls.map { audit.verdictClass(it) }
+    val managerUnreviewed = ai.teemoon.confidential.TrustScopeText.runningManagerUnreviewed(scope?.composeManager) { audit.imageAuditURL("nearaidev/compose-manager", "sha256:$it") }
+    val state = ai.teemoon.confidential.withRunningManager(everydayAuditState(classes, allTouchersCovered = relevant.all(::coversForEveryday)), managerUnreviewed)!!
+    val exposure = if (state == EverydayAuditState.LEAKS)
+        urls.firstOrNull { audit.verdictClass(it) == ai.teemoon.confidential.AuditVerdictClass.LEAKS }?.let(audit::exposureSummary) else null
+    return ModelNodeAudit(state, exposure)
 }
+
+/**
+ * Whether an image's review counts as coverage for the everyday claim. A tag-pinned image's tag page reviews whatever the
+ * tag named then, not the bytes running: never coverage (trust-audit-tag-pages, the maintainer 2026-11-06).
+ */
+internal fun coversForEveryday(entry: ImageEntry): Boolean = entry.auditURL != null && entry.kind != ImageEntry.Kind.TAG_PINNED
 
 private fun noneScreen(session: ConfidentialSession, provider: Provider?, modelName: String, providerName: String, isOnDevice: Boolean, isSelfHosted: Boolean): NoneScreen {
     // On device FIRST, and it cannot be folded into the self-hosted branch: a local provider's endpoint has no host, so isSelfHosted is false for it.
-    if (isOnDevice) return NoneScreen(heroSymbol = "lock.iphone", heroTitle = "nothing leaves this phone", heroLead =
+    if (isOnDevice) return NoneScreen(heroSymbol = "lock.iphone", heroTitle = "nothing leaves this phone unless you turn on web search", heroLead =
         
-        "$modelName runs on this device. your messages are answered here, so there is no server to trust and no network to protect them on.",
+        "$modelName runs on this device. your messages are answered here, so there is no server to trust and no network to protect them on. web search, if you turn it on, sends its queries to Brave.",
         rows = listOf(
-            NoneRow(true, "your messages never leave the phone", "the model is a file on this device and teemoon runs it here. nothing about this chat is transmitted, so there is nothing in transit to intercept."),
+            NoneRow(true, "your messages never leave the phone; with web search on, only its queries go to Brave", "the model is a file on this device and teemoon runs it here. with web search off, nothing about this chat is transmitted; with it on, only the search queries go to Brave."),
             NoneRow(true, "no operator to trust", "there is no company on the other end of this chat, because there is no other end. nobody is metering it and nobody could be asked to hand it over."),
             NoneRow(true, "works with the network off", "airplane mode changes nothing here — which is the plainest proof that nothing is leaving.")))
     if (isSelfHosted) {

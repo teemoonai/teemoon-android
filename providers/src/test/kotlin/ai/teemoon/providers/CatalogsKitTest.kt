@@ -1,4 +1,4 @@
-// ports: teemoonTests/ProviderCatalogAdapterTests.swift @ v1.0.4 (listModelsBuildsCompletePickerRows, rowsAreCompleteNamedAndVendored,
+// ports: teemoonTests/ProviderCatalogAdapterTests.swift @ v1.0.4 + ConformanceVectorsFixtures.swift @ cdcae74b (nearTiers with listSeen, attested and claimsE2EE; listModelsBuildsCompletePickerRows, rowsAreCompleteNamedAndVendored,
 //        rowsCarryNameVendorContextAndQuant, grokRowsGainThePriceAndContextTheSnapshotNeverHad, fireworksRowsGainTheContext…,
 //        fireworksRowsAreNamedInTheHouseStyle) — over the kit's `catalogs` class (kit 0.4.0): the rows the Android adapters build
 //        from the recorded responses must equal iOS's, field for field, at the pinned instant.
@@ -9,6 +9,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.booleanOrNull
 import org.junit.Assert.assertEquals
 import org.junit.Test
@@ -46,5 +47,36 @@ class CatalogsKitTest {
     @Test fun lmStudioRowsMatchIOS() {
         val list = wire.decodeFromString(LMStudioAdapter.ModelsResponse.serializer(), raw("lmstudio", "models"))
         assertEquals(expected("lmstudio"), LMStudioAdapter.buildModels(list.data).map(::row))
+    }
+
+    /**
+     * iOS 9862a35 (audit gardener #7): near.ai's tier for an id before the catalogue answers (no ownedBy) and after,
+     * each row on a fresh tier cache. An id no rule names is UNKNOWN, never own fleet. Kit 0.5.5
+     * (iOS cdcae74b): each row also says whether a send is `attested` (TEE_OWN and UNKNOWN: an unseen tier never sends
+     * plain without asking) and whether a screen `claimsE2EE` (TEE_OWN only).
+     */
+    @Test fun nearTiersMatchIOSBeforeAndAfterTheCatalogue() {
+        val names = mapOf("teeOwn" to "TEE_OWN", "teeThirdParty" to "TEE_THIRD_PARTY", "proxied" to "PROXIED", "unknown" to "UNKNOWN")
+        val rows = v["nearTiers"]!!.jsonArray.map { it.jsonObject }
+        assertEquals(17, rows.size)   // kit 0.5.2: + six never-seen rows (iOS ea19232)
+        try {
+            val wrong = rows.mapNotNull { r ->
+                NearAIModelCatalog.resetTierCache()
+                // listSeen (kit 0.5.2): whether near.ai's tier list has been recorded since launch; before it, no guess is own fleet.
+                NearAIModelCatalog.tierListSeenOverride = r["listSeen"]?.jsonPrimitive?.booleanOrNull ?: true
+                val id = r["id"]!!.jsonPrimitive.content
+                val owner = r["ownedBy"]?.jsonPrimitive?.contentOrNull
+                owner?.let { NearAIModelCatalog.tierFromOwnedBy(it) }?.let { NearAIModelCatalog.recordTiers(mapOf(id to it)) }
+                val got = NearAIModelCatalog.confidentiality(id).name
+                val want = names.getValue(r["tier"]!!.jsonPrimitive.content)
+                val p = Provider.nearAI.copy(model = id)
+                val attested = ProviderCapability.ATTESTATION in p.capabilities
+                val wantAttested = r["attested"]!!.jsonPrimitive.boolean
+                val wantClaims = r["claimsE2EE"]!!.jsonPrimitive.boolean
+                if (got == want && attested == wantAttested && p.claimsEndToEndEncryption == wantClaims) null
+                else "$id (ownedBy $owner): expected $want attested=$wantAttested claims=$wantClaims, got $got attested=$attested claims=${p.claimsEndToEndEncryption}"
+            }
+            assertEquals("rows Android tiers differently", emptyList<String>(), wrong)
+        } finally { NearAIModelCatalog.resetTierCache(); NearAIModelCatalog.tierListSeenOverride = null }
     }
 }

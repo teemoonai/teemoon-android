@@ -1,4 +1,4 @@
-// ports: teemoon/Confidential/AuditIndex.swift @ v1.0.5 (VerdictClass stays the top-level AuditVerdictClass; refresh()
+// ports: teemoon/Confidential/AuditIndex.swift @ v1.0.6 (VerdictClass stays the top-level AuditVerdictClass; refresh()
 //        revalidates with the saved ETag, and a snapshot younger than the TTL answers a cold launch)
 package ai.teemoon.confidential
 
@@ -47,6 +47,8 @@ class AuditIndex(
         fun saveETag(etag: String?) {}
         /** A 304: the saved bytes are still current as of [fetchedAtMs]. */
         fun touch(fetchedAtMs: Long) {}
+        /** Drops the saved index, its fetch time and its ETag (an index of a schema this build predates). */
+        fun clear() {}
     }
 
     /** One answer from the index URL: status, body (empty on a 304), and its ETag. */
@@ -117,6 +119,24 @@ class AuditIndex(
         val verdictClass: Map<String, String>? = null,
         /** page path → the page's own finding headings, machine-read (never synthesized). */
         val findings: Map<String, List<Finding>>? = null,
+        /**
+         * page path → the page's last commit date (UTC, "YYYY-MM-DD"), audit's indexer (2026-11-06). Optional; a page
+         * missing from it has no evidence date and is never fresh. Not displayed yet: any use goes to pm's page first.
+         */
+        val checked: Map<String, String>? = null,
+        /** page path → what a LEAKS review found leaves the enclave, in the reviewer's words. Optional (trust-leaks-wording). */
+        val exposure: Map<String, Exposure>? = null,
+    )
+
+    @Serializable
+    data class Exposure(
+        val summary: String,
+        /**
+         * "recipe" or "image" (audit 2026-11-06, iOS b3d90fac). A recipe page's [services] are the compose names whose
+         * request path carries the leak; an image page has none (it leaks wherever that digest runs).
+         */
+        @kotlinx.serialization.SerialName("scope_kind") val scopeKind: String? = null,
+        val services: List<String>? = null,
     )
 
     /** null until an index has loaded (this session or from the persisted snapshot); all link accessors return null until then — fail closed. */
@@ -133,9 +153,26 @@ class AuditIndex(
 
     /** When the CONTENT currently in [index] was fetched from the network. null = unknown (treated as stale, never as fresh). */
     var loadedAtMs: Long? = null
-        private set
+        // The stamp reads it: a 304 that only moved it redrew nothing, so the ladder said "cached 3 days ago" right after
+        // a revalidation (pm audit-index sweep 2026-11-06, #3).
+        private set(value) { if (value != field) { field = value; _revision.value++ } }
 
     private var lastLoadMs: Long? = if (fixedIndex != null) Long.MAX_VALUE else null
+
+    /**
+     * Whether the everyday claim may use the index (trust-audit-claim, the maintainer 2026-11-06): one fetched within
+     * [EVERYDAY_MAX_AGE_MS]. Older, or of unknown age, it is none for that claim; the expert stamp still shows its age.
+     */
+    val isFreshForEveryday: Boolean get() {
+        val at = loadedAtMs ?: return false
+        return index != null && nowMs() - at < EVERYDAY_MAX_AGE_MS
+    }
+
+    /** Forgets the index, here and on disk. */
+    private fun clearCache() {
+        index = null; loadedAtMs = null; lastLoadMs = null
+        store?.clear()
+    }
     private var loadJob: Job? = null
 
     /**
@@ -177,6 +214,8 @@ class AuditIndex(
             return
         }
         if (reply.status != 200) return
+        // A layout this reader predates: the old one is dropped, not rendered forever (trust-audit-claim, iOS).
+        if (declaresOtherSchema(reply.body)) { clearCache(); return }
         val parsed = decodeIndex(reply.body) ?: return
         index = parsed
         lastLoadMs = now
@@ -294,6 +333,12 @@ class AuditIndex(
     fun verdictClass(url: String): AuditVerdictClass? =
         pagePath(url)?.let { index?.verdictClass?.get(it) }?.let { AuditVerdictClass.fromRaw(it) }
 
+    /** The reviewer's exposure summary for a page, verbatim; null when the index records none (iOS 8bfe33cb). */
+    fun exposureSummary(url: String): String? = exposure(url)?.summary
+
+    /** A page's exposure entry: what leaks, and on which services' path (iOS b3d90fac). */
+    fun exposure(url: String): Exposure? = pagePath(url)?.let { index?.exposure?.get(it) }
+
     /**
      * The machine-read findings of the page an audit URL points at, in the page's
      * own order. Empty when the index records none — which means "the page's
@@ -309,6 +354,16 @@ class AuditIndex(
         const val WEB_BASE = "https://github.com/teemoonai/audits/blob/main"
         const val INDEX_URL = "https://raw.githubusercontent.com/teemoonai/audits/main/index.json"
         private const val TTL_MS = 3_600_000L
+        /** Older than this the everyday claim treats the index as absent until it refreshes (the maintainer 2026-11-06). */
+        const val EVERYDAY_MAX_AGE_MS = 7L * 24 * 3_600_000
+
+        /** A body that names a schema other than 1. No schema, or unreadable JSON, is not a declaration. */
+        internal fun declaresOtherSchema(body: ByteArray): Boolean = runCatching {
+            kotlinx.serialization.json.Json.parseToJsonElement(String(body, Charsets.UTF_8))
+                .let { (it as? kotlinx.serialization.json.JsonObject)?.get("schema") }
+                ?.let { (it as? kotlinx.serialization.json.JsonPrimitive)?.content?.toIntOrNull() }
+                ?.let { it != 1 } ?: false
+        }.getOrDefault(false)
 
         private val json = Json { ignoreUnknownKeys = true }
 

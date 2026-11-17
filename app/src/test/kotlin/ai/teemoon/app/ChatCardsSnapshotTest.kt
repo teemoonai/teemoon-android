@@ -28,7 +28,18 @@ class ChatCardsSnapshotTest {
             AssistantMessageView(messageId = "m", content = "Let me check the latest forecast for you.", generatingTimeMs = null,
                 isLLMRunning = true, streaming = true, sources = emptyList(),
                 trailing = { ActivityChip(ActivityState.of(isExecutingTools = true, sourceCount = 0), elapsedSeconds = 7.0) },
-                showTrailing = TrailingActivityChip.visible(hasText = true, stalled = false, executingTools = true, awaitingModel = false))
+                showTrailing = TrailingActivityChip.visible(hasText = true, stalled = false, executingTools = true, awaitingModel = false), reveal = false)
+        } } } }
+    }
+
+    /**
+     * A finished reply that kept an inline <think> block, with stored sources: the chip shows under the answer (iOS
+     * 2fd9f7e; pm sources-ui). Gated on `thinking == null` until 1.1.0, so this reply drew no chip.
+     */
+    @Test fun finishedReply_withThinking_showsItsSourcesChip() {
+        paparazzi.snapshot { TeemoonTheme { Surface { Column(Modifier.padding(12.dp)) {
+            AssistantMessageView(messageId = "m", content = "<think>\nChecking the opening hours.\n</think>\nIt opens at ten.", generatingTimeMs = 1000,
+                isLLMRunning = false, streaming = false, sources = listOf(GroundingSource("https://example.com/a", "example.com", "A")))
         } } } }
     }
 
@@ -92,6 +103,25 @@ class ChatCardsSnapshotTest {
                 SourcesChip(listOf(GroundingSource("https://redact.dev", "redact.dev", "Redact")))
                 WebSearchChip(WebSearchChipState.ON, onClick = {}); WebSearchChip(WebSearchChipState.DISABLED, onClick = {})
             }
+        } } } }
+    }
+
+    /** The engine's load line on the chip (EngineLoadLine): the long images line must sit whole in the capsule, cpu glyph leading. */
+    @Test fun activityChip_engineLoadLines() {
+        paparazzi.snapshot { TeemoonTheme { Surface { Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            ActivityChip(ActivityState.LoadingModel(EngineLoadLine.PREPARING_FOR_IMAGES), 14.0)
+            ActivityChip(ActivityState.LoadingModel(EngineLoadLine.LOADING), 4.0)
+            ActivityChip(ActivityState.Thinking, 9.0)
+        } } } }
+    }
+
+    /** S32: the placeholder while the gate holds the send (no clock), beside thinking with its clock. */
+    @Test fun activityChip_waitingForVerification() {
+        paparazzi.snapshot { TeemoonTheme { Surface { Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            ActivityChip(ActivityState.WaitingForVerification, 3.0)
+            ActivityChip(ActivityState.Thinking, 9.0)
+            ActivityChip(ActivityState.ThinkingHarder, 2.0)
+            ActivityChip(ActivityState.Searching, null)
         } } } }
     }
 

@@ -244,6 +244,21 @@ class GenerationEngineTest {
     }
 
     /**
+     * The containment warning carries COUNTS ONLY, as iOS's log line does (GenerationEngine.swift: fragments and
+     * chars): the removed fragments are the model's text, which can echo the user's question, and a warning is
+     * logged. Audit gardener #1, 2026-10-25.
+     */
+    @Test fun theContainmentWarningCarriesCountsNotTheRemovedText() = runTest {
+        val events = RecordingEvents()
+        engine(ScriptedTransport(listOf(TurnResult(content = "Here you go <tool_call>{\"name\":\"my secret question\"}</tool_call> done."))),
+            events = events).run(emptyList(), "hi")
+        val warning = events.warnings.single { it.contains("[containment]") }
+        assertTrue(warning, warning.contains("stripped 1 residual tool-markup fragment(s)"))
+        assertTrue(warning, Regex(""", \d+ chars$""").containsMatchIn(warning))
+        assertFalse("the removed text is in the warning: $warning", warning.contains("secret") || warning.contains("<tool_call>"))
+    }
+
+    /**
      * The round budget is finite: a model that only ever calls tools must be
      * stopped rather than looping forever.
      *

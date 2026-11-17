@@ -1,4 +1,4 @@
-// ports: teemoon/Views/Settings/CloudKeyProviderPickerView.swift @ v1.0.5
+// ports: teemoon/Views/Settings/CloudKeyProviderPickerView.swift @ v1.0.6
 package ai.teemoon.app
 
 import ai.teemoon.providers.Provider
@@ -12,6 +12,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CloudKeyPickerTest {
+    /** Models near.ai set up with its list loaded: see [ai.teemoon.providers.NearAIModelCatalog.tierListSeen] (iOS ea19232). */
+    init { ai.teemoon.providers.NearAIModelCatalog.recordTiers(mapOf("nearai/tier-list-seen-by-tests" to ai.teemoon.providers.NearAIModelCatalog.Confidentiality.TEE_OWN)) }
+
 
     @Test fun everyOfferedPresetBecomesARow() {
         val rows = CloudKeyPicker.rows(Provider.presets)

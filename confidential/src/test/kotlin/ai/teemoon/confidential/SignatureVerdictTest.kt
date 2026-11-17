@@ -1,4 +1,4 @@
-// ports: teemoonTests/SignatureVerdictTests.swift @ 97b2ca9
+// ports: teemoonTests/SignatureVerdictTests.swift @ v1.0.6
 //
 // TEESignatureVerifier.evaluate against two real captures, vendored byte-identical from iOS (teemoonTests/Fixtures):
 // nearai_signed_response.json (a provider_tee ecdsa signature with the model prefix) and
@@ -65,12 +65,12 @@ class SignatureVerdictTest {
         private fun reportData(prefix: ByteArray) = ByteArray(64).also { prefix.copyInto(it) }
 
         fun record(gateway: String? = null, gatewayBound: Boolean = true, gpu: String? = null, gpuBound: Boolean = true,
-                   modelKey: ByteArray? = null, modelKeyBound: Boolean = true) = AttestationRecord(
+                   gpuQuoteVerified: Boolean = true, modelKey: ByteArray? = null, modelKeyBound: Boolean = true) = AttestationRecord(
             composeHash = "", mrtd = "", osImageHash = "", intelQuote = "", composeManifest = null, gpuArch = null,
             gpuNodeComposeHash = null, modelFileHash = null,
             signingAddress = gateway, gpuSigningAddress = gpu, modelEd25519PubKey = modelKey,
             quoteVerification = gateway?.let { AttestationFixtures.verification(reportData(if (gatewayBound) hex(it) else ByteArray(20))) },
-            gpuQuoteVerification = gpu?.let { AttestationFixtures.verification(reportData(if (gpuBound) hex(it) else ByteArray(20))) },
+            gpuQuoteVerification = gpu?.let { AttestationFixtures.verification(reportData(if (gpuBound) hex(it) else ByteArray(20)), signatureValid = gpuQuoteVerified) },
             modelQuoteVerification = modelKey?.let { AttestationFixtures.verification(reportData(if (modelKeyBound) it else ByteArray(32))) },
             fetchedAt = Instant.now(), providerID = "test",
         )
@@ -87,6 +87,15 @@ class SignatureVerdictTest {
     @Test fun modelSignatureByUnboundKeyIsNotVerified() {
         val m = model()
         val v = evaluate(signature(m.sig), record(gpu = m.sig["signing_address"], gpuBound = false), m.exchange)
+        assertTrue("expected signerUnattested, got $v", reasonOf(v) is UnverifiedReason.SignerUnattested)
+    }
+
+    /** The GPU quote's own signature failed: the address in its report_data binds nothing (1.0.6 audit INFO; iOS cdfaccde). */
+    @Test fun modelSignatureByAKeyInAFailedGPUQuoteIsNotVerified() {
+        val m = model()
+        val att = record(gpu = m.sig["signing_address"], gpuQuoteVerified = false)
+        assertEquals(false, att.gpuSigningKeyBoundToHardware)
+        val v = evaluate(signature(m.sig), att, m.exchange)
         assertTrue("expected signerUnattested, got $v", reasonOf(v) is UnverifiedReason.SignerUnattested)
     }
 

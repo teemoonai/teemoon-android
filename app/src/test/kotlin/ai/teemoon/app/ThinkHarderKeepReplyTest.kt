@@ -2,7 +2,7 @@
 //        SwiftData. + android-only: a stop after the new reply showed text (the partial goes, the old reply comes back),
 //        and the restored reply keeps its own generating time.
 //
-// The maintainer, 2026-10-21 ("think-harder-keep-reply"): the old reply stays, dimmed, until the new one shows text; a failed,
+// the maintainer, 2026-10-21 ("think-harder-keep-reply"): the old reply stays, dimmed, until the new one shows text; a failed,
 // stopped or interrupted Think Harder leaves it as it was. Build 50 deleted and saved it before asking, so a failure
 // lost the answer.
 package ai.teemoon.app
@@ -79,12 +79,21 @@ class ThinkHarderKeepReplyTest {
         override suspend fun deleteAllMessages() { messages.clear() }
         override suspend fun deleteMessagesSince(threadId: String, sinceMs: Long) { messages.removeAll { it.threadId == threadId && it.timestamp >= sinceMs } }
         override suspend fun deleteMessages(ids: List<String>) { messages.removeAll { it.id in ids } }
+        override suspend fun rewriteSentBeforeConfirmed(from: String, to: String?): Int { var n = 0; messages.replaceAll { if (it.sentBeforeConfirmed == from) { n++; it.copy(sentBeforeConfirmed = to) } else it }; return n }
         override suspend fun setTimestamp(id: String, timestamp: Long) { messages.replaceAll { if (it.id == id) it.copy(timestamp = timestamp) else it } }
         override fun observePreviews() = flowOf(emptyList<ThreadPreview>())
         override suspend fun threadIdsWithContent(needle: String) = emptyList<String>()
         override suspend fun indexableMessageIds() = emptyList<String>()
         override suspend fun messagesByIds(ids: List<String>) = messages.filter { it.id in ids }
         override suspend fun startThread(thread: ThreadEntity, first: MessageEntity) {}
+        override suspend fun setTitleIfNone(id: String, title: String) {}
+        override suspend fun insertAttachments(attachments: List<ai.teemoon.chat.AttachmentEntity>) {}
+        override suspend fun attachmentsFor(messageIds: List<String>) = emptyList<ai.teemoon.chat.AttachmentEntity>()
+        override fun observeAttachments(threadId: String) = kotlinx.coroutines.flow.flowOf(emptyList<ai.teemoon.chat.AttachmentEntity>())
+        override suspend fun attachmentPaths() = emptyList<String>()
+        override suspend fun threadExists(id: String) = threads.any { it.id == id }
+        override suspend fun insertThread(thread: ThreadEntity) { threads += thread }
+        override suspend fun insertMessages(messages: List<MessageEntity>) { this.messages += messages }
     }
 
     private val askedAt = 1_770_000_000_000L
@@ -165,14 +174,20 @@ class ThinkHarderKeepReplyTest {
         assertEquals(listOf("why is the sky blue", "OLD ANSWER"), rig.stored())
     }
 
-    /** The same on a plain turn stopped before any text: the late reply used to land in the question's own bubble. */
+    /**
+     * The same on a plain turn stopped before any text: the late reply used to land in the question's own bubble. Since
+     * the reply machine (reply-machine.json: a stop keeps the text so far) the stopped turn keeps its own empty row, which
+     * reads "you stopped this reply." — and the late reply lands in neither.
+     */
     @Test fun aPlainTurnsLateReplyDoesNotOverwriteTheQuestion() = runTest(dispatcher) {
         val rig = Rig(Transport(Transport.Mode.DEAF_TO_STOP))
         clock += 1_000
         rig.vm.send("a second question"); runCurrent()
         rig.vm.stop(); advanceUntilIdle()
-        assertEquals(listOf("why is the sky blue", "OLD ANSWER", "a second question"), rig.contents)
-        assertEquals(listOf("why is the sky blue", "OLD ANSWER", "a second question"), rig.stored())
+        assertEquals(listOf("why is the sky blue", "OLD ANSWER", "a second question", ""), rig.contents)
+        assertEquals(listOf("why is the sky blue", "OLD ANSWER", "a second question", ""), rig.stored())
+        assertEquals("marker.stopped", rig.vm.state.value.messages.last().marker)
+        assertEquals("stopped", rig.dao.messages("t").last().status)
     }
 
     /** pm: a kill mid-Think-Harder must keep the old reply and must not re-ask at default effort. */

@@ -137,7 +137,8 @@ services:
         val dcgm = byName.getValue("nvcr.io/nvidia/k8s/dcgm-exporter")
         assertEquals(ImageEntry.Kind.TAG_PINNED, dcgm.kind); assertEquals("4.5.2-4.8.1-distroless", dcgm.tag)
         assertEquals(PlaintextExposure.Capability.DEVICE_PRIVILEGE, dcgm.capability)
-        assertNotNull(dcgm.auditURL); assertEquals("NVIDIA/dcgm-exporter", dcgm.projectPointer?.repo); assertTrue(dcgm.isRecipe)
+        // no tag-page link (trust-audit-tag-pages, the maintainer 2026-11-06): a tag page reviews what the tag named then
+        assertNull(dcgm.auditURL); assertEquals("NVIDIA/dcgm-exporter", dcgm.projectPointer?.repo); assertTrue(dcgm.isRecipe)
         // Guest OS first, then the bands: terminator, model server, then device privilege.
         assertEquals(ImageEntry.Kind.GUEST_OS, model.images.first().kind)
         assertEquals(listOf("nearaidev/vllm-proxy-rs", "lmsysorg/sglang", "nvcr.io/nvidia/k8s/dcgm-exporter"), model.images.drop(1).map { it.name })

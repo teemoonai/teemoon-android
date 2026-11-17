@@ -100,7 +100,8 @@ class ThinkHarderTest {
         assertEquals("Think Harder asks again now", clock, vm.state.value.messages.first().createdAtMs)
         assertTrue(askedAt != clock)
         val sentAgain = wire.requests.last().last()["content"] as String
-        assertTrue(sentAgain, sentAgain.endsWith(ChatGeneration.timeNote(clock)))
+        // Fireworks is a plain-TLS cloud: the note is the UTC minute (DisclosurePolicy, minimised)
+        assertTrue(sentAgain, sentAgain.endsWith(ChatGeneration.timeNote(clock, ai.teemoon.providers.DisclosurePolicy(ai.teemoon.providers.DisclosurePolicy.Tier.MINIMISED))))
     }
 
     @Test fun aRetryKeepsTheTimeItWasFirstSent() = runTest(dispatcher) {

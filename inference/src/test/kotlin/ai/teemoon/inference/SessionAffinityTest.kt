@@ -1,4 +1,4 @@
-// ports: teemoonTests/SessionAffinityTests.swift @ ead8674
+// ports: teemoonTests/SessionAffinityTests.swift @ v1.1.0
 //
 // A chat's routing id survives a relaunch (Fireworks glm-5p3 / -flash, 2026-10-19: turn-2 cache hits 7/12 with the
 // same id, 3/12 with a fresh one, which is what a relaunch sent before). Each provider gets only its own documented key.

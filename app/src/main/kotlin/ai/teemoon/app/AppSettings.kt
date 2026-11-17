@@ -1,12 +1,17 @@
-// ports: teemoon/Settings/AppSettings.swift @ v1.0.4, teemoon/Settings/UserDefaultsKeys.swift @ v1.0.1,
-//        teemoon/Settings/Appearance.swift @ v1.0.1 (the four appearance enums only)
+// ports: teemoon/Settings/AppSettings.swift @ v1.0.4 (appFontSize's default @ 407ea0b; searchKeyTurnedOff @ 8494cdb9), teemoon/Settings/UserDefaultsKeys.swift @ 0e98aaf1,
+//        teemoon/Settings/Appearance.swift @ 407ea0b (the four appearance enums only)
 //
 // User preferences over a key-value seam (SharedPreferences in the app, a map
 // in tests). The Brave key itself lives in the Keystore (AppState.braveKey);
 // this owns the grounding TOGGLE and the developer-mode gate.
 package ai.teemoon.app
 
+import ai.teemoon.inference.ReasoningLevel
+import ai.teemoon.providers.Provider
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 /** The key-value store behind the settings — iOS UserDefaults. */
 interface Prefs {
@@ -34,12 +39,18 @@ object UserDefaultsKey {
     const val NUMBER_OF_VISITS = "numberOfVisits"; const val NUMBER_OF_VISITS_OF_LAST_REQUEST = "numberOfVisitsOfLastRequest"
     const val BRAVE_GROUNDING_ENABLED = "braveGroundingEnabled"; const val DEVELOPER_MODE_ENABLED = "developerModeEnabled"
     const val SYSTEM_PROMPT_VERSION = "systemPromptVersion"
+    /** Developer mode's reasoning level per model: {API host | model id: level} (ReasoningLevel). */
+    const val REASONING_LEVELS = "reasoningLevels"
 }
 
 enum class AppTintColor { MONOCHROME, BLUE, BROWN, GRAY, GREEN, INDIGO, MINT, ORANGE, PINK, PURPLE, RED, TEAL, YELLOW }
 enum class AppFontDesign { STANDARD, MONOSPACED, ROUNDED, SERIF }
 enum class AppFontWidth { COMPRESSED, CONDENSED, EXPANDED, STANDARD }
-enum class AppFontSize { XSMALL, SMALL, MEDIUM, LARGE, XLARGE }
+/**
+ * Settings → appearance → size: steps relative to the phone's text size (iOS 407ea0b), so the phone's font scale still
+ * applies under every choice. [SYSTEM] is the phone's own; it stores "large", the name builds before 1.1.0 wrote for it.
+ */
+enum class AppFontSize(val stored: String) { XSMALL("xsmall"), SMALL("small"), MEDIUM("medium"), SYSTEM("large"), XLARGE("xlarge") }
 
 class AppSettings(private val prefs: Prefs, private val log: (String) -> Unit = {}) {
     /** Bumped on every appearance write so the theme recomposes (iOS: @AppStorage drives the view tree). */
@@ -67,8 +78,9 @@ class AppSettings(private val prefs: Prefs, private val log: (String) -> Unit = 
         get() = prefs.getString(UserDefaultsKey.APP_FONT_DESIGN)?.let { v -> AppFontDesign.entries.firstOrNull { it.name.equals(v, true) } } ?: AppFontDesign.STANDARD
         set(value) { prefs.putString(UserDefaultsKey.APP_FONT_DESIGN, value.name.lowercase()); appearanceChanges.value++ }
     var appFontSize: AppFontSize
-        get() = prefs.getString(UserDefaultsKey.APP_FONT_SIZE)?.let { v -> AppFontSize.entries.firstOrNull { it.name.equals(v, true) } } ?: AppFontSize.MEDIUM
-        set(value) { prefs.putString(UserDefaultsKey.APP_FONT_SIZE, value.name.lowercase()); appearanceChanges.value++ }
+        // an install that never chose gets the phone's size (the maintainer, 2026-10-30); a stored choice is kept
+        get() = prefs.getString(UserDefaultsKey.APP_FONT_SIZE)?.let { v -> AppFontSize.entries.firstOrNull { it.stored.equals(v, true) } } ?: AppFontSize.SYSTEM
+        set(value) { prefs.putString(UserDefaultsKey.APP_FONT_SIZE, value.stored); appearanceChanges.value++ }
     var appFontWidth: AppFontWidth
         get() = prefs.getString(UserDefaultsKey.APP_FONT_WIDTH)?.let { v -> AppFontWidth.entries.firstOrNull { it.name.equals(v, true) } } ?: AppFontWidth.STANDARD
         set(value) { prefs.putString(UserDefaultsKey.APP_FONT_WIDTH, value.name.lowercase()); appearanceChanges.value++ }
@@ -89,6 +101,25 @@ class AppSettings(private val prefs: Prefs, private val log: (String) -> Unit = 
         get() = prefs.getBoolean(UserDefaultsKey.DEVELOPER_MODE_ENABLED) ?: false
         set(value) = prefs.putBoolean(UserDefaultsKey.DEVELOPER_MODE_ENABLED, value)
 
+    /** What was picked on the model page (ReasoningLevel.key), whether or not developer mode is on now. */
+    fun storedReasoningLevel(provider: Provider): String? = reasoningLevels()[ReasoningLevel.key(provider)]
+
+    /** The level in force: none with developer mode off, so everyone sends today's low. The transport's chooser. */
+    fun chosenReasoningLevel(provider: Provider): String? = if (developerModeEnabled) storedReasoningLevel(provider) else null
+
+    /** null goes back to the default. */
+    fun setReasoningLevel(level: String?, provider: Provider) {
+        val all = reasoningLevels().toMutableMap()
+        if (level == null) all -= ReasoningLevel.key(provider) else all[ReasoningLevel.key(provider)] = level
+        prefs.putString(UserDefaultsKey.REASONING_LEVELS, JsonObject(all.mapValues { JsonPrimitive(it.value) }).toString())
+    }
+
+    // An unreadable entry is no choice: today's low, never a failed send.
+    private fun reasoningLevels(): Map<String, String> = runCatching {
+        (Json.parseToJsonElement(prefs.getString(UserDefaultsKey.REASONING_LEVELS) ?: return emptyMap()) as JsonObject)
+            .mapValues { (it.value as JsonPrimitive).content }
+    }.getOrDefault(emptyMap())
+
     fun incrementNumberOfVisits() { numberOfVisits += 1; log("App visits: $numberOfVisits") }
 
     /** The key a turn may ground with: only when the toggle is on AND a key is stored. */
@@ -96,6 +127,12 @@ class AppSettings(private val prefs: Prefs, private val log: (String) -> Unit = 
         if (!braveGroundingEnabled) return null
         return storedKey?.trim()?.takeIf { it.isNotEmpty() }
     }
+
+    /**
+     * A key is stored but the web chip is off (iOS searchKeyTurnedOff @ 8494cdb9). Not the same as keyless: there is no
+     * offer to trigger, so an on-device turn sends no tool at all.
+     */
+    fun searchKeyTurnedOff(hasStoredKey: Boolean): Boolean = !braveGroundingEnabled && hasStoredKey
 
     private fun migrateSystemPromptIfNeeded() {
         val storedVersion = prefs.getInt(UserDefaultsKey.SYSTEM_PROMPT_VERSION) ?: 0

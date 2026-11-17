@@ -397,20 +397,20 @@ class BraveWebSearchToolTest {
 
     @Test fun groundingMessageNamesBravesReasonAndAnInvalidTokenPointsAtTheKey() {
         val msg = LlmError.groundingMessage(422, """{"error":{"code":"SUBSCRIPTION_TOKEN_INVALID","detail":"The provided subscription token is invalid.","meta":{"component":"authentication"},"status":422},"type":"ErrorResponse"}""")
-        assertTrue(msg, msg.startsWith("Brave web search rejected the API key (HTTP 422): The provided subscription token is invalid."))
-        assertTrue(msg, msg.endsWith("Check your Brave API key in Settings → Search."))
+        assertTrue(msg, msg.startsWith("brave web search rejected the api key (http 422): The provided subscription token is invalid."))
+        assertTrue(msg, msg.endsWith("check your brave api key in settings → search."))
         val plan = LlmError.groundingMessage(400, """{"type":"ErrorResponse","error":{"status":400,"detail":"The option is not included in the plan.","code":"OPTION_NOT_IN_PLAN"}}""")
-        assertEquals("Brave web search returned an error (HTTP 400): The option is not included in the plan.", plan)
-        assertEquals("Brave web search returned an error (HTTP 500).", LlmError.groundingMessage(500, "<html>oops</html>"))
-        assertEquals("Brave web search returned an error (HTTP 422).", LlmError.groundingMessage(422))
+        assertEquals("brave web search returned an error (http 400): The option is not included in the plan.", plan)
+        assertEquals("brave web search returned an error (http 500).", LlmError.groundingMessage(500, "<html>oops</html>"))
+        assertEquals("brave web search returned an error (http 422).", LlmError.groundingMessage(422))
     }
 
     // MARK: - groundingMessage
 
     @Test fun groundingMessage401() {
         val msg = LlmError.groundingMessage(401)
-        assertTrue(msg.contains("Brave"))
-        assertTrue(msg.contains("API key"))
+        assertTrue(msg.contains("brave"))
+        assertTrue(msg.contains("api key"))
     }
 
     @Test fun groundingMessage402() {

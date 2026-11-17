@@ -37,10 +37,18 @@ androidxTestRunner = "1.7.0"
 dcapQvl = "0.5.2"   # coordinated pin with iOS dcap-qvl-swift 0.5.2 (S1)
 kotlinxCoroutinesTest = "1.11.0"
 paparazzi = "2.0.0-alpha05"
+# test only (approved via pm, 2026-11-14): the motion check steps Compose's clock frame by frame on the JVM.
+# Pinned with every artifact it pulls in: gradle/robolectric-pins.txt, checked by :app:verifyRobolectricPins.
+robolectric = "4.18"
+# the Android runtime Robolectric 4.18 runs SDK 36 on (its DefaultSdkProvider: BAKLAVA "16", "13921718-2", i7), resolved
+# by Gradle and handed over offline, so `./gradlew test` stays offline
+robolectricAndroidAll = "16-robolectric-13921718-2-i7"
 # :macrobenchmark and the Baseline Profile plugin move together (one androidx.benchmark release train).
 benchmark = "1.5.0"
 
 [libraries]
+robolectric = { module = "org.robolectric:robolectric", version.ref = "robolectric" }
+robolectric-android-all = { module = "org.robolectric:android-all-instrumented", version.ref = "robolectricAndroidAll" }
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "coreKtx" }
 androidx-lifecycle-viewmodel-compose = { module = "androidx.lifecycle:lifecycle-viewmodel-compose", version.ref = "lifecycle" }
 androidx-lifecycle-runtime-compose = { module = "androidx.lifecycle:lifecycle-runtime-compose", version.ref = "lifecycle" }
@@ -83,6 +91,8 @@ dcap-qvl-android = { module = "com.phala:dcap-qvl-android", version.ref = "dcapQ
 androidx-benchmark-macro-junit4 = { module = "androidx.benchmark:benchmark-macro-junit4", version.ref = "benchmark" }
 androidx-test-uiautomator = { module = "androidx.test.uiautomator:uiautomator", version = "2.3.0" }
 # Installs the Baseline Profile on devices without Play's cloud profiles (sideloads, the GitHub APK). AndroidX.
+# Play In-App Review: the Play bundle only (`-Pteemoon.store=play`); the GitHub APK carries no Google Play libraries (the maintainer 2026-11-01).
+play-review = { module = "com.google.android.play:review", version = "2.0.2" }
 androidx-profileinstaller = { module = "androidx.profileinstaller:profileinstaller", version = "1.4.1" }
 androidx-metrics-performance = { module = "androidx.metrics:metrics-performance", version = "1.0.0" }
 

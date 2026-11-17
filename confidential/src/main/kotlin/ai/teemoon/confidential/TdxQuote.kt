@@ -219,6 +219,15 @@ AiEA4fQ+jnO5kDrAhLUo0uX2cp1L7wQUNBJdBAe4zJpuHgg=
  */
 data class PckCertInfo(val fmspc: String, val ca: String, val certChainPem: String) {
     companion object {
+        /**
+         * The fields a collateral URL is built from. An FMSPC that isn't 6 bytes, or a CA that isn't one of Intel's two,
+         * names collateral Intel can only 404 — which would ride the outage path. Hard: the quote's fault (iOS e406bb96).
+         */
+        fun requireCollateralFields(fmspc: String, ca: String) {
+            if (!Regex("[0-9a-fA-F]{12}").matches(fmspc)) throw CollateralException.QuoteFieldsInvalid("fmspc $fmspc")
+            if (ca != "platform" && ca != "processor") throw CollateralException.QuoteFieldsInvalid("ca $ca")
+        }
+
         private const val SGX_EXTENSION_OID = "1.2.840.113741.1.13.1"
         private const val FMSPC_OID = "1.2.840.113741.1.13.1.4"
 

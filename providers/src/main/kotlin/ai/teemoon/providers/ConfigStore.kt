@@ -455,6 +455,25 @@ class ConfigStore(
         write(snapshot.copy(servers = servers))
     }
 
+    /**
+     * A fresh `/models` answer is what each equipped model on that server can do now (iOS a851981,
+     * ProviderStore.adoptCapabilities). Equipping took a copy that nothing read again, so a model later listed with
+     * image input stayed "can't see images", and the 10-18 tools caps bug was the same freeze. A row the list leaves
+     * undescribed (null) keeps what it knew. Returns the fresh capabilities by model id, for the caller's active model.
+     */
+    fun adoptCapabilities(models: List<KnownModel>, serverID: String): Map<String, ModelCapabilities> {
+        val fresh = LinkedHashMap<String, ModelCapabilities>()
+        for (m in models) { val caps = ModelCapabilities.fromCapabilitySet(m.capabilities) ?: continue; fresh.putIfAbsent(m.id, caps) }
+        if (fresh.isEmpty()) return fresh
+        var changed = false
+        val rows = snapshot.equipped.map { row ->
+            val caps = fresh[row.modelID]
+            if (row.serverID == serverID && caps != null && row.capabilities != caps) { changed = true; row.copy(capabilities = caps) } else row
+        }
+        if (changed) write(snapshot.copy(equipped = rows))
+        return fresh
+    }
+
     /** What this model's OWN row knows (ProviderStore.capabilities(ofModel:on:)): the refill after a model move. */
     fun capabilities(serverID: String, modelID: String): ModelCapabilities? =
         snapshot.equipped.firstOrNull { it.serverID == serverID && it.modelID == modelID }?.capabilities

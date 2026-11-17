@@ -106,3 +106,15 @@ object TurnChannels {
     val ALL = listOf(WORKING, ANSWERS)
     val RETIRED = listOf("turns", "answers")
 }
+
+/**
+ * How many turns are running across the app's chats (A1, pm sweep 2026-11-06). View models are per chat, so two can
+ * answer at once; the service and its ongoing notification end with the LAST one, not the first. Main thread only, as
+ * TurnService's start/finish are.
+ */
+class TurnsInFlight {
+    private var count = 0
+    fun began() { count += 1 }
+    /** True when this was the last turn in flight. */
+    fun ended(): Boolean { count = (count - 1).coerceAtLeast(0); return count == 0 }
+}

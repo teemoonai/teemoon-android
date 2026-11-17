@@ -76,7 +76,7 @@ class ContextAndBundleBenchTest {
 
     private suspend fun turn(engine: ai.teemoon.inference.LocalEngineHandle, prompt: String, maxOut: Int): String {
         val text = StringBuilder()
-        engine.stream(LocalConversationSpec(null, emptyList(), emptyList(), prompt, maxOut, LocalDefaults.ENABLE_THINKING, LocalDefaults.TEMPERATURE)) { text.append(it) }
+        engine.stream(LocalConversationSpec(null, emptyList(), emptyList(), prompt, maxOut, LocalDefaults.ENABLE_THINKING)) { text.append(it) }
         return text.toString()
     }
 
@@ -153,11 +153,13 @@ class ContextAndBundleBenchTest {
         val label = if (requireNpu) "npu" else "gpu"
         val marker = "TMNMARK7Q4Z"
         val dispatch = File(NpuDispatch.directory(ctx.applicationInfo.nativeLibraryDir, Build.SOC_MODEL.orEmpty(), ctx.noBackupFilesDir))
-        val hashedBefore = hashed(listOf(ctx.cacheDir, dispatch))
+        val engineCache = ai.teemoon.ondevice.EngineCache.directoryFor(file.path)
+        val hashedBefore = hashed(listOf(ctx.cacheDir, dispatch, engineCache))
         val before = snapshot()
         val t0 = System.currentTimeMillis()
         val engine = factory().open(file.path, if (requireNpu) 4096 else 8192, requireNpu = requireNpu)
         log("SUMMARY gate $label load ${System.currentTimeMillis() - t0}ms backend=${engine.backend}")
+        val afterLoad = snapshot()
         var echoed = false; val kept = mutableListOf<Boolean>()
         try {
             val history = mutableListOf<Pair<ai.teemoon.inference.LocalRole, String>>()
@@ -170,7 +172,7 @@ class ContextAndBundleBenchTest {
                 history += ai.teemoon.inference.LocalRole.USER to user; history += ai.teemoon.inference.LocalRole.MODEL to reply
             }
         } finally { engine.close() }
-        val hashedAfter = hashed(listOf(ctx.cacheDir, dispatch))
+        val hashedAfter = hashed(listOf(ctx.cacheDir, dispatch, engineCache))
         for (path in (hashedBefore.keys + hashedAfter.keys).sorted()) {
             val b = hashedBefore[path]; val a = hashedAfter[path]
             log("SUMMARY gate $label runtime file $path: before ${b ?: "absent"} · after ${a ?: "absent"} · ${if (a == b) "unchanged" else "CHANGED"}")
@@ -184,10 +186,27 @@ class ContextAndBundleBenchTest {
         // The gate's verdict, not only its log line: a run that found the marker passed green until 2026-10-21 (the audit, via release).
         org.junit.Assert.assertTrue("chat text left on disk by the $label runtime: $holders", holders.isEmpty())
         // Files of 400 MB and over are too big to search, so they must not change at all (size and mtime) — the bundles
-        // above all. The one exception is the GPU runtime's weight cache (`*_mldrift_weight_cache.bin`, 782 MB), and only
-        // on a first load: absent before, created now. One that existed before must come through unchanged.
+        // above all. The one exception is LiteRT's cache (EngineCache), BY NAME, BESIDE THE MODEL, and only written by the
+        // FIRST load: absent before, present once the engine is open. Measured on the 8a (visionCacheDiskGate, 2026-10-26):
+        // the GPU's packed weights for the text model (746 MB) and the vision encoder (144 MB), their compiled programs
+        // (13 + 6 MB) and the vision adapter's XNNPack cache (4 MB); on the CPU, XNNPack's (788 MB, 3917.8, the audit's yes
+        // 2026-10-22). A cache file that appears or changes AFTER the load — mid-chat — fails, whatever its size.
+        // in snapshot()'s own key form ("<root>/<relative path>") — an absolute path matched nothing, and the first run
+        // of this rule failed the 782 MB weight cache it was written to excuse (Test Lab 8a, 2026-10-26)
+        val cacheKey = "${ctx.dataDir.name}/${engineCache.relativeTo(ctx.dataDir).path}/"
+        val bundle = Regex.escape(file.name)
+        val namedCaches = listOf("${bundle}_\\d+_\\d+_mldrift_(weight|program)_cache\\.bin", "$bundle\\.vision_encoder_\\d+_\\d+_mldrift_(weight|program)_cache\\.bin",
+            "${bundle}_\\d+_\\d+\\.vision_adapter\\.xnnpack_cache", "$bundle.*\\.xnnpack_cache").map(::Regex)
+        fun isNamed(path: String) = path.startsWith(cacheKey) && namedCaches.any { it.matches(path.substringAfterLast('/')) }
+        fun isFirstLoadCache(path: String) = isNamed(path) && before[path] == null && afterLoad[path] != null
+        // stray: an unnamed file in the cache, or a named one that neither existed before nor came from the load
+        val strayInCache = after.keys.filter { it.startsWith(cacheKey) && (!isNamed(it) || (before[it] == null && afterLoad[it] == null)) }
+        val midChat = after.keys.filter { it.startsWith(cacheKey) && afterLoad[it] != after[it] }
+        org.junit.Assert.assertTrue("no LiteRT cache beside the model after a first load — the rule above would be vacuous", after.keys.any { it.startsWith(cacheKey) })
+        org.junit.Assert.assertTrue("LiteRT cache files not named, or not from the first load: $strayInCache", strayInCache.isEmpty())
+        org.junit.Assert.assertTrue("LiteRT cache files written or changed mid-chat: $midChat", midChat.isEmpty())
         val big = (before.keys + after.keys).filter { (after[it] ?: before[it])!!.first >= 400_000_000L }
-        val bigChanged = big.filter { before[it] != after[it] && !(it.endsWith("_mldrift_weight_cache.bin") && before[it] == null) }
+        val bigChanged = big.filter { before[it] != after[it] && !isFirstLoadCache(it) }
         org.junit.Assert.assertTrue("files of 400 MB and over changed by the $label runtime: $bigChanged", bigChanged.isEmpty())
         // Asserted last, so a failing run still logs the files above. A marker the model never wrote back proves less:
         // the search would only have the prompts to find. And the gate is about the KEPT conversation: a turn that
@@ -242,7 +261,7 @@ class ContextAndBundleBenchTest {
 
     private suspend fun turn(engine: ai.teemoon.inference.LocalEngineHandle, history: List<Pair<ai.teemoon.inference.LocalRole, String>>, prompt: String): String {
         val text = StringBuilder()
-        engine.stream(LocalConversationSpec(null, history, emptyList(), prompt, 64, LocalDefaults.ENABLE_THINKING, LocalDefaults.TEMPERATURE)) { text.append(it) }
+        engine.stream(LocalConversationSpec(null, history, emptyList(), prompt, 64, LocalDefaults.ENABLE_THINKING)) { text.append(it) }
         return text.toString()
     }
 
@@ -254,7 +273,7 @@ class ContextAndBundleBenchTest {
         try {
             val stamps = mutableListOf<Pair<Long, Int>>()
             engine.stream(LocalConversationSpec(null, emptyList(), emptyList(), "Explain how a lighthouse lens works, in about 250 words of plain prose.", 512,
-                LocalDefaults.ENABLE_THINKING, LocalDefaults.TEMPERATURE)) { stamps += System.nanoTime() to it.length }
+                LocalDefaults.ENABLE_THINKING)) { stamps += System.nanoTime() to it.length }
             val gaps = stamps.zipWithNext { a, b -> (b.first - a.first) / 1e6 }.sorted(); val chars = stamps.map { it.second.toDouble() }.sorted()
             fun List<Double>.q(p: Int) = if (isEmpty()) 0.0 else this[(size * p / 100).coerceAtMost(size - 1)]
             log("SUMMARY cadence backend=${engine.backend}: ${stamps.size} deltas, ${stamps.sumOf { it.second }} chars · gap P50 ${"%.0f".format(gaps.q(50))} / P90 ${"%.0f".format(gaps.q(90))} / max ${"%.0f".format(gaps.lastOrNull() ?: 0.0)} ms · " +
@@ -274,7 +293,7 @@ class ContextAndBundleBenchTest {
         val file = BundleFetch.fetch(gemma.id, gemma.revision, gemma.fileName, gemma.sha256, storage.file(gemma), ::log)
         val engine = factory().open(file.path, 8192, requireNpu = false)
         try {
-            fun spec(text: String, thinking: Boolean, out: Int = 32) = LocalConversationSpec(null, emptyList(), emptyList(), text, out, thinking, LocalDefaults.TEMPERATURE)
+            fun spec(text: String, thinking: Boolean, out: Int = 32) = LocalConversationSpec(null, emptyList(), emptyList(), text, out, thinking)
             engine.stream(spec("Say hello in three words.", thinking = false)) {}
             val keptAfterPlain = engine.holdsConversation
             engine.stream(spec("What is 2 + 2?", thinking = true, out = 64)) {}

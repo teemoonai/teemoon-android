@@ -1,4 +1,4 @@
-// ports: teemoon/Providers/ProviderStore+Credentials.swift @ v1.0.5 (adds presetsWithoutKey)
+// ports: teemoon/Providers/ProviderStore+Credentials.swift @ v1.1.0 (adds presetsWithoutKey)
 //        teemoon/Providers/ProviderStore.swift @ v1.0.4 (endpointKey, and the key halves of connectProvider/removeProvider)
 //
 // Where a provider key lives in the Keystore, and how it is read and written.
@@ -52,7 +52,7 @@ class ProviderCredentials(
         val legacyAccount = provider.id
         val legacy = keystore.load(legacyAccount)?.takeIf { it.isNotEmpty() } ?: return ""
         try {
-            keystore.save(legacy, account)
+            keystore.save(legacy, account); keysChanged()
             runCatching { keystore.delete(legacyAccount) }
             log("[providers] moved a key to its endpoint account")
         } catch (e: Exception) {
@@ -71,7 +71,10 @@ class ProviderCredentials(
      * nothing stored goes out with no auth header, and the server's reply is a validation error naming a header the
      * user never heard of (Brave: HTTP 422 "Field required").
      */
-    fun hasCredential(provider: Provider): Boolean = !provider.requiresAPIKey || credential(provider).isNotBlank()
+    fun hasCredential(provider: Provider): Boolean = !provider.requiresAPIKey || facts(provider).byID
+    // The sealed yes/no ([facts]), not the key: the composer's gate asks this on every return to the chat, and opening the
+    // key there was a Keystore round trip a time (Perfetto, the maintainer's Pixel 2026-11-11). Every key write here
+    // clears the facts, so the gate and the send's own read of the key still agree.
 
     /**
      * The key already saved for whichever configured provider points at this
@@ -109,6 +112,39 @@ class ProviderCredentials(
      * keeps the last saved list — one that is merely STALE — or, for a keyed
      * catalogue, files it under the wrong account's scope.
      */
+    /**
+     * What drawing needs to know about a provider's key — never the key (the maintainer's Pixel, 2026-11-11: Perfetto put
+     * 213 main-thread binder calls to keystore2 in 9 s of the image flow, the where sheet reading every provider's key as
+     * it drew, ~17 ms + ~6 ms each). [byID]: [credential] has one; [forBrowsing]: [browseCredential] has one; [browseScope]:
+     * the saved list that key opens (LiveCatalogStore's salted hash). Kept as KeyPresence keeps the Brave key's (2026-11-07):
+     * a yes/no and a hash, read once per provider, moved by any save or delete here. Requests still open the key itself.
+     */
+    data class KeyFacts(val byID: Boolean, val forBrowsing: Boolean, val browseScope: LiveCatalogStore.KeyScope?)
+
+    /** LiveCatalogStore.scopeOf, set by the app; null leaves [KeyFacts.browseScope] null. */
+    @Volatile var scopeOf: ((String) -> LiveCatalogStore.KeyScope)? = null
+    private val facts = HashMap<String, KeyFacts>()
+    private var writes = 0 // under facts' lock: a read that saw a write land mid-way is not kept
+
+    fun facts(provider: Provider): KeyFacts {
+        val at = provider.id + "|" + provider.endpoint + "|" + provider.requiresAPIKey
+        val before = synchronized(facts) { facts[at]?.let { return it }; writes }
+        val browse = browseCredential(provider)
+        val read = KeyFacts(credential(provider).isNotEmpty(), browse.isNotEmpty(), scopeOf?.invoke(browse))
+        synchronized(facts) { if (writes == before) facts[at] = read }
+        return read
+    }
+
+    /**
+     * Fills [facts] off the main thread at launch, so the first where open draws without the Keystore (the maintainer's
+     * Pixel, 2026-11-12: after the facts landed, the one long frame left was that open, 162 ms, filling them). The facts
+     * only: no key outlives the read.
+     */
+    fun warm(providers: List<Provider>) { for (p in providers) facts(p) }
+
+    /** Any key written or removed: what drawing knew is read again. */
+    private fun keysChanged() = synchronized(facts) { writes++; facts.clear() }
+
     fun browseCredential(provider: Provider): String {
         val byID = credential(provider).trim()
         if (byID.isNotEmpty()) return byID
@@ -128,7 +164,9 @@ class ProviderCredentials(
     }
 
     /** The endpoint-keyed write. [legacyID] is cleared alongside, so a record that still had an id copy doesn't keep answering with a key the user just removed. */
-    fun setCredential(apiKey: String, endpoint: String?, legacyID: String?) {
+    fun setCredential(apiKey: String, endpoint: String?, legacyID: String?) = try { writeCredential(apiKey, endpoint, legacyID) } finally { keysChanged() }
+
+    private fun writeCredential(apiKey: String, endpoint: String?, legacyID: String?) {
         val trimmed = apiKey.trim()
         val account = endpoint?.let { ProviderAccounts.keyAccount(it) }
         if (trimmed.isEmpty()) {
@@ -151,5 +189,6 @@ class ProviderCredentials(
     fun removeSecrets(provider: Provider) {
         ProviderAccounts.keyAccount(provider)?.let { runCatching { keystore.delete(it) } }
         runCatching { keystore.delete(provider.id) }
+        keysChanged()
     }
 }

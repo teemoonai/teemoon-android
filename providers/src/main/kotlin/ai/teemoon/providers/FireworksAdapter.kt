@@ -1,10 +1,17 @@
 // ports: teemoon/Providers/Adapters/FireworksAdapter.swift @ v1.0.4 (buildModels, listModels,
 //        control-plane paging, generic-probe fallback)
-// ports: teemoon/Providers/Provider+Presets.swift @ cddc5e6 (fireworksPrices — iOS release-1.0.6's table: 54617ce's
+// ports: teemoon/Providers/Provider+Presets.swift @ 5b40a389 (fireworksPrices — iOS release-1.0.6's table: 54617ce's
 //        serverless refresh, cddc5e6's 1.0.6 prices)
 package ai.teemoon.providers
 
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.Json
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import java.net.URI
@@ -212,13 +219,13 @@ object FireworksAdapter {
         return runCatching { Instant.parse(s).toEpochMilli() }.getOrNull()
     }
 
-    // Seven rows left serverless 2026-10-15 and are not here (iOS 54617ce): deepseek-v4-flash-0731,
+    // Fireworks deprecated inkling, nemotron-lightning-3p5-30b-a3b, nemotron-3-ultra-nvfp4 and gpt-oss-120b on 2026-11-07
+    // (iOS 5b40a389). Seven rows left serverless 2026-10-15 and are not here (iOS 54617ce): deepseek-v4-flash-0731,
     // deepseek-v4-flash-vision-exp, deepseek-v4-pro-0813, glm-5p2, kimi-k2p6, kimi-k2p7-code, muse-glimmer-30b. A model
     // with no row lists blank rather than borrowing a twin's number.
     val fireworksPrices = mapOf(
         "accounts/fireworks/models/kimi-k3" to "$3.00/$15.00",
         "accounts/fireworks/models/ember-1" to "$3.00/$15.00",   // live and priced on the page since iOS's table was cut (2026-10-02)
-        "accounts/fireworks/models/inkling" to "$1.00/$4.05",
         "accounts/fireworks/models/deepseek-v4p1-flash" to "$0.30/$1.20",   // docs.fireworks.ai/serverless/pricing, 2026-10-02 (was $0.22/$0.66)
         "accounts/fireworks/models/deepseek-v4p1-flash-1017" to "$0.30/$1.20",   // iOS cddc5e6 (1.0.6 price refresh)
         "accounts/fireworks/models/muse-spark-open" to "$1.25/$4.25",            // iOS cddc5e6
@@ -226,9 +233,8 @@ object FireworksAdapter {
         "accounts/fireworks/models/glm-5p3-flash" to "$0.15/$0.50",
         "accounts/fireworks/models/qwen3p8-max" to "$2.00/$6.00",
         "accounts/fireworks/models/minimax-m3" to "$0.30/$1.20",
-        "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b" to "$0.05/$0.20",
-        "accounts/fireworks/models/nemotron-3-ultra-nvfp4" to "$0.60/$2.40",
-        "accounts/fireworks/models/gpt-oss-120b" to "$0.15/$0.60",
+        "accounts/fireworks/models/minimax-m3p1-flash" to "$0.15/$0.60",   // iOS 5b40a389 (1.1.0 price refresh)
+        "accounts/fireworks/models/kimi-k3p1-pro" to "$2.00/$10.00",          // iOS 5b40a389
     )
 
     @Serializable
@@ -245,7 +251,10 @@ object FireworksAdapter {
             val createTime: String? = null,
             val kind: String? = null,
             val state: String? = null,
-            val deprecationDate: String? = null,
+            // A string until 2026-10; since then a google.type.Date object, {"year":2026,"month":11,"day":7}. Typed as a
+            // String, ONE such row failed the whole list's decode — BAD_RESPONSE, then the generic /models probe, whose
+            // rows carry no capabilities — so no Fireworks model could take images (the maintainer's Pixel, 2026-10-28).
+            @SerialName("deprecationDate") val deprecationDateRaw: JsonElement? = null,
             val contextLength: Int? = null,
             val supportsServerless: Boolean? = null,
             val supportsTools: Boolean? = null,
@@ -256,6 +265,18 @@ object FireworksAdapter {
         ) {
             @Serializable
             data class BaseModelDetails(val parameterCount: String? = null)
+
+            /** Either spelling, as the date string [KnownModel.deprecationDate] reads; null only when absent. */
+            val deprecationDate: String? get() = when (val d = deprecationDateRaw) {
+                null, JsonNull -> null
+                is JsonPrimitive -> d.contentOrNull
+                is JsonObject -> {
+                    val y = (d["year"] as? JsonPrimitive)?.intOrNull; val m = (d["month"] as? JsonPrimitive)?.intOrNull; val day = (d["day"] as? JsonPrimitive)?.intOrNull
+                    // An object that names no full date still says "deprecated": keep it non-null so the row stays out.
+                    if (y != null && m != null && day != null) "%04d-%02d-%02d".format(y, m, day) else d.toString()
+                }
+                else -> d.toString()
+            }
 
             private val nonChatKinds = setOf(
                 "EMBEDDING_MODEL", "FLUMINA_BASE_MODEL", "FLUMINA_ADDON",

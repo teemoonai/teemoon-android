@@ -7,6 +7,8 @@ import app.cash.paparazzi.DeviceConfig
 import app.cash.paparazzi.Paparazzi
 import androidx.compose.foundation.layout.padding
 import androidx.compose.ui.unit.dp
+import org.junit.After
+import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
 import ai.teemoon.providers.WhereLocality
@@ -21,6 +23,9 @@ import androidx.compose.ui.Modifier
  */
 class WhereSheetPhoneWidthSnapshotTest {
     @get:Rule val paparazzi = Paparazzi(deviceConfig = DeviceConfig.PIXEL_5.copy(screenWidth = 1080, screenHeight = 1400, density = com.android.resources.Density.create(420)))
+    // near.ai drawn with its tier list loaded, as recorded (see DesignSnapshotTest: the flag is process-wide)
+    @Before fun tierListSeen() { ai.teemoon.providers.NearAIModelCatalog.tierListSeenOverride = true }
+    @After fun tierListFollows() { ai.teemoon.providers.NearAIModelCatalog.tierListSeenOverride = null }
 
     /** WhereChip.swift's three equipped states: place; "downloading 61%" in the place's slot; "not downloaded" in red. */
     @Test fun whereChip_states_phoneWidth() {

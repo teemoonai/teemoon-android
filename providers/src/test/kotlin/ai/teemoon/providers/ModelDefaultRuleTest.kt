@@ -1,4 +1,4 @@
-// ports: teemoonTests/ModelDefaultRuleTests.swift @ v1.0.5
+// ports: teemoonTests/ModelDefaultRuleTests.swift @ v1.0.6
 package ai.teemoon.providers
 
 import org.junit.Assert.assertEquals

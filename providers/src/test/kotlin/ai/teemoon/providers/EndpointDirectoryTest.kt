@@ -2,6 +2,7 @@
 //        failure-remembered suites; the URLProtocol stub is a fetch lambda here)
 package ai.teemoon.providers
 
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -153,6 +154,23 @@ class EndpointDirectoryTest {
         nowMs = 61_000
         dir.directBase("own/two")
         assertEquals(2, requests)
+    }
+
+    /**
+     * A cancel is not a failure (pm ios-state-machines, Tier 3: iOS's cancelled fetch starts the minute's backoff). A
+     * fetch whose caller went away is asked again by the next caller, not refused for sixty seconds.
+     */
+    @Test fun aCancelledFetchIsNotRememberedAsAFailure() = runTest {
+        var requests = 0
+        val hang = kotlinx.coroutines.CompletableDeferred<Pair<Int, ByteArray>?>()
+        val dir = EndpointDirectory(fetch = { requests += 1; if (requests == 1) hang.await() else 200 to SNAPSHOT.toByteArray() },
+            store = MemoryStore(null), clockMs = { 0L })
+        val first = launch { dir.directBase("zai-org/glm-5.1-fp8") }
+        kotlinx.coroutines.yield()
+        first.cancel(); first.join()
+        assertEquals("https://glm-5-1.completions.near.ai/v1", dir.directBase("zai-org/glm-5.1-fp8"))
+        assertEquals(2, requests)
+        EndpointDirectory.resetPersisted()
     }
 
     // MARK: - The synchronous last-good copy

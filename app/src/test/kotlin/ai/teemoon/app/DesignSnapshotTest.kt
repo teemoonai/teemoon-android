@@ -22,6 +22,10 @@ class DesignSnapshotTest {
     private var savedZone: TimeZone? = null
     @Before fun pinZone() { savedZone = TimeZone.getDefault(); TimeZone.setDefault(TimeZone.getTimeZone("Pacific/Honolulu")) }
     @After fun restoreZone() { savedZone?.let { TimeZone.setDefault(it) } }
+    // near.ai drawn with its tier list loaded, as recorded: the flag behind it is process-wide, and these goldens passed
+    // or failed by whether an earlier suite in the same JVM had recorded tiers (2026-11-01).
+    @Before fun tierListSeen() { ai.teemoon.providers.NearAIModelCatalog.tierListSeenOverride = true }
+    @After fun tierListFollows() { ai.teemoon.providers.NearAIModelCatalog.tierListSeenOverride = null }
     private val threads = listOf(
         ThreadEntity("t1", "what is a trusted execution environment?", now - 60_000),
         ThreadEntity("t2", "compare glm5.1 and qwen3.5 122b", now - 3_600_000),
@@ -31,7 +35,7 @@ class DesignSnapshotTest {
     private val previews = mapOf("t1" to "Exactly. Your input goes in, the model runs inside the enclave.", "t2" to "This is a mock response.", "t3" to "This is a mock response.", "t4" to "This is a mock response.")
 
     private fun chatVm(): ChatViewModel {
-        val p = Provider(id = "n", name = "near.ai", endpoint = "https://cloud-api.near.ai/v1/chat/completions", model = "glm-5.2")
+        val p = Provider(id = "n", name = "near.ai", endpoint = "https://cloud-api.near.ai/v1/chat/completions", model = "z-ai/glm-5.2")
         val vm = ChatViewModel(provider = { p })
         vm.restore(listOf(
             MessageEntity("m1", "t1", "user", "what is a trusted execution environment?", now - 60_000),
@@ -46,14 +50,28 @@ class DesignSnapshotTest {
         paparazzi.snapshot { TeemoonTheme { ThreadsScreen(threads = threads, onOpen = {}, onNew = {}, onClose = {}, previews = previews, nowMs = { now }) } }
     }
 
+    /**
+     * chat-search-titles (2026-11-06): an imported chat is found by its near.ai title, which no message of it contains,
+     * listed first with the title marked; then the index's message hit with its snippet.
+     */
+    @Test fun chatsList_searchMatchesATitle() {
+        val imported = ThreadEntity("imp", "Montréal trip notes from near.ai", now - 200_000_000)
+        val hit = ai.teemoon.chat.search.ChatSearchResult("m3", "t3", "user", now - 86_400_000, "flights to \u0001montreal\u0002 in may?")
+        paparazzi.snapshot { TeemoonTheme { ThreadsScreen(threads = threads + imported, onOpen = {}, onNew = {}, onClose = {}, previews = previews,
+            initialQuery = "montreal", onSearch = { listOf(hit) }, nowMs = { now }) } }
+    }
+
     /** The default theme IS dark: no `dark =` here, so this snapshot fails if the pin (Theme.kt) ever follows the system again. */
     @Test fun chat_transcript_dark() {
-        paparazzi.snapshot { TeemoonTheme { ChatScreen(focusOnEmpty = false, vm = chatVm(), title = "glm-5.2 · near.ai", hasProvider = true, onOpenSettings = {}, webSearchState = WebSearchChipState.OFF) } }
+        paparazzi.snapshot { TeemoonTheme { ChatScreen(focusOnEmpty = false, vm = chatVm(), title = "glm-5.2 · near.ai", hasProvider = true, onOpenSettings = {}, webSearchState = WebSearchChipState.OFF,
+            // the chip as the app sets it for that place (pm on the card: "choose where" under a glm-5.2 header was the
+            // fixture's), and the "+" as the app always has it
+            whereModel = "glm-5.2", wherePlace = "near.ai", whereLocality = ai.teemoon.providers.WhereLocality.CLOUD, onOpenWhere = {}, pickImages = { _, _ -> emptyList() }) } }
     }
 
     @Test fun whereSheet_dark() {
         val home = Provider(id = "h", name = "second mac", endpoint = "http://10.0.2.2:11434/v1", model = "qwen3:14b", requiresAPIKey = false)
-        val cloud = Provider(id = "n", name = "near.ai", endpoint = "https://cloud-api.near.ai/v1/chat/completions", model = "glm-5.2")
+        val cloud = Provider(id = "n", name = "near.ai", endpoint = "https://cloud-api.near.ai/v1/chat/completions", model = "z-ai/glm-5.2")
         paparazzi.snapshot { TeemoonTheme(dark = true) {
             WhereSheet(providers = listOf(home, cloud), selectedId = "n", problem = null, onSelect = {}, onBack = {}, hasKey = { it.id == "n" })
         } }

@@ -40,6 +40,59 @@ class LiveCatalogStoreTest {
     private val openRouter get() = Provider.openRouter
     private val fireworks get() = Provider.fireworks
 
+    /** Rewrites every saved list as 1.0.6 wrote it (version 1). */
+    private fun markSavedAsVersionOne(dir: java.io.File) {
+        for (f in dir.walkTopDown().filter { it.extension == "json" })
+            f.writeText(f.readText().replace("\"version\":${LiveCatalogStore.CURRENT_VERSION}", "\"version\":1"))
+    }
+
+    /** iOS 96becff: 1.0.6 saved Fireworks' capability-less fallback list; a version-1 Fireworks list is dropped once and refetched. */
+    @Test fun aFireworksListSavedByOneZeroSixIsNotServed() {
+        val dir = tmp.newFolder()
+        LiveCatalogStore(dir).record(rows(listOf("accounts/fireworks/models/glm-5p3-flash")), fireworks, "fw-key")
+        markSavedAsVersionOne(dir)
+        assertNull(LiveCatalogStore(dir).count(fireworks, "fw-key"))
+    }
+
+    /** Only Fireworks: every other version-1 list is still served. */
+    @Test fun otherListsSavedByOneZeroSixAreKept() {
+        val dir = tmp.newFolder()
+        LiveCatalogStore(dir).record(rows(listOf("a/one", "a/two")), openRouter, "")
+        markSavedAsVersionOne(dir)
+        assertEquals(2, LiveCatalogStore(dir).count(openRouter, ""))
+    }
+
+    /**
+     * The reason near.ai's list is never dropped: its saved tiers. A third-party model in an own-fleet namespace reads as
+     * own fleet from the id guess alone; on a cold launch after the bump, the saved tier must still say third party.
+     */
+    @Test fun nearAITiersSavedByOneZeroSixSurviveTheBump() {
+        val id = "z-ai/glm-test-hosted-elsewhere"
+        assertEquals(NearAIModelCatalog.Confidentiality.TEE_OWN, NearAIModelCatalog.classify(id))   // the window, if the list went
+        NearAIModelCatalog.recordTiers(mapOf(id to NearAIModelCatalog.Confidentiality.TEE_THIRD_PARTY))
+        val dir = tmp.newFolder()
+        LiveCatalogStore(dir).record(rows(listOf(id)), Provider.nearAI, "near-key")
+        markSavedAsVersionOne(dir)
+        NearAIModelCatalog.resetTierCache()   // a cold launch
+        LiveCatalogStore(dir).seedNearAITiers()
+        assertEquals(NearAIModelCatalog.Confidentiality.TEE_THIRD_PARTY, NearAIModelCatalog.confidentiality(id))
+    }
+
+    /**
+     * The maintainer's Pixel, 2026-11-11 ("around 600ms lag on every click", new in 1.1): allModels — reached from the
+     * chat's composition through AppState.canSeeImages — listed the directory and read and decoded EVERY saved list on
+     * every call, keeping nothing it read. The directory is read once per store; what this store records later it holds
+     * in memory as it writes. A list another store writes afterwards is therefore not read — the app has one store.
+     */
+    @Test fun aStoreReadsTheDirectoryOnce() {
+        val dir = tmp.newFolder()
+        LiveCatalogStore(dir).record(rows(listOf("a/one", "a/two")), openRouter, "")
+        val reader = LiveCatalogStore(dir)
+        assertEquals(2, reader.allModels(openRouter.endpoint).size)
+        LiveCatalogStore(dir).record(rows(listOf("accounts/fireworks/models/glm-5p3")), Provider.fireworks, "fw-key")
+        assertEquals("read again after its first scan", 0, reader.allModels(Provider.fireworks.endpoint).size)
+    }
+
     @Test fun aSavedListSurvivesANewStore() {
         val dir = tmp.newFolder()
         LiveCatalogStore(dir).record(rows(listOf("a/one", "a/two")), openRouter, "")
@@ -154,8 +207,8 @@ class LiveCatalogStoreTest {
         NearAIModelCatalog.recordTiers(mapOf("moonshotai/kimi-k9" to NearAIModelCatalog.Confidentiality.TEE_THIRD_PARTY))
         LiveCatalogStore(dir).record(rows(listOf("moonshotai/kimi-k9")), Provider.nearAI, "")
         NearAIModelCatalog.resetTierCache()
-        assertEquals("without the saved tier the guess answers own-fleet",
-            NearAIModelCatalog.Confidentiality.TEE_OWN, NearAIModelCatalog.confidentiality("moonshotai/kimi-k9"))
+        assertEquals("without the saved tier the guess answers unknown, never own fleet (iOS 9862a35)",
+            NearAIModelCatalog.Confidentiality.UNKNOWN, NearAIModelCatalog.confidentiality("moonshotai/kimi-k9"))
 
         LiveCatalogStore(dir).seedNearAITiers()
         assertEquals(NearAIModelCatalog.Confidentiality.TEE_THIRD_PARTY,
@@ -312,5 +365,18 @@ class LiveCatalogStoreTest {
             scope = "key-" + LiveCatalogStore.hex("sk-old").take(16), fetchedAtMs = 0, models = emptyList())))
         LiveCatalogStore(dir)
         assertFalse("the key-derived list outlived the upgrade", old.exists())
+    }
+
+    /**
+     * pm sweep 2026-11-06 (Android-only): a list that throws (not a cancel) left its in-flight entry behind, so every
+     * later refresh of that server awaited a fetch that would never finish. A throw ends the fetch like a failure.
+     */
+    @Test fun aListThatThrowsDoesNotWedgeTheNextRefresh() = runTest {
+        val s = store()
+        s.list = { _, _, _, _ -> error("parser bug") }
+        assertNull(runCatching { s.refresh(fireworks, "fw-key", maxAgeMs = 0) }.getOrNull())
+        s.list = { _, _, _, _ -> connected("accounts/fireworks/models/glm-5p3-flash") }
+        val next = kotlinx.coroutines.withTimeoutOrNull(5_000) { s.refresh(fireworks, "fw-key", maxAgeMs = 0) }
+        assertEquals(1, next?.size)
     }
 }

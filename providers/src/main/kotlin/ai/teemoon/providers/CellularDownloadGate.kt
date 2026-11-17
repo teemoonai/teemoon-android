@@ -60,9 +60,9 @@ object CellularDownloadGate {
 
     fun message(reason: Reason, model: LocalModel): String = when (reason) {
         Reason.MOBILE_DATA ->
-            "${model.displayName} is a ${model.sizeLabel} download. It can wait until you're on wi-fi."
+            "${model.displayName} is a ${model.sizeLabel} download. it can wait until you're on wi-fi."
         Reason.LOW_DATA_MODE ->
-            "${model.displayName} is a ${model.sizeLabel} download. It can wait until you're on an unrestricted connection."
+            "${model.displayName} is a ${model.sizeLabel} download. it can wait until you're on an unrestricted connection."
     }
 }
 

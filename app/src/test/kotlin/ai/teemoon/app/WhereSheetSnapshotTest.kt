@@ -11,6 +11,7 @@ import ai.teemoon.providers.WhereRecentEntry
 import androidx.compose.material3.Surface
 import app.cash.paparazzi.DeviceConfig
 import app.cash.paparazzi.Paparazzi
+import org.junit.After
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -22,7 +23,12 @@ class WhereSheetSnapshotTest {
     @Before fun offline() {
         NearAIModelCatalog.resetTierCache()
         NearAIModelCatalog.endpointDirectory = EndpointDirectory(fetch = { null })
+        // near.ai's tier list seen, as on a phone that loaded it: whether glm-5.3-flash reads "end-to-end encrypted"
+        // otherwise depended on which tests ran first, and record and verify ran them differently (S44, 2026-11-11)
+        NearAIModelCatalog.tierListSeenOverride = true
     }
+
+    @After fun forgetTierList() { NearAIModelCatalog.tierListSeenOverride = null }
 
     private val mac = Provider(id = "mac", name = "second mac", endpoint = "http://100.100.0.12:11434/v1", model = "gemma4:e2b", requiresAPIKey = false, equippedModels = listOf("qwen3:14b", "gemma4:e2b"))
     private val near = Provider.nearAI.copy(id = "near", equippedModels = listOf(Provider.nearAI.model))
@@ -39,6 +45,44 @@ class WhereSheetSnapshotTest {
                 onRefreshHome = {},
             )
         } } }
+    }
+
+    /**
+     * IMAGES.md §4e (S44): "reads images" on, as the can't-see routes open the sheet — the count reads "1 of 3", the
+     * control is tinted, the mac's text-only model and the recent that can't see are gone, near.ai's row reads "18 of 42"
+     * from its saved list, and brave answers hides.
+     */
+    @Test fun whereSheet_showOnlyReadsImages() {
+        paparazzi.snapshot { TeemoonTheme { Surface {
+            WhereSheet(
+                providers = providers, selectedId = "near", problem = null, onSelect = {}, onBack = {},
+                hasKey = { it.id == "near" }, readsImages = { it.model == "gemma4:e2b" },
+                recents = listOf(WhereRecentEntry(mac.copy(model = "qwen3:14b"), 0L)),
+                policyFor = { f -> WhereGetPolicy(f, providers, true, home, { if (it.id == "near") "k" else "" }, { "" }) },
+                listCount = { p, f -> if (p.id == "near") (if (f.isEmpty()) 42 else 18) else null },
+                initialShowOnly = setOf(ai.teemoon.providers.ModelBrowserQuery.Filter.VISION),
+                onRefreshHome = {},
+            )
+        } } }
+    }
+
+    /**
+     * A near.ai model that isn't end-to-end encrypted (proxied) is an ordinary choice: its caption is muted like every
+     * other non-E2EE place, not orange (review item where-near-unencrypted-muted, the maintainer 2026-11-07).
+     */
+    @Test fun whereSheet_nearProxiedModelIsMuted() {
+        val proxied = near.copy(model = "anthropic/claude-opus-4-6", equippedModels = listOf("anthropic/claude-opus-4-6"))
+        val ps = listOf(mac, proxied)
+        // near.ai's tier list seen, as on a phone that loaded it: the get row's e2ee tag otherwise depended on test order
+        NearAIModelCatalog.tierListSeenOverride = true
+        try { paparazzi.snapshot { TeemoonTheme { Surface {
+            WhereSheet(
+                providers = ps, selectedId = "near", problem = null, onSelect = {}, onBack = {},
+                hasKey = { it.id == "near" }, recents = emptyList(),
+                policyFor = { f -> WhereGetPolicy(f, ps, true, home, { if (it.id == "near") "k" else "" }, { "" }) },
+                onRefreshHome = {},
+            )
+        } } } } finally { NearAIModelCatalog.tierListSeenOverride = null }
     }
 
     /** The Tensor file landing over the general place: the row is the file's name, the right side just the number. */

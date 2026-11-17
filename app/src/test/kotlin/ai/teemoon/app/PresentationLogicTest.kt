@@ -1,7 +1,7 @@
 // ports: teemoonTests/DebugCopyRedactionTests.swift @ v1.0.1 (7 of 9 — the two card-copy tests need the iOS debug views),
 //        teemoonTests/MarkdownStreamSplitterTests.swift @ v1.0.1 (both suites, 19), teemoonTests/TranscriptViewportTests.swift @ v1.0.1 (16),
 //        teemoonTests/TranscriptApplyPolicyTests.swift @ v1.0.1 (8), teemoonTests/FreshStartTests.swift @ v1.0.1 (7),
-//        teemoonTests/FollowGlideTests.swift @ v1.0.1 (3) + android-only: AppSettings migration and the grounding rule.
+//        teemoonTests/FollowGlideTests.swift @ 5d37f9c2 (4) + android-only: AppSettings migration and the grounding rule.
 package ai.teemoon.app
 
 import org.junit.Assert.assertEquals
@@ -157,6 +157,8 @@ class TranscriptTest {
 
     // Follow glide
     @Test fun aWrapSizedDeltaStartsAGlide_settleDoesNot() { assertTrue(FollowGlide.shouldStart(23.0, PinMode.THROTTLED)); assertFalse(FollowGlide.shouldStart(23.0, PinMode.IMMEDIATE)); assertFalse(FollowGlide.shouldStart(23.0, PinMode.OFF)); assertFalse(FollowGlide.shouldStart(4.0, PinMode.THROTTLED)) }
+    /** FollowGlideTests.aReserveSizedDeltaIsAJump_aWrapBurstIsNot @ 5d37f9c2. */
+    @Test fun aReserveSizedDeltaIsAJump_aWrapBurstIsNot() { assertTrue(FollowGlide.isJump(475.0)); assertFalse(FollowGlide.isJump(46.0)); assertFalse(FollowGlide.isJump(23.0)) }
     @Test fun midGlideNoiseDoesNotRetarget_aBurstDoes() { assertFalse(FollowGlide.shouldRetarget(23.0)); assertTrue(FollowGlide.shouldRetarget(46.0)) }
     @Test fun aWrapIsMidTravelAtHalfwayAndLandedAtTheDuration() {
         val g = FollowGlide(100.0, 123.0, 1000.0, FollowGlide.FOLLOW_GLIDE_DURATION)
@@ -181,7 +183,7 @@ class AppSettingsTest {
     @Test fun groundingNeedsTheToggleAndAKey() {
         val s = AppSettings(InMemoryPrefs())
         assertNull(s.groundingAPIKey("brave-key")); s.braveGroundingEnabled = true; assertEquals("brave-key", s.groundingAPIKey(" brave-key ")); assertNull(s.groundingAPIKey("  ")); assertNull(s.groundingAPIKey(null))
-        s.appFontSize = AppFontSize.LARGE; assertEquals(AppFontSize.LARGE, AppSettings(InMemoryPrefs().also { it.putString(UserDefaultsKey.APP_FONT_SIZE, "large") }).appFontSize)
+        s.appFontSize = AppFontSize.XLARGE; assertEquals(AppFontSize.SYSTEM, AppSettings(InMemoryPrefs().also { it.putString(UserDefaultsKey.APP_FONT_SIZE, "large") }).appFontSize)
     }
 
     /**

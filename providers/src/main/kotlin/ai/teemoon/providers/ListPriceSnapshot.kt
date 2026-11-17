@@ -1,4 +1,4 @@
-// ports: teemoon/Providers/ListPriceSnapshot.swift @ 4e74360
+// ports: teemoon/Providers/ListPriceSnapshot.swift @ 5b40a389
 //
 // GENERATED, and NOT BY HAND. Regenerate by re-reading the Swift table:
 //   git -C ../teemoon-ios show <sha>:teemoon/Providers/ListPriceSnapshot.swift
@@ -26,7 +26,7 @@ package ai.teemoon.providers
  */
 object ListPriceSnapshot {
 
-    const val SNAPSHOT_DATE = "2026-10-22"
+    const val SNAPSHOT_DATE = "2026-11-14"
 
     /** Vendor host → the namespace its ids live under below. */
     val hosts: Map<String, String> = mapOf(
@@ -41,6 +41,7 @@ object ListPriceSnapshot {
     val prices: Map<String, Pair<Double, Double>> = mapOf(
         "anthropic/claude-fable-5" to (10.0 to 50.0),
         "anthropic/claude-fable-5.1" to (10.0 to 50.0),
+        "anthropic/claude-fable-5.2" to (8.0 to 40.0),
         "anthropic/claude-haiku-4.5" to (1.0 to 5.0),
         "anthropic/claude-haiku-5.5" to (0.1 to 0.5),
         "anthropic/claude-opus-4.1" to (15.0 to 75.0),
@@ -57,17 +58,17 @@ object ListPriceSnapshot {
         "deepseek/deepseek-chat" to (0.26 to 1.03),
         "deepseek/deepseek-chat-v3-0324" to (0.29 to 1.14),
         "deepseek/deepseek-chat-v3.1" to (0.25 to 0.95),
-        "deepseek/deepseek-r1-0528" to (0.5 to 2.15),
+        "deepseek/deepseek-r1-0528" to (0.57 to 2.29),
         "deepseek/deepseek-v3.1-terminus" to (0.27 to 1.0),
-        "deepseek/deepseek-v3.2" to (0.28 to 0.42),
+        "deepseek/deepseek-v3.2" to (0.26 to 0.38),
         "deepseek/deepseek-v3.2-exp" to (0.27 to 0.41),
         "deepseek/deepseek-v4-flash" to (0.09 to 0.18),
-        "deepseek/deepseek-v4-flash-0731" to (0.44 to 1.32),
-        "deepseek/deepseek-v4-flash-vision-exp" to (0.22 to 0.65),
-        "deepseek/deepseek-v4-pro" to (0.96 to 1.91),
-        "deepseek/deepseek-v4-pro-0813" to (1.32 to 3.96),
-        "deepseek/deepseek-v4.1-flash" to (0.3 to 1.2),
-        "deepseek/deepseek-v4.1-flash-1017" to (0.3 to 1.2),
+        "deepseek/deepseek-v4-flash-0731" to (0.06 to 0.18),
+        "deepseek/deepseek-v4-flash-vision-exp" to (0.44 to 1.32),
+        "deepseek/deepseek-v4-pro" to (0.9 to 1.5),
+        "deepseek/deepseek-v4-pro-0813" to (0.11 to 4.44),
+        "deepseek/deepseek-v4.1-flash" to (0.05 to 0.2),
+        "deepseek/deepseek-v4.1-flash-1017" to (0.04 to 0.5),
         "google/gemini-2.5-flash" to (0.3 to 2.5),
         "google/gemini-2.5-flash-image" to (0.3 to 2.5),
         "google/gemini-2.5-flash-lite" to (0.1 to 0.4),
@@ -89,12 +90,16 @@ object ListPriceSnapshot {
         "google/gemini-3.7-flash" to (0.75 to 3.75),
         "google/gemini-3.8-flash" to (0.83 to 4.13),
         "google/gemini-4-argon" to (2.0 to 10.0),
+        "google/gemini-4-carbon" to (2.0 to 10.0),
+        "google/gemini-4-hydrogen" to (1.5 to 7.5),
         "google/gemini-nano-banana-2.1" to (1.5 to 7.5),
+        "google/gemini-omni-1.1-flash" to (1.5 to 9.0),
+        "google/gemini-omni-1.2-flash" to (1.5 to 9.0),
         "google/gemma-2-27b-it" to (0.65 to 0.65),
         "google/gemma-3-12b-it" to (0.05 to 0.15),
         "google/gemma-3-27b-it" to (0.08 to 0.35),
-        "google/gemma-3-4b-it" to (0.04 to 0.05),
-        "google/gemma-4-26b-a4b-it" to (0.09 to 0.3),
+        "google/gemma-3-4b-it" to (0.05 to 0.1),
+        "google/gemma-4-26b-a4b-it" to (0.07 to 0.23),
         "google/gemma-4-31b-it" to (0.2 to 0.4),
         "mistralai/codestral-2508" to (0.3 to 0.9),
         "mistralai/devstral-2512" to (0.4 to 2.0),
@@ -104,7 +109,7 @@ object ListPriceSnapshot {
         "mistralai/mistral-large" to (2.0 to 6.0),
         "mistralai/mistral-large-2407" to (2.0 to 6.0),
         "mistralai/mistral-large-2512" to (0.5 to 1.5),
-        "mistralai/mistral-large-4-0" to (1.36 to 4.18),
+        "mistralai/mistral-large-4-0" to (0.7 to 2.1),
         "mistralai/mistral-medium-3" to (0.4 to 2.0),
         "mistralai/mistral-medium-3-5" to (1.5 to 7.5),
         "mistralai/mistral-medium-3.1" to (0.4 to 2.0),
@@ -113,15 +118,12 @@ object ListPriceSnapshot {
         "mistralai/mistral-small-24b-instruct-2501" to (0.05 to 0.08),
         "mistralai/mistral-small-2603" to (0.15 to 0.6),
         "mistralai/mistral-small-3.1-24b-instruct" to (0.35 to 0.56),
-        "mistralai/mistral-small-3.2-24b-instruct" to (0.09 to 0.25),
+        "mistralai/mistral-small-3.2-24b-instruct" to (0.1 to 0.3),
         "mistralai/mixtral-8x22b-instruct" to (2.0 to 6.0),
         "mistralai/voxtral-small-24b-2507" to (0.1 to 0.3),
-        "openai/gpt-3.5-turbo" to (0.5 to 1.5),
         "openai/gpt-3.5-turbo-0613" to (1.0 to 2.0),
         "openai/gpt-3.5-turbo-16k" to (3.0 to 4.0),
-        "openai/gpt-3.5-turbo-instruct" to (1.5 to 2.0),
         "openai/gpt-4" to (30.0 to 60.0),
-        "openai/gpt-4-turbo" to (10.0 to 30.0),
         "openai/gpt-4.1" to (2.0 to 8.0),
         "openai/gpt-4.1-mini" to (0.4 to 1.6),
         "openai/gpt-4.1-nano" to (0.1 to 0.4),
@@ -155,7 +157,7 @@ object ListPriceSnapshot {
         "openai/gpt-5.5-pro" to (30.0 to 180.0),
         "openai/gpt-5.6-luna" to (0.2 to 1.2),
         "openai/gpt-5.6-luna-pro" to (0.2 to 1.2),
-        "openai/gpt-5.6-sol" to (4.0 to 20.0),
+        "openai/gpt-5.6-sol" to (4.4 to 22.0),
         "openai/gpt-5.6-sol-pro" to (4.0 to 20.0),
         "openai/gpt-5.6-terra" to (2.0 to 12.0),
         "openai/gpt-5.6-terra-pro" to (2.0 to 12.0),
@@ -167,20 +169,16 @@ object ListPriceSnapshot {
         "openai/gpt-6-sol-pro" to (2.0 to 10.0),
         "openai/gpt-6.1-sol" to (2.0 to 10.0),
         "openai/gpt-6.1-sol-pro" to (2.0 to 10.0),
+        "openai/gpt-6.1-terra" to (1.0 to 5.0),
+        "openai/gpt-6.1-terra-pro" to (1.0 to 5.0),
         "openai/gpt-audio" to (2.5 to 10.0),
         "openai/gpt-audio-mini" to (0.6 to 2.4),
         "openai/gpt-chat-latest" to (5.0 to 30.0),
         "openai/gpt-oss-120b" to (0.15 to 0.6),
-        "openai/gpt-oss-20b" to (0.02 to 0.09),
+        "openai/gpt-oss-20b" to (0.03 to 0.13),
         "openai/gpt-oss-safeguard-20b" to (0.08 to 0.3),
-        "openai/o1" to (15.0 to 60.0),
-        "openai/o1-pro" to (150.0 to 600.0),
         "openai/o3" to (2.0 to 8.0),
-        "openai/o3-mini" to (1.1 to 4.4),
-        "openai/o3-mini-high" to (1.1 to 4.4),
         "openai/o3-pro" to (20.0 to 80.0),
-        "openai/o4-mini" to (1.1 to 4.4),
-        "openai/o4-mini-high" to (1.1 to 4.4),
     )
 
     /**

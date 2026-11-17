@@ -5,6 +5,7 @@
 //        menu item, the same action from both, as `.swipeActions` + `.contextMenu` both call rowDestructiveActions.
 package ai.teemoon.app
 
+import ai.teemoon.app.imaging.ImageModelChoice
 import ai.teemoon.providers.AddEditProviderModel
 import ai.teemoon.providers.Equipped
 import ai.teemoon.providers.LocalModel
@@ -18,6 +19,11 @@ import ai.teemoon.providers.WhereLocality
 import ai.teemoon.providers.WhereProviderPresentation
 import ai.teemoon.providers.WhereReadyRows
 import ai.teemoon.providers.WhereRecentEntry
+import ai.teemoon.providers.ModelBrowserQuery
+import ai.teemoon.providers.WhereFilter
+import ai.teemoon.providers.WhereFilterSheet
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -50,7 +56,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.graphics.Color
 import androidx.compose.material3.Icon
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.semantics.disabled
 import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.foundation.background
 import androidx.compose.material.icons.Icons
 import androidx.compose.foundation.layout.size
@@ -89,6 +97,13 @@ val ONBOARDING_ORANGE = Color(0xFFFF7A1A)
 fun WhereSheet(
     /** Whether a phone row's engine is loaded right now (AppState.isPhoneWarm); null = no label. */
     phoneWarm: (Provider) -> Boolean? = { null },
+    /** "· images" ends the caption of a model that reads images (iOS b8457654, ImageModelChoice): asked of the row's model as current. */
+    readsImages: (Provider) -> Boolean = { false },
+    /** IMAGES.md §4b: a phone model this phone can never fit for images (AppState.imagesRefused), and whether a download would fit. */
+    imagesRefused: (Provider) -> Boolean = { false },
+    phoneFits: (LocalModel) -> Boolean = { true },
+    /** IMAGES.md §4e: whether this phone's model reads images now (LocalModelCatalog.phoneReadsImages). */
+    imagesOnDevice: Boolean = ai.teemoon.providers.LocalModelCatalog.imagesOnDevice,
     providers: List<Provider>,
     selectedId: String?,
     problem: String?,
@@ -110,6 +125,23 @@ fun WhereSheet(
     onEdit: (String) -> Unit = {},
     /** The model browser for a configured place (or a preset's id when the place is keyed but not yet saved). */
     onBrowse: (String) -> Unit = onEdit,
+    /**
+     * The "show only" row (IMAGES.md §4e): how many of a setup's saved models pass these filters, by the browser's own
+     * predicate; null when it has no saved list. With no filters, the saved list's length.
+     */
+    listCount: (Provider, Set<ModelBrowserQuery.Filter>) -> Int? = { _, _ -> null },
+    /** The filters the sheet opens with: none from the chip; "reads images" from the can't-see routes. */
+    initialShowOnly: Set<ModelBrowserQuery.Filter> = emptySet(),
+    /** A preset or custom row tapped with a filter on: its browser opens with the same filters. */
+    onBrowseShowOnly: (String, Set<ModelBrowserQuery.Filter>) -> Unit = { id, _ -> onBrowse(id) },
+    /** The filters as the person changes them, so a browser opened from here and closed comes back to the same ones. */
+    onShowOnlyChange: (Set<ModelBrowserQuery.Filter>) -> Unit = {},
+    /** Spoken as the sheet appears (IMAGES.md §4d: "this model can't see images." from the attach control or a paste). */
+    announce: String? = null,
+    onAnnounced: () -> Unit = {},
+    /** Developer mode's reasoning bar for the selected model (ReasoningUi.bar), pinned to the sheet's bottom; null: none. */
+    reasoningBar: ReasoningUi.Bar? = null,
+    onOpenReasoning: () -> Unit = {},
     // The Where sheet proper
     policyFor: (WhereLocality?) -> WhereGetPolicy = { f -> WhereGetPolicy(f, providers, true, emptyMap(), { "" }, { "" }) },
     networkSatisfied: Boolean = true,
@@ -150,12 +182,14 @@ fun WhereSheet(
      */
     installedBytesFor: (LocalModel) -> Long = { it.sizeMB.toLong() * 1024 * 1024 },
     availableMB: Int = 0,
+    /** MemoryInfo.totalMem: the "may not fit" floor and the start-here hero read it (LocalMemory.belowFloor). 0: silent. */
+    totalMemBytes: Long = 0L,
     onStartDownload: (LocalModel) -> Unit = {},
     onCancelDownload: (String) -> Unit = {},
     onDeleteWeights: (LocalModel) -> Unit = {},
     /** CellularDownloadPrompt: a phone download tapped on mobile data, waiting on the user's answer. */
     cellularPrompt: CellularDownloadRequest? = null,
-    /** The answer: ANY ("download now"), WIFI_ONLY ("wait for wi-fi"), or null (cancel — starts nothing). */
+    /** The answer: ANY ("download now"), WIFI_ONLY ("wait for wi-fi"), or null ("not now" — starts nothing). */
     onAnswerCellular: (DownloadNetwork?) -> Unit = {},
     /** Model ids whose wi-fi-only download is parked on mobile data — the row says "waiting for wi-fi". */
     parkedDownloads: Set<String> = emptySet(),
@@ -164,12 +198,14 @@ fun WhereSheet(
     // resolved in AppState and never drawn, so a download tapped on mobile data silently never started (2026-09-24).
     cellularPrompt?.let { pending ->
         IosAlert(CellularDownloadGate.title(pending.reason), CellularDownloadGate.message(pending.reason, pending.model),
-            listOf("download now" to { onAnswerCellular(DownloadNetwork.ANY) },
-                "wait for wi-fi" to { onAnswerCellular(DownloadNetwork.WIFI_ONLY) },
-                "cancel" to { onAnswerCellular(null) }),
+            CellularDownloadChoice.entries.map { choice -> choice.label to {
+                onAnswerCellular(when (choice) { CellularDownloadChoice.DOWNLOAD_NOW -> DownloadNetwork.ANY; CellularDownloadChoice.WAIT_FOR_WIFI -> DownloadNetwork.WIFI_ONLY; CellularDownloadChoice.NOT_NOW -> null })
+            } },
             onDismiss = { onAnswerCellular(null) })
     }
     var filter by remember { mutableStateOf<WhereLocality?>(null) }
+    // held across tab changes and the half / full drag; every open starts from initialShowOnly (§4e "Opening")
+    var showOnly by remember { mutableStateOf(initialShowOnly) }
     var pendingServerDelete by remember { mutableStateOf<Equipped?>(null) }
     var pendingWeightsDelete by remember { mutableStateOf<LocalModel?>(null) }
     LaunchedEffect(refreshKey) { onRefreshHome() }
@@ -185,13 +221,22 @@ fun WhereSheet(
         }
     }
     val rows = WhereReadyRows.ordered(WhereReadyRows.rows(policy.filteredProviders), isWarm)
-    val recommended = WhereGetPolicy.recommendedPhoneModel(catalog = policy.catalog, availableMB = availableMB)
+    // The filter's narrowing of all three sections; recently used is the all tab's, online only, as before. The all
+    // tab's download steps aside while its file lands over an existing place (the same download, shown once).
+    val sheet = WhereFilterSheet.of(policy, rows, if (networkSatisfied && filter == null) recents else emptyList(), showOnly, readsImages, hasKey, listCount,
+        imagesOnDevice = imagesOnDevice, recommendedStepsAside = { m -> downloads[m.id] != null && providers.any { it.localModelID == m.id } },
+        imagesRefused = imagesRefused, phoneFits = phoneFits)
+    // a refused row's tap never switches and never downloads: it says why (IMAGES.md §4b)
+    var refusedTapped by remember { mutableStateOf<Equipped?>(null) }
+    val browse: (String) -> Unit = { id -> if (showOnly.isEmpty()) onBrowse(id) else onBrowseShowOnly(id, showOnly) }
+    val recommended = WhereGetPolicy.recommendedPhoneModel(catalog = policy.catalog, totalBytes = totalMemBytes)
     val showsFirstRun = policy.showsFirstRun(loadFailed = problem != null, recommended = recommended)
     val localities = listOf(null) + WhereLocality.entries
 
     // WhereSheetView: close / "where"; the locality picker; ready now / recently used / get as inset groups.
     // the picker leads, not a card: measured 11pt short of the tag with no inset
-    GroupedPage(header = { NavBar("where", leading = { CircleButton(Icons.Filled.Close, "close", onBack, tint = TeemoonColors.tint) }) }, topInset = 11.dp) {
+    GroupedPage(header = { NavBar("where", leading = { CircleButton(Icons.Filled.Close, "close", onBack, tint = TeemoonColors.tint) }) }, topInset = 11.dp,
+        footer = reasoningBar?.let { bar -> { ReasoningBar(bar, onOpenReasoning) } }) {
         
         if (!networkSatisfied) Banner("you're offline", "cloud and home need a network. models on this phone still answer.")
         mergeNotice?.let { Banner("tidied up", it, action = "ok", onAction = onDismissMergeNotice) }
@@ -204,7 +249,7 @@ fun WhereSheet(
             Text("start here", style = MaterialTheme.typography.headlineSmall.copy(fontWeight = FontWeight.Bold), modifier = Modifier.padding(start = 24.dp, top = 16.dp, bottom = 6.dp))
             InsetGroup {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("free · nothing leaves your phone", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = TeemoonColors.verified)
+                    Text("free · runs offline on your phone", style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold), color = TeemoonColors.verified)
                     Text(recommended.displayName.lowercase(), style = MaterialTheme.typography.titleMedium, modifier = Modifier.padding(top = 8.dp))
                     Text(recommended.blurb.lowercase(), style = MaterialTheme.typography.bodySmall, color = TeemoonColors.secondaryLabel)
                     // The where chip's rule, one tap back: the fixed onboarding orange with a white label (iOS cf251b5) — not the
@@ -230,6 +275,15 @@ fun WhereSheet(
         // MARK: locality picker
         SegmentedPicker(listOf("all") + WhereLocality.entries.map { it.shortLabel }, localities.indexOf(filter), { filter = localities[it] }, Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
         filterFooter(filter, networkSatisfied)?.let { Caption(it) }
+        // MARK: show only — under the tab's footer, scrolling with the list; its one empty line under it
+        FilterRow(sheet.count, sheet.control, showOnly) { showOnly = it; onShowOnlyChange(it) }
+        // a polite live region, filled a beat after the sheet appears so it is a change the screen reader speaks
+        announce?.let { words ->
+            var said by remember { mutableStateOf("") }
+            LaunchedEffect(words) { kotlinx.coroutines.delay(400); said = words; kotlinx.coroutines.delay(1_500); onAnnounced() }
+            Box(Modifier.size(1.dp).semantics { liveRegion = androidx.compose.ui.semantics.LiveRegionMode.Polite; contentDescription = said }.testTag("where.announce"))
+        }
+        sheet.line?.let { Caption(it) }
         // MARK: ready now
         if (rows.isEmpty()) {
             val (title, description) = when {
@@ -247,9 +301,11 @@ fun WhereSheet(
                 Text(title, style = MaterialTheme.typography.headlineMedium, textAlign = TextAlign.Center)
                 Text(description, style = MaterialTheme.typography.bodyMedium.copy(fontSize = 15.sp, lineHeight = 20.sp), color = TeemoonColors.secondaryLabel, textAlign = TextAlign.Center)
             } }
-        } else {
-            SectionHeader("ready now", topPadding = if (filterFooter(filter, networkSatisfied) != null) 8.dp else 20.dp)
-            InsetGroup(dividerInset = 52.dp) { rows.forEach { row ->
+        } else if (sheet.ready.isNotEmpty() || sheet.refused.isNotEmpty()) {
+            SectionHeader("ready now", topPadding = 8.dp)
+            // a refused phone model is listed in its place (IMAGES.md §4b), with the permanent caption
+            InsetGroup(dividerInset = 52.dp) { rows.filter { it in sheet.ready || it in sheet.refused }.forEach { row ->
+                val refusedRow = row in sheet.refused
                 val provider = row.asActive
                 val selected = row.provider.id == selectedId && row.provider.model == row.modelID
                 val pull = pulls.firstOrNull { it.id == row.modelID && it.baseUrl == row.provider.openAIBaseUrl && WhereLocality.of(row.provider) == WhereLocality.HOME }
@@ -270,6 +326,8 @@ fun WhereSheet(
                 }
                 // Nor for weights that aren't here: "failed its integrity check · cold" grades a file that doesn't exist.
                 val warmth = if (arriving == null && !pullFailed && missing == null) isWarm(row)?.let { if (it) "warm" else "cold" } else null
+                // nor "· images" for weights that aren't here, as warmth
+                val images = (arriving == null && !pullFailed && missing == null && readsImages(row.asActive)).takeIf { it }?.let { ImageModelChoice.CAPTION_TAG }
                 // rowDestructiveActions: ONE action per row, on the model the row names — the trailing swipe and the context
                 // menu both offer it. Weights and a server's model ask first; a cloud row unequips on the spot (iOS: forget +
                 // haptic). No setup-level delete here in any segment: that lives in places & keys, on a row that IS the setup.
@@ -288,8 +346,11 @@ fun WhereSheet(
                     title = fetching?.lowercase() ?: WhereProviderPresentation.modelLabel(provider),
                     // WhereRow (iOS 0e91620): warm/cold is JOINED ONTO THE CAPTION — "ollama · warm" — not the trailing slot,
                     // where on the selected row it shoved left of the tick and read as the tick's word, not the row's.
-                    caption = listOfNotNull(caption?.takeIf { it.isNotBlank() }, warmth).joinToString(" · ").ifEmpty { null }, locality = WhereLocality.of(row.provider),
-                    captionWarns = missing != null || pullFailed || policy.warnsUnencryptedNear(provider),
+                    // greyed as iOS's, title and caption: listed, not usable for images here
+                    titleColor = if (refusedRow) TeemoonColors.secondaryLabel else TeemoonColors.label,
+                    caption = if (refusedRow) ai.teemoon.app.imaging.CantSeeRoute.permanent(WhereProviderPresentation.modelLabel(provider))
+                        else listOfNotNull(caption?.takeIf { it.isNotBlank() }, warmth, images).joinToString(" · ").ifEmpty { null }, locality = WhereLocality.of(row.provider),
+                    captionWarns = policy.captionWarns(provider, missingDownload = missing != null, pullFailed = pullFailed),
                     // A wi-fi-only job parked on mobile data is not moving: say why (WhereGetSection: "the row says so").
                     trailingText = if (row.provider.localModelID in parkedDownloads) "waiting for wi-fi"
                         else arriving?.let { if (fetching?.contains(" · ") == true) "${(it * 100).toInt()}%" else "downloading ${(it * 100).toInt()}%" },
@@ -298,23 +359,35 @@ fun WhereSheet(
                     e2ee = false,
                     // A failed server pull RETRIES on the tap (WhereSheetView.readyRow: pullCenter.start(ref:baseURL:)) — the
                     // caption says "tap to retry". This opened the pull sheet, empty, and nothing was retried (C8, 2026-10-04).
-                    onClick = { if (missing != null) onStartDownload(missing) else if (parked != null) onStartDownload(parked) else if (pullFailed) row.provider.openAIBaseUrl?.let { onRetryPull(row.modelID, it) } ?: onDownload(row.provider.id) else onActivate(row) },
+                    onClick = { if (refusedRow) refusedTapped = row else if (missing != null) onStartDownload(missing) else if (parked != null) onStartDownload(parked) else if (pullFailed) row.provider.openAIBaseUrl?.let { onRetryPull(row.modelID, it) } ?: onDownload(row.provider.id) else onActivate(row) },
                     menu = listOfNotNull("use for chat" to { onActivate(row) }, "edit" to { onEdit(row.provider.id) }, destructive),
                     swipe = destructive,
                 )
             } }
         }
 
+        refusedTapped?.let { row ->
+            // the nearest smaller phone model that fits (PhoneImageMemory.smallerModel): switched to if it's here, downloaded if not
+            val refusedModel = row.provider.localModelID?.let { id -> localModelFor(id) }
+            val smaller = refusedModel?.let { m -> ai.teemoon.providers.PhoneImageMemory.smallerModel(policy.catalog, m, phoneFits) }
+            val smallerHere = smaller?.let { s -> rows.firstOrNull { it.provider.localModelID == s.id } }
+            IosAlert(ai.teemoon.app.imaging.CantSeeRoute.permanent(WhereProviderPresentation.modelLabel(row.asActive)), "",
+                listOfNotNull(smaller?.let { s -> ai.teemoon.app.imaging.CantSeeRoute.useSmaller(s.displayName.lowercase()) to {
+                        refusedTapped = null; if (smallerHere != null) onActivate(smallerHere) else onStartDownload(s) } },
+                    ai.teemoon.app.imaging.CantSeeRoute.OK to { refusedTapped = null }), onDismiss = { refusedTapped = null })
+        }
+
         // MARK: recently used — only on "all", only online
-        if (networkSatisfied && filter == null && recents.isNotEmpty()) {
+        if (sheet.recents.isNotEmpty()) {
             SectionHeader("recently used")
-            InsetGroup(dividerInset = 52.dp) { recents.forEach { r ->
+            InsetGroup(dividerInset = 52.dp) { sheet.recents.forEach { r ->
                 val equipped = providers.firstOrNull { it.id == r.providerID }?.let { Equipped(it, r.modelID) }
                 WhereRowView(
                     title = WhereProviderPresentation.modelLabel(r.provider), locality = WhereLocality.of(r.provider),
                     // warmth on the caption, as on the ready rows (WhereRow, iOS 0e91620)
                     caption = listOfNotNull((equipped?.let { policy.readyCaption(it.asActive) } ?: WhereProviderPresentation.placeCaption(r.provider)).takeIf { it.isNotBlank() },
-                        equipped?.let(isWarm)?.let { if (it) "warm" else "cold" }).joinToString(" · ").ifEmpty { null },
+                        equipped?.let(isWarm)?.let { if (it) "warm" else "cold" },
+                        equipped?.takeIf { readsImages(it.asActive) }?.let { ImageModelChoice.CAPTION_TAG }).joinToString(" · ").ifEmpty { null },
                     onClick = { onActivateRecent(r) },
                     menu = listOf("use for chat" to { onActivateRecent(r) }),
                 )
@@ -323,25 +396,25 @@ fun WhereSheet(
         }
 
         // MARK: get
-        SectionHeader("get")
-        if (!networkSatisfied) {
+        // The rows are WhereFilterSheet's, in its order: the tab's offers (the all tab's one recommended download; a
+        // device file landing over an existing place shows on that place's row and its get row steps aside), narrowed
+        // by the filter. A filter that leaves get empty drops the section; the empty line above says so.
+        val getRows = sheet.get
+        if (getRows == null || getRows.isNotEmpty() || showOnly.isEmpty()) SectionHeader("get")
+        if (getRows == null) {
             Caption("connect to a network to add cloud keys or reach home servers.")
-        } else InsetGroup(dividerInset = 52.dp) { when (filter) {
-            null -> {
-                // A device file landing over an existing place shows its progress on that place's row, named for the file;
-                // the get row that started it steps aside until it is done rather than showing the same download twice.
-                policy.recommendedDownload?.takeIf { m -> !(downloads[m.id] != null && providers.any { it.localModelID == m.id }) }?.let { DownloadRow(it, downloads[it.id], downloadFailures[it.id], availableMB, onStartDownload, onCancelDownload, parked = it.id in parkedDownloads) }
-                PullRows(policy, onDownload)
-                AddRow("connect a computer", "ollama, lm studio, or any openai-compatible server", WhereLocality.HOME) { onAddPlace(null, AddEditProviderModel.CustomStart.COMPUTER) }
-                Provider.presets.forEach { PresetRow(it, providers, hasKey, policy, onAddPlace, onBrowse) }
-                AddRow("add a cloud key", "configures an api key for any provider", WhereLocality.CLOUD, leadingGlyph = { KeyGlyph(TeemoonColors.tint) }) { onAddPlace(null, AddEditProviderModel.CustomStart.CLOUD_KEY) }
-            }
-            WhereLocality.PHONE -> if (!policy.getSectionIsEmpty) policy.downloadableModels.forEach { DownloadRow(it, downloads[it.id], downloadFailures[it.id], availableMB, onStartDownload, onCancelDownload, parked = it.id in parkedDownloads) }
-            WhereLocality.HOME -> { PullRows(policy, onDownload); AddRow(policy.addProviderLabel, policy.addProviderCaption, WhereLocality.HOME) { onAddPlace(null, AddEditProviderModel.CustomStart.COMPUTER) } }
-            WhereLocality.CLOUD -> {
-                policy.browseableProviders.filter(policy::isCustom).forEach { p -> AddRow("browse ${policy.browseName(p)}", policy.browseCaption(p), WhereLocality.CLOUD, glyph = Icons.Filled.Search) { onBrowse(p.id) } }
-                Provider.presets.forEach { PresetRow(it, providers, hasKey, policy, onAddPlace, onBrowse) }
-                AddRow(policy.addProviderLabel, policy.addProviderCaption, WhereLocality.CLOUD, leadingGlyph = { KeyGlyph(TeemoonColors.tint) }) { onAddPlace(null, AddEditProviderModel.CustomStart.CLOUD_KEY) }
+        } else if (getRows.isNotEmpty() || showOnly.isEmpty()) InsetGroup(dividerInset = 52.dp) { getRows.forEach { shown ->
+            when (val row = shown.row) {
+                is WhereFilter.GetRow.Download -> policy.catalog.firstOrNull { it.id == row.id }?.let { DownloadRow(it, downloads[it.id], downloadFailures[it.id], totalMemBytes, onStartDownload, onCancelDownload, parked = it.id in parkedDownloads) }
+                is WhereFilter.GetRow.Pull -> providers.firstOrNull { it.id == row.machine }?.let { PullRow(policy, it, onDownload) }
+                WhereFilter.GetRow.Connect -> AddRow("connect a computer", "ollama, lm studio, or any openai-compatible server", WhereLocality.HOME) { onAddPlace(null, AddEditProviderModel.CustomStart.COMPUTER) }
+                is WhereFilter.GetRow.Server ->
+                    if (row.custom) providers.firstOrNull { it.id == row.name }?.let { p ->
+                        // a filter's "k of n" takes the caption's number, where this row says how many it holds
+                        val caption = shown.trailing?.takeIf { showOnly.isNotEmpty() }?.let { "$it models on this setup" } ?: policy.browseCaption(p)
+                        AddRow("browse ${policy.browseName(p)}", caption, WhereLocality.CLOUD, glyph = Icons.Filled.Search) { browse(p.id) }
+                    } else Provider.presets.firstOrNull { it.name.lowercase() == row.name }?.let { PresetRow(it, providers, hasKey, shown.trailing, onAddPlace, browse) }
+                WhereFilter.GetRow.AddCloudKey -> AddRow("add a cloud key", "configures an api key for any provider", WhereLocality.CLOUD, leadingGlyph = { KeyGlyph(TeemoonColors.tint) }) { onAddPlace(null, AddEditProviderModel.CustomStart.CLOUD_KEY) }
             }
         } }
         policy.getFooter(openToGet = false, memoryFigure = LocalMemory.weightsHeadroomFigure(availableMB)).takeIf { it.isNotEmpty() }?.let { Caption(it) }
@@ -376,7 +449,7 @@ fun filterFooter(filter: WhereLocality?, networkSatisfied: Boolean): String? {
     if (!networkSatisfied) return "offline — only on-device setups can answer until you're back on a network."
     return when (filter) {
         null -> null
-        WhereLocality.PHONE -> "runs entirely on this device. no key, nothing leaves the phone."
+        WhereLocality.PHONE -> "runs entirely on this device. no key; nothing leaves the phone unless web search is on."
         WhereLocality.HOME -> "stays on your machines — laptop, desktop, or home server."
         WhereLocality.CLOUD -> "runs on someone else's hardware. each row says whether it's end-to-end encrypted."
     }
@@ -457,38 +530,102 @@ private fun WhereRowBody(
 /** addProviderRow: no trailing glyph — only rows that navigate elsewhere (browse) or fetch (download) carry one. */
 @Composable private fun AddRow(label: String, caption: String?, locality: WhereLocality, glyph: ImageVector? = null, chevron: Boolean = false, leadingGlyph: (@Composable () -> Unit)? = null, onClick: () -> Unit) = WhereRowView(title = label, caption = caption, locality = locality, onClick = onClick, glyph = glyph, glyphTint = TeemoonColors.tint, chevron = chevron, isFirstRunRow = chevron, leadingGlyph = leadingGlyph)
 
-@Composable private fun PullRows(policy: WhereGetPolicy, onDownload: (String) -> Unit) {
-    policy.pullableProviders.forEach { p ->
-        WhereRowView(title = "add a model to ${policy.browseName(p)}", caption = "pulls it onto the machine — it appears above when it lands", locality = WhereLocality.HOME, onClick = { onDownload(p.id) }, glyphTint = TeemoonColors.tint, chevron = true, leadingGlyph = { DownloadGlyph(TeemoonColors.tint) })   // arrow.down.circle
+@Composable private fun PullRow(policy: WhereGetPolicy, p: Provider, onDownload: (String) -> Unit) =
+    WhereRowView(title = "add a model to ${policy.browseName(p)}", caption = "pulls it onto the machine — it appears above when it lands", locality = WhereLocality.HOME, onClick = { onDownload(p.id) }, glyphTint = TeemoonColors.tint, chevron = true, leadingGlyph = { DownloadGlyph(TeemoonColors.tint) })   // arrow.down.circle
+
+/**
+ * The where filter's row (IMAGES.md §4e): the tab's count on the left; "show only" on the right, a menu with the two
+ * filters and their ticks — the model browser's Controls in its words and glyphs, with no sort and no "clear".
+ */
+@Composable private fun FilterRow(count: String?, control: String, showOnly: Set<ModelBrowserQuery.Filter>, onChange: (Set<ModelBrowserQuery.Filter>) -> Unit) {
+    var menu by remember { mutableStateOf(false) }
+    Row(Modifier.fillMaxWidth().padding(horizontal = 20.dp).heightIn(min = 44.dp).testTag("where.filter"), verticalAlignment = Alignment.CenterVertically) {
+        Text(count.orEmpty(), style = MaterialTheme.typography.bodyMedium, color = TeemoonColors.secondaryLabel, modifier = Modifier.weight(1f).testTag("where.filter.count"))
+        Box {
+            val on = showOnly.isNotEmpty()
+            Text("≡ $control ⌄", style = MaterialTheme.typography.bodyMedium.copy(fontWeight = if (on) FontWeight.SemiBold else FontWeight.Normal),
+                color = if (on) TeemoonColors.tint else TeemoonColors.secondaryLabel,
+                modifier = Modifier.clickable { menu = true }.padding(vertical = 10.dp).testTag("where.filter.control"))
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                Text(WhereFilter.MENU_HEADING, style = MaterialTheme.typography.labelSmall, color = TeemoonColors.secondaryLabel, modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp))
+                WhereFilter.offered.forEach { f ->
+                    val ticked = f in showOnly
+                    DropdownMenuItem(text = { Text((if (ticked) "✓ " else "   ") + f.label) },
+                        onClick = { onChange(if (ticked) showOnly - f else showOnly + f) }, modifier = Modifier.testTag("where.filter.${f.summary}"))
+                }
+            }
+        }
     }
 }
 
 /** WhereGetSection.downloadRow: a downloadable on-device model — size, progress, cancel, the failure or the memory note. */
-@Composable private fun DownloadRow(model: LocalModel, fraction: Double?, failure: String?, availableMB: Int, onStart: (LocalModel) -> Unit, onCancel: (String) -> Unit, parked: Boolean = false) {
-    val note = failure ?: if (fraction == null && LocalMemory.exceedsAvailable(model.sizeMB, availableMB)) "may not fit in memory on this device" else null
+@Composable private fun DownloadRow(model: LocalModel, fraction: Double?, failure: String?, totalMemBytes: Long, onStart: (LocalModel) -> Unit, onCancel: (String) -> Unit, parked: Boolean = false) {
+    // The phone's RAM against the model's floor, never free memory (iOS f3773d9): an 8 GB Pixel 8a was told it may not fit.
+    val note = failure ?: if (fraction == null && LocalMemory.belowFloor(model, totalMemBytes)) "may not fit in memory on this device" else null
     WhereRowView(title = model.displayName, caption = WhereProviderPresentation.metadataRun(model.blurb, note), captionWarns = note != null, locality = WhereLocality.PHONE,
         trailingText = if (fraction == null) model.sizeLabel.lowercase() else if (parked) "waiting for wi-fi" else "downloading ${(fraction * 100).toInt()}%",
         progress = fraction, onCancel = { onCancel(model.id) }, onClick = { if (fraction == null) onStart(model) }, download = fraction == null)
 }
 
 @Composable
-private fun PresetRow(preset: Provider, providers: List<Provider>, hasKey: (Provider) -> Boolean, policy: WhereGetPolicy, onAddPlace: (String?, AddEditProviderModel.CustomStart?) -> Unit, onBrowse: (String) -> Unit) {
+private fun PresetRow(preset: Provider, providers: List<Provider>, hasKey: (Provider) -> Boolean, trailing: String?, onAddPlace: (String?, AddEditProviderModel.CustomStart?) -> Unit, onBrowse: (String) -> Unit) {
     val configured = providers.firstOrNull { it.sameEndpoint(preset) }
     val provider = configured ?: preset
     val keyed = hasKey(provider)
     if (preset.isFixedAnswerService) {
         // Settings' row — same glyph, caption and two lines — with where's trailing state (iOS cf251b5). The two-key
         // warning this row used to carry is the key form's footer now.
-        if (configured == null) WhereRowView(title = preset.name.lowercase(), caption = WhereProviderPresentation.presetCaption(preset), locality = WhereLocality.CLOUD, glyphTint = TeemoonColors.tint, chevron = true, trailingText = if (keyed) "set up" else "add key", onClick = { onAddPlace(preset.name, null) },
+        if (configured == null) WhereRowView(title = preset.name.lowercase(), caption = WhereProviderPresentation.presetCaption(preset), locality = WhereLocality.CLOUD, glyphTint = TeemoonColors.tint, chevron = true, trailingText = trailing, onClick = { onAddPlace(preset.name, null) },
             modifier = Modifier.testTag("where.preset.${preset.name.lowercase()}"))
     } else {
-        // The count is the policy's — the length of the list this server last answered
-        // with. Never compute one here: two numbers for one row is how they come to disagree.
+        // The count is WhereFilterSheet's — the length of the list this server last answered with, or "k of n" of it
+        // under a filter. Never compute one here: two numbers for one row is how they come to disagree.
         // Settings' add-cloud-key row, with where's trailing state: the model count once keyed, "add key" before. Same
         // glyph, name and caption, so the two screens read as one list (iOS cf251b5).
         WhereRowView(title = preset.name.lowercase(), caption = WhereProviderPresentation.presetCaption(preset), locality = WhereLocality.CLOUD, glyphTint = TeemoonColors.tint, chevron = true,
-            trailingText = policy.presetTrailingText(provider, keyed), e2ee = ProviderCapability.END_TO_END_ENCRYPTION in preset.capabilities,
+            trailingText = trailing, e2ee = preset.claimsEndToEndEncryption,
             onClick = { if (keyed) onBrowse((configured ?: preset).id) else onAddPlace(preset.name, null) },
             modifier = Modifier.testTag("where.preset.${preset.name.lowercase()}"))
     }
 }
+
+/**
+ * The where sheet's reasoning bar (the maintainer 2026-11-13, card composer-reasoning-chip): one inset row, "reasoning", the level
+ * and a chevron; it pushes to the levels, which the model's name heads. The list scrolls under it at both sheet heights.
+ */
+@Composable
+fun ReasoningBar(bar: ReasoningUi.Bar, onOpen: () -> Unit) = androidx.compose.foundation.layout.BoxWithConstraints {
+    // drawn flat on the sheet's band (GroupedPage's footer), no card: part of the frame, not another row (the maintainer, "Do 1 and 3");
+    // InsetRow's own 16 are the side insets, as iOS's. One line wherever "reasoning", the level and the chevron fit; the
+    // level goes under the title only where they don't.
+    val style = MaterialTheme.typography.bodyLarge
+    val measurer = androidx.compose.ui.text.rememberTextMeasurer()
+    val need = with(androidx.compose.ui.platform.LocalDensity.current) {
+        measurer.measure(bar.title, style, softWrap = false).size.width + measurer.measure(bar.value, style, softWrap = false).size.width +
+            (16 + 12 + 12 + 20 + 16).dp.roundToPx()   // the row's insets, two gaps and the chevron
+    }
+    val shown = bar.trailing(oneLineFits = need <= constraints.maxWidth)
+    InsetRow(bar.title, subtitle = shown.subtitle, onClick = onOpen, chevron = true, modifier = Modifier.testTag("where.reasoning"),
+        trailing = shown.value?.let { v -> { Text(v, style = style, color = TeemoonColors.secondaryLabel, maxLines = 1, softWrap = false) } })
+}
+
+/**
+ * The levels, pushed inside the where sheet from its reasoning bar: the model's own, the pick checked, applied at once;
+ * the footer says what a higher level costs and, after a refusal, that nothing is sent (ReasoningUi.levelsFooter).
+ */
+@Composable
+fun ReasoningLevelsPage(ui: ReasoningUi, onPick: (String) -> Unit, onBack: () -> Unit) =
+    GroupedPage(header = { NavBar(ai.teemoon.inference.ReasoningLevel.TITLE, leading = { BackButton(onBack) }) }) {
+        ui.bar?.let { SectionLabel(it.model) }
+        InsetGroup {
+            ui.levels.forEachIndexed { i, l ->
+                // after a refusal nothing is sent: every row greyed and inert, none checked (iOS parity)
+                InsetRow(l.label, onClick = if (l.enabled) ({ onPick(l.level) }) else null, divider = i < ui.levels.lastIndex,
+                    titleColor = if (l.enabled) TeemoonColors.label else TeemoonColors.tertiaryLabel,
+                    modifier = Modifier.testTag("reasoning.level.${l.level}").semantics { if (!l.enabled) disabled() },
+                    trailing = { if (l.picked) Icon(Icons.Filled.Check, "selected", tint = TeemoonColors.tint, modifier = Modifier.size(20.dp)) })
+            }
+        }
+        // the refusal, when there is one, its own paragraph first; the page scrolls, so neither is ever cut
+        ui.levelsFooter.forEach { GroupFooter(it) }
+    }

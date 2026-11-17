@@ -2,6 +2,7 @@
 //        belongs to TrustLadderSupport and everydayRollupWorstClassWins is in TrustVerdictTest)
 //        teemoonTests/AuditLinkScopingTests.swift @ v1.0.1
 //        teemoonTests/AuditIndexStampTests.swift @ v1.0.1
+//        teemoonTests/AuditIndexTests.swift @ 8bfe33cb (exposureSummaryDecodesOptionally)
 //        teemoonTests/AuditIndexTests.swift @ v1.0.4 (AuditIndexRefreshTests: secondRefreshRevalidates, freshSnapshotSkipsTheFetch)
 package ai.teemoon.confidential
 
@@ -334,5 +335,75 @@ class AuditIndexTest {
         skipped.loadIfNeeded(this); advanceUntilIdle()
         assertNull(skipped.index)
         assertNotNull(cached)
+    }
+
+    /**
+     * pm audit-index sweep 2026-11-06 (#3, Android-only): a 304 revalidation moves the fetch time, which the stamp
+     * reads ("refreshed …" / "cached … ago"), but bumped nothing a screen observes: the ladder kept "cached 3 days ago"
+     * right after a revalidation. Any change to [AuditIndex.loadedAtMs] bumps the revision.
+     */
+    @Test fun aRevalidationIsSomethingTheScreenSees() = kotlinx.coroutines.test.runTest {
+        var now = 1_000L
+        val idx = AuditIndex(fixedIndex = null, fetch = { AuditIndex.Reply(304, ByteArray(0)) }, nowMs = { now })
+        // an index in hand, fetched long ago
+        val first = AuditIndex(fixedIndex = null, fetch = { AuditIndex.Reply(200, """{"schema":1,"images":{},"manifests":{},"measured":[]}""".toByteArray()) }, nowMs = { now })
+        first.refresh()
+        assertEquals(1_000L, first.loadedAtMs)
+        val seeded = AuditIndex(fixedIndex = first.index, fetch = { AuditIndex.Reply(304, ByteArray(0)) }, nowMs = { now })
+        val before = seeded.revision.value
+        now = 9_000_000L
+        seeded.refresh()
+        assertEquals(9_000_000L, seeded.loadedAtMs)
+        assertTrue("a 304 that moved the fetch time must redraw the stamp", seeded.revision.value > before)
+        idx.refresh()   // no index: a 304 changes nothing, and must not crash
+    }
+
+    /** trust-audit-claim (the maintainer 2026-11-06): older than 7 days, the index is none for the everyday claim. */
+    @Test fun aWeekOldIndexIsNotFreshForTheEverydayClaim() {
+        var now = 0L
+        val idx = AuditIndex(fixedIndex = AuditIndex.Index(schema = 1, images = emptyMap(), manifests = emptyMap(), measured = emptyList()), nowMs = { now })
+        assertFalse("fetch time unknown: not fresh", idx.isFreshForEveryday)
+        val loaded = AuditIndex(fixedIndex = null, fetch = { AuditIndex.Reply(200, """{"schema":1,"images":{},"manifests":{},"measured":[]}""".toByteArray()) }, nowMs = { now })
+        kotlinx.coroutines.runBlocking { loaded.refresh() }
+        assertTrue(loaded.isFreshForEveryday)
+        now = AuditIndex.EVERYDAY_MAX_AGE_MS - 1; assertTrue(loaded.isFreshForEveryday)
+        now = AuditIndex.EVERYDAY_MAX_AGE_MS + 1; assertFalse(loaded.isFreshForEveryday)
+    }
+
+    /** trust-audit-claim: a layout this reader predates drops the cache, instead of rendering the old one forever. */
+    @Test fun anIndexOfAnotherSchemaClearsTheCache() = kotlinx.coroutines.test.runTest {
+        var body = """{"schema":1,"images":{},"manifests":{},"measured":[]}"""
+        val saved = HashMap<String, Any?>()
+        val store = object : AuditIndex.Store {
+            override fun loadIndex() = saved["i"] as ByteArray?
+            override fun loadFetchedAtMs() = saved["t"] as Long?
+            override fun save(index: ByteArray, fetchedAtMs: Long) { saved["i"] = index; saved["t"] = fetchedAtMs }
+            override fun clear() { saved.clear() }
+        }
+        val idx = AuditIndex(fixedIndex = null, fetch = { AuditIndex.Reply(200, body.toByteArray()) }, store = store)
+        idx.refresh(); assertNotNull(idx.index)
+        body = """{"schema":2,"pages":[]}"""
+        idx.refresh()
+        assertNull(idx.index); assertNull(idx.loadedAtMs); assertTrue("the persisted copy goes too", saved.isEmpty())
+    }
+
+    /**
+     * audit, 2026-11-06: "checked" — page path → the page's last commit date (UTC, YYYY-MM-DD). Optional: an index
+     * without it still decodes, and a page missing from it has no evidence date (never fresh). Decoded only; nothing
+     * displays it until pm's page says how.
+     */
+    @Test fun theCheckedDatesDecodeAndAreOptional() {
+        val withDates = AuditIndex.decodeIndex("""{"schema":1,"images":{},"manifests":{},"measured":[],"checked":{"images/x/sha256-a.md":"2026-11-04"}}""".toByteArray())!!
+        assertEquals("2026-11-04", withDates.checked?.get("images/x/sha256-a.md"))
+        assertNull(withDates.checked?.get("images/y/sha256-b.md"))
+        assertNull(AuditIndex.decodeIndex("""{"schema":1,"images":{},"manifests":{},"measured":[]}""".toByteArray())!!.checked)
+    }
+
+    /** trust-leaks-wording (iOS 8bfe33cb exposureSummaryDecodesOptionally): a LEAKS page's summary verbatim; an index without it still decodes. */
+    @Test fun exposureSummaryDecodesOptionally() {
+        val page = "images/docker.io/lmsysorg/sglang/sha256-$digest.md"
+        val idx = AuditIndex.decodeIndex("""{ "schema": 1, "images": {}, "manifests": {}, "measured": [], "exposure": { "$page": { "scope": "wholesale", "summary": "every prompt is logged." } } }""".encodeToByteArray())!!
+        assertEquals("every prompt is logged.", AuditIndex(fixedIndex = idx).exposureSummary("https://github.com/teemoonai/audits/blob/main/$page"))
+        assertNull(AuditIndex.decodeIndex("""{ "schema": 1, "images": {}, "manifests": {}, "measured": [] }""".encodeToByteArray())!!.exposure)
     }
 }

@@ -478,7 +478,7 @@ def main():
             "pin provenance to")
 
     # ---- 5. tls binding ------------------------------------------------------
-    section("5. TLS binding — your HTTPS connection ends inside the enclave")
+    section("5. TLS binding — the model node's certificate is in its attestation")
     if not SESSION["direct_base"]:
         skip("session used the gateway path; TLS attestation applies to direct "
              "completions hosts")

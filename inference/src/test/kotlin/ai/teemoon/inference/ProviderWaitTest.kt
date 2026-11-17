@@ -1,4 +1,4 @@
-// ports: teemoonTests/ProviderWaitTests.swift @ 9e090f8
+// ports: teemoonTests/ProviderWaitTests.swift @ v1.0.6
 //
 // Fireworks held requests 2–69 s before headers and NVIDIA's free tier 4–5 min (2026-10-19), with "thinking..." on
 // screen the whole time. The chip now says the request is waiting on the provider, and only that.
@@ -39,7 +39,7 @@ class ProviderWaitTest {
 
     @Test fun theLabelClaimsNoQueue() {
         val label = ProviderWait.label("nvidia", 42)
-        assertEquals("waiting for nvidia... 42s", label)
+        assertEquals("waiting for nvidia\u2026 42s", label)
         assertFalse(label.contains("queue") || label.contains("busy"))
     }
 

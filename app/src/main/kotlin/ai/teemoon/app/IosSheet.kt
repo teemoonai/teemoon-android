@@ -1,5 +1,10 @@
 package ai.teemoon.app
 
+import androidx.compose.runtime.SideEffect
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.platform.testTag
+
 // android-only: the iOS 26 sheet, measured on the tag's captures rather than Material's fixed half detent.
 //   floating: 8pt side and bottom insets, ~48pt corners, the medium detent puts the sheet top at 47.5% of the
 //   screen and the large at 8.3%; the bottom edge stays put while the top moves. Material's ModalBottomSheet
@@ -77,9 +82,25 @@ fun SheetScrollEnd(extra: Dp = 0.dp) {
     Spacer(Modifier.height(LocalSheetBottomInset.current + extra))
 }
 
+/**
+ * How far a sheet at [top] has risen toward the large detent, 0..1: the presenter's recede (UIKit recedes it at the large
+ * detent only). Measured from where the sheet rests, never above medium: the where sheet rests at two thirds (WHERE) and
+ * the first run higher still, and measured from medium the chat receded a third of the way with the sheet at rest (the
+ * design review of 31373b33). A sheet that opens full recedes all the way.
+ */
+internal fun sheetLift(top: Float, tops: List<Float>): Float {
+    val base = tops.first().coerceAtMost(SheetDetents.MEDIUM).takeIf { it > SheetDetents.LARGE } ?: SheetDetents.MEDIUM
+    return ((base - top) / (base - SheetDetents.LARGE)).coerceIn(0f, 1f)
+}
+
 object SheetDetents {
     const val MEDIUM = 0.475f
     const val LARGE = 0.083f
+    /**
+     * The where sheet's partial detent (and its levels page's): about two thirds of the screen (the maintainer 2026-11-13, "Ok
+     * make bigger"; iOS leaves .medium for about 0.66), so 4-5 model rows show under the header at default size.
+     */
+    const val WHERE = 0.34f
     /** WhereSheetView's first run: `.fraction(0.76)` of the large detent. */
     const val FIRST_RUN = 0.327f
 }
@@ -95,11 +116,16 @@ fun IosSheet(
     visible: Boolean, tops: List<Float>, onDismiss: () -> Unit, grabber: Boolean, scrimAlpha: Float = 0.45f,
     containerColor: Color,
     /**
-     * How far the sheet has risen from the medium detent toward the large one, 0..1, written as it moves. UIKit
+     * How far the sheet has risen from where it rests toward the large detent, 0..1 ([sheetLift]), written as it moves. UIKit
      * scales the presenting view down and pushes it under the sheet's top edge at the large detent (the chat's bar
      * is not visible above a large sheet on the tag); the presenter reads this to do the same.
      */
     lift: MutableFloatState? = null,
+    /**
+     * A back gesture's progress on this sheet, 0..1 (smoothed by the caller): the sheet narrows and sinks with it, as
+     * Material 3's bottom sheet previews its dismissal; released, the sheet leaves as narrow as the finger left it.
+     */
+    back: () -> Float = { 0f },
     /** Names this sheet's settles in a system trace (NavTrace): `<traceLabel>:open`, `:close` or `:detent`. */
     traceLabel: String = "sheet",
     content: @Composable () -> Unit,
@@ -112,7 +138,7 @@ fun IosSheet(
         val hiddenPx = screenPx
         val scope = rememberCoroutineScope()
         var shown by remember { mutableStateOf(false) }
-        val settleSpec = spring<Float>(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = SHEET_STIFFNESS)
+        val settleSpec = Motion.spatial<Float>()
         // THE FINGER MOVES THE SHEET SYNCHRONOUSLY; only a settle animates. Each drag delta used to launch its own
         // `snapTo` coroutine: a delta landed a frame late about every tenth frame (a stall, then a double step) and the
         // first ones stepped backwards. And the settle started from rest: onPreFling settled with the fling's velocity,
@@ -160,16 +186,23 @@ fun IosSheet(
             if (visible) { shown = true; animateTo(anchors.last()) }   // in from the bottom to the first (lowest) detent
             else if (shown) animateTo(hiddenPx) { shown = false }
         }
+        // a committed back gesture's shrink carries into the exit (Material's preview continues; the caller's progress
+        // springs back to 0 as the route changes, and the sheet re-widened while it sank: design review of f57ea4f5)
+        // read in composition, and the last value while visible held: in the frame the sheet is let go the caller's
+        // progress is already 0
+        val backNow = back()
+        val heldBack = remember { mutableFloatStateOf(0f) }
+        if (visible) SideEffect { heldBack.floatValue = backNow }
+        val shownBack = if (visible) backNow else heldBack.floatValue
         if (lift != null) {
-            val largePx = SheetDetents.LARGE * screenPx; val mediumPx = SheetDetents.MEDIUM * screenPx
-            LaunchedEffect(Unit) { snapshotFlow { motion.y }.collect { y -> lift.floatValue = ((mediumPx - y) / (mediumPx - largePx)).coerceIn(0f, 1f) } }
+            LaunchedEffect(tops, screenPx) { snapshotFlow { motion.y }.collect { y -> lift.floatValue = sheetLift(y / screenPx, tops) } }
         }
         if (!shown && !visible) return@BoxWithConstraints
 
         val progress = ((hiddenPx - motion.y) / (hiddenPx - anchors.last())).coerceIn(0f, 1f)
         Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = scrimAlpha * progress))
             .clickable(interactionSource = remember { MutableInteractionSource() }, indication = null) { animateTo(hiddenPx) { shown = false; onDismiss() } }
-            .semantics { contentDescription = A11yLabels.DISMISS_SHEET })
+            .testTag("sheet.scrim").semantics { contentDescription = A11yLabels.DISMISS_SHEET; motionAlpha = scrimAlpha * progress })
 
         val drag = rememberDraggableState { delta -> dragBy(delta) }
         val visibleNow by rememberUpdatedState(visible)   // the connection is remembered once; read the live flag
@@ -217,6 +250,15 @@ fun IosSheet(
         Box(
             Modifier.fillMaxWidth().align(Alignment.TopCenter)
                 .offset { IntOffset(0, topPx.roundToInt()) }
+                .graphicsLayer {
+                    val p = shownBack
+                    if (p > 0f) {
+                        scaleX = 1f - SHEET_BACK_SHRINK_X.toPx() / size.width * p
+                        scaleY = 1f - SHEET_BACK_SHRINK_Y.toPx() / size.height * p
+                        transformOrigin = TransformOrigin(0.5f, 1f)
+                    }
+                }
+                .testTag("sheet")
                 .padding(horizontal = 8.dp)
                 .height(heightDp)
                 .clip(RoundedCornerShape(44.dp))
@@ -240,6 +282,7 @@ fun IosSheet(
 }
 
 /** The sheet's settle spring: Compose's own medium-low stiffness, critically damped (no bounce). */
+/** Motion.spatial's stiffness: the fling cap above is worked out from it. */
 private const val SHEET_STIFFNESS = Spring.StiffnessMediumLow
 
 /** The sheet's position (px from the top of the screen) and the settle in flight, if any. */

@@ -65,7 +65,53 @@ object MarkdownStreamSplitter {
     fun displayTail(tail: String): String {
         if (tail.isEmpty()) return tail
         if (isInsideUnclosedFence(tail)) return tail
-        return stabilizeIncompleteLink(stabilizeIncompleteTable(tail))
+        return stabilizeIncompleteEmphasis(stabilizeIncompleteLink(stabilizeIncompleteTable(tail)))
+    }
+
+    /**
+     * An unclosed `*` / `_` opener in the last paragraph loses its marker, as an incomplete link shows its label: the
+     * words show plain and turn italic or bold when the closer arrives. `*Have a good` painted its literal asterisk
+     * until then (the maintainer 2026-10-25, via pm; iOS does the same). A run opens when a non-space follows it and closes when
+     * a non-space precedes it; `_` inside a word (snake_case) and a run between spaces (`2 * 3`) are not emphasis, and
+     * a run at the very end is a marker still arriving, so it is held too. Code spans are skipped.
+     */
+    private fun stabilizeIncompleteEmphasis(markdown: String): String {
+        val start = markdown.lastIndexOf("\n\n").let { if (it < 0) 0 else it + 2 }
+        data class Run(val at: Int, val ch: Char, val len: Int)
+        val open = ArrayList<Run>(); val drop = ArrayList<Run>()
+        var i = start; var codeRun = 0
+        while (i < markdown.length) {
+            val c = markdown[i]
+            if (c == '\\' && codeRun == 0) { i += 2; continue }
+            if (c == '`') {
+                var n = 0; while (i < markdown.length && markdown[i] == '`') { n++; i++ }
+                if (codeRun == 0) codeRun = n else if (codeRun == n) codeRun = 0
+                continue
+            }
+            if (codeRun != 0 || (c != '*' && c != '_')) { i++; continue }
+            var n = 0; while (i + n < markdown.length && markdown[i + n] == c) n++
+            val before = markdown.getOrNull(i - 1).takeIf { i > start }
+            val after = markdown.getOrNull(i + n)
+            val canOpen = after != null && !after.isWhitespace()
+            val canClose = before != null && !before.isWhitespace()
+            val intraword = c == '_' && before?.isLetterOrDigit() == true && after?.isLetterOrDigit() == true
+            when {
+                intraword -> Unit
+                canClose && open.any { it.ch == c } -> {
+                    val k = open.indexOfLast { it.ch == c }
+                    open.subList(k, open.size).clear()
+                }
+                canOpen -> open += Run(i, c, n)
+                after == null && before != null -> drop += Run(i, c, n)   // a marker still arriving
+            }
+            i += n
+        }
+        if (codeRun != 0) return markdown
+        val cuts = (open + drop).sortedByDescending { it.at }
+        if (cuts.isEmpty()) return markdown
+        val out = StringBuilder(markdown)
+        for (r in cuts) out.delete(r.at, r.at + r.len)
+        return out.toString()
     }
 
     private fun isInsideUnclosedFence(markdown: String): Boolean {

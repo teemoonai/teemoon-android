@@ -1,4 +1,4 @@
-// ports: teemoon/Confidential/TLSAttestationVerifier.swift @ b34d1ec (the verifier; TlsAttestation is its own file)
+// ports: teemoon/Confidential/TLSAttestationVerifier.swift @ a09537fe (the verifier; TlsAttestation is its own file)
 //
 // TLS attestation — proves the HTTPS connection terminates INSIDE the model
 // TEE, so nothing between the device and the enclave (network, load
@@ -29,6 +29,7 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.security.MessageDigest
@@ -110,18 +111,18 @@ class TlsAttestationVerifier(
 ) {
 
     /** Fetches attestation with `include_tls_fingerprint=true` over a fresh TLS connection to [directBaseUrl], captures that connection's certificate, and verifies the bindings. */
-    suspend fun verify(directBaseUrl: String): TlsAttestation {
+    /** Main-safe: the report's bindings and its quote's DCAP check run on [VerifyWork]. */
+    suspend fun verify(directBaseUrl: String): TlsAttestation = withContext(VerifyWork.dispatcher) { verifyHere(directBaseUrl) }
+
+    private suspend fun verifyHere(directBaseUrl: String): TlsAttestation {
         val nonce = randomNonce()
         val url = directBaseUrl.trimEnd('/') + "/attestation/report?include_tls_fingerprint=true&signing_algo=ecdsa&nonce=$nonce"
+        // An address teemoon can't build is teemoon's fault (iOS: URLComponents fails), not an outage: it asks with the approved line.
+        if (url.toHttpUrlOrNull() == null) return TlsAttestation.Inconclusive(NrasVerification.TEEMOON_FAULT)
         val result = try { probe.get(url) } catch (e: CancellationException) { throw e } catch (_: Exception) { return TlsAttestation.Inconclusive("TLS attestation request failed") }
         if (result.status != 200) return TlsAttestation.Inconclusive("TLS attestation request failed")
-        val certDer = result.leafCertificateDer ?: return TlsAttestation.Inconclusive("no server certificate captured")
-        val report = runCatching { Json.parseToJsonElement(String(result.body, Charsets.UTF_8)) as? JsonObject }.getOrNull()
-        fun field(k: String) = (report?.get(k) as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
-        val quote = field("intel_quote"); val address = field("signing_address"); val fingerprint = field("tls_cert_fingerprint")
-        if (quote == null || address == null || fingerprint == null) return TlsAttestation.Inconclusive("attestation response missing TLS fields")
-        val bindings = verifyBindings(quote, address, field("signing_algo") ?: "ecdsa", fingerprint, certDer, nonce)
-        val outcome = if (bindings == TlsAttestation.Verified) withQuoteCheck(bindings, quoteCheck(quote)) else bindings
+        val (bindings, quote) = verifyResponse(result.body, result.leafCertificateDer, nonce)
+        val outcome = if (bindings == TlsAttestation.Verified && quote != null) withQuoteCheck(bindings, quoteCheck(quote)) else bindings
         if (outcome is TlsAttestation.Failed) log("[tls] ${outcome.reason}")
         return outcome
     }
@@ -144,25 +145,39 @@ class TlsAttestationVerifier(
          */
         fun withQuoteCheck(bindings: TlsAttestation, dcap: DcapVerification): TlsAttestation {
             if (bindings != TlsAttestation.Verified) return bindings
-            if (!dcap.isHardFailure) return TlsAttestation.Verified
             return when (dcap) {
+                // Not hard is not verified: a quote Intel couldn't check proves nothing about the connection (iOS)
+                is DcapVerification.Unchecked -> TlsAttestation.Inconclusive("TLS attestation quote couldn't be checked (${dcap.reason})")
                 is DcapVerification.Failed -> TlsAttestation.Failed("TLS attestation quote failed DCAP verification (${dcap.reason})")
-                is DcapVerification.Verified -> TlsAttestation.Failed("TLS attestation quote TCB status ${dcap.tcbStatus.rawValue} is not accepted")
+                is DcapVerification.Verified -> if (dcap.isHardFailure) TlsAttestation.Failed("TLS attestation quote TCB status ${dcap.tcbStatus.rawValue} is not accepted")
+                    else TlsAttestation.Verified
             }
+        }
+
+        /** The probe's 200 body against the live certificate; the quote comes back for the DCAP step. */
+        fun verifyResponse(body: ByteArray, liveCertDer: ByteArray?, nonceHex: String): Pair<TlsAttestation, String?> {
+            // Not captured is our capture or the connection: soft. A captured certificate that won't parse is evidence.
+            if (liveCertDer == null) return TlsAttestation.Inconclusive("no server certificate captured") to null
+            val report = runCatching { Json.parseToJsonElement(String(body, Charsets.UTF_8)) as? JsonObject }.getOrNull()
+            fun field(k: String) = (report?.get(k) as? JsonPrimitive)?.takeIf { it.isString }?.contentOrNull
+            val quote = field("intel_quote"); val address = field("signing_address"); val fingerprint = field("tls_cert_fingerprint")
+            if (quote == null || address == null || fingerprint == null) return TlsAttestation.Failed("attestation response missing TLS fields") to null
+            return verifyBindings(quote, address, field("signing_algo") ?: "ecdsa", fingerprint, liveCertDer, nonceHex) to quote
         }
 
         /** Verifies the three TLS-attestation bindings. Pure — no network. */
         fun verifyBindings(quoteHex: String, signingAddress: String, signingAlgo: String, tlsCertFingerprintHex: String, liveCertDer: ByteArray, nonceHex: String): TlsAttestation {
             // 1. The live certificate's SPKI hash must equal the attested value — this is what proves the connection terminates in the TEE.
-            val liveSpki = spkiSha256(liveCertDer) ?: return TlsAttestation.Inconclusive("could not read the TLS certificate’s public key")
+            //    The hash covers the whole SPKI whatever its key type, so null here is malformed DER, never "unsupported".
+            val liveSpki = spkiSha256(liveCertDer) ?: return TlsAttestation.Failed("could not read the TLS certificate’s public key")
             if (!liveSpki.equals(tlsCertFingerprintHex, ignoreCase = true)) return TlsAttestation.Failed("live TLS certificate does not match the attested fingerprint")
             // 2. report_data[0:32] == SHA256(signing_address ‖ tls_cert_fingerprint)
             val reportData = runCatching { QuoteParser.parseHex(quoteHex).body.reportData }.getOrNull()
-                ?: return TlsAttestation.Inconclusive("could not parse the attestation quote")
-            if (reportData.size < 64) return TlsAttestation.Inconclusive("unexpected report_data length")
+                ?: return TlsAttestation.Failed("could not parse the attestation quote")
+            if (reportData.size < 64) return TlsAttestation.Failed("unexpected report_data length")
             val addrHex = if (signingAlgo.lowercase() == "ecdsa" && signingAddress.startsWith("0x")) signingAddress.substring(2) else signingAddress
             val addrBytes = addrHex.hexToBytesOrNull(); val fpBytes = tlsCertFingerprintHex.hexToBytesOrNull()
-            if (addrBytes == null || fpBytes == null) return TlsAttestation.Inconclusive("bad signing address or fingerprint encoding")
+            if (addrBytes == null || fpBytes == null) return TlsAttestation.Failed("bad signing address or fingerprint encoding")
             val expected = MessageDigest.getInstance("SHA-256").digest(addrBytes + fpBytes)
             if (!reportData.copyOfRange(0, 32).contentEquals(expected)) return TlsAttestation.Failed("report_data does not bind the signing key + TLS certificate")
             // 3. report_data[32:64] == nonce (freshness)

@@ -140,6 +140,83 @@ class OpenAiTransportE2EETest {
         ReasoningEffort.forgetRefusals()
     }
 
+    // audit 2026-11-06 (proxy 0be4ee8f): under E2EE v2 near.ai's proxy returns reply fields in plaintext only when the
+    // request asks for one. conformance/e2ee-request-keys.json (kit 0.5.10, iOS d623299c, sha256 08947008…1e35) names them;
+    // 0.5.10 adds return_prompt_token_ids (alone it returns the whole conversation's prompt token ids in plaintext at v2,
+    // sglang 3eccc307 serving_chat.py:2047) and return_meta_info. `stop` stays allowed: it echoes only the user's own string.
+    private val requestKeys = Json.parseToJsonElement(javaClass.getResourceAsStream("/e2ee-request-keys.json")!!.reader().readText()).jsonObject
+    private val forbidden = requestKeys.getValue("forbiddenKeys").jsonArray.map { it.jsonPrimitive.content }.toSet()
+    private val pathSuffix = requestKeys.getValue("allowedPathSuffix").jsonPrimitive.content
+    private fun keysAtAnyDepth(e: kotlinx.serialization.json.JsonElement): Set<String> = when (e) {
+        is kotlinx.serialization.json.JsonObject -> e.keys + e.values.flatMap { keysAtAnyDepth(it) }
+        is kotlinx.serialization.json.JsonArray -> e.flatMap { keysAtAnyDepth(it) }.toSet()
+        else -> emptySet()
+    }
+    /** A sealed near.ai turn's wire requests, (path, body), each answered with a sealed "ok". */
+    private fun sealedTurn(endpoint: String, extras: Map<String, String>, tools: Boolean = false): Pair<List<Pair<String, String>>, Throwable?> {
+        val model = ModelKey(); val peer = E2EEPeer(model.edPub)
+        val wire = ArrayList<Pair<String, String>>()
+        val server = Interceptor { chain ->
+            wire += chain.request().url.encodedPath to requestBody(chain)
+            val sealedReply = E2EEEnvelope.seal("ok".toByteArray(), Ed25519ToX25519.publicKey(chain.request().header("X-Client-Pub-Key")!!.hexToBytesOrNull()!!)).toHex()
+            jsonResponse(chain, """{"id":"chatcmpl-3","choices":[{"message":{"role":"assistant","content":"$sealedReply"},"finish_reason":"stop"}]}""")
+        }
+        val transport = OpenAiTransport(endpoint, "z-ai/glm-5.2", "k", client = client(server), teeContext = context(peer, model.edPub), extraParams = extras,
+            effort = ReasoningEffort.For(ReasoningEffort.FAST, ai.teemoon.providers.Provider(id = "n", name = "near.ai", endpoint = "https://cloud-api.near.ai/v1", model = "z-ai/glm-5.2", requiresAPIKey = true)))
+        val tool = object : Tool {
+            override val name = "web_search"; override val description = "search the web"
+            override val parametersSchema = """{"type":"object","properties":{"query":{"type":"string"}}}"""
+            override suspend fun execute(argumentsJson: String) = ""
+        }
+        val thrown = runCatching { runBlocking { transport.runTurn(listOf(mapOf("role" to "user", "content" to "my private data")), tools, if (tools) listOf(tool) else emptyList()) {} } }.exceptionOrNull()
+        return wire to thrown
+    }
+
+    /** iOS E2EERequestKeysTests.noSealedRequestCarriesAPlaintextReplyField: what teemoon itself builds never asks. */
+    @Test fun noSealedRequestCarriesAPlaintextReplyField() {
+        assertEquals(7, forbidden.size)
+        assertFalse("stop stays allowed", "stop" in forbidden)
+        for (tools in listOf(false, true)) {
+            val (wire, thrown) = sealedTurn("https://cloud-api.near.ai/v1/chat/completions", emptyMap(), tools)
+            assertNull(thrown); assertTrue(wire.isNotEmpty())
+            for ((path, body) in wire) {
+                assertTrue(path, path.endsWith(pathSuffix))
+                assertEquals(emptySet<String>(), keysAtAnyDepth(Json.parseToJsonElement(body)).intersect(forbidden))
+            }
+        }
+    }
+
+    /**
+     * iOS E2EERequestKeysTests.aPlacesExtraParametersNeverAskForPlaintext: a place's extra parameters carrying one of the
+     * vector's keys, or a sealed turn aimed anywhere but chat completions, are refused before the wire with the existing
+     * "couldn't be encrypted, so it wasn't sent" error. Latent: no screen or import sets extras (pm 2026-11-06).
+     */
+    @Test fun aPlacesExtraParametersNeverAskForPlaintext() {
+        val vectors = requestKeys.getValue("extraParamsVectors").jsonObject
+        assertEquals("refused before the wire", vectors.getValue("expected").jsonPrimitive.content)
+        for (key in vectors.getValue("keys").jsonArray.map { it.jsonPrimitive.content }) {
+            val (wire, thrown) = sealedTurn("https://cloud-api.near.ai/v1/chat/completions", mapOf(key to "true"))
+            assertTrue("$key: $thrown", thrown is LlmError)
+            assertEquals(key, emptyList<Pair<String, String>>(), wire)
+        }
+        val (wire, thrown) = sealedTurn("https://cloud-api.near.ai/v1/completions", emptyMap())
+        assertTrue("$thrown", thrown is LlmError)
+        assertEquals(emptyList<Pair<String, String>>(), wire)
+        assertEquals("the existing error, no new words", "the request couldn't be encrypted, so it wasn't sent. try again. if it keeps happening, re-verify from the lock icon.", (thrown as LlmError).message)
+        // at any depth: a key nested inside the body is refused too
+        val nested = """{"messages":[{"role":"user","content":"hi"}],"stream":true,"extra":{"return_token_ids":true}}""".toByteArray()
+        val transport = OpenAiTransport("https://cloud-api.near.ai/v1/chat/completions", "z-ai/glm-5.2", "k")
+        assertTrue(runCatching { transport.e2eeSealedBody(nested, E2EEStreamCodec(E2EEPeer(ModelKey().edPub))) }.exceptionOrNull() is LlmError)
+        // the code's list covers the kit's
+        assertTrue(OpenAiTransport.PLAINTEXT_REPLY_KEYS.containsAll(forbidden + vectors.getValue("keys").jsonArray.map { it.jsonPrimitive.content }))
+    }
+
+    /** pm 2026-11-06: no preset carries a key that would ask near.ai for a reply field in the clear. */
+    @Test fun noPresetCarriesAPlaintextReplyKey() {
+        val keys = forbidden + requestKeys.getValue("extraParamsVectors").jsonObject.getValue("keys").jsonArray.map { it.jsonPrimitive.content }
+        for (p in ai.teemoon.providers.Provider.presets) assertEquals(p.name, emptySet<String>(), p.extraParams.keys.intersect(keys))
+    }
+
     /** A reply that does not decrypt kills the turn: the ciphertext is never rendered, not even for a beat. */
     @Test fun decryptFailure_failsTheStream_neverRendersCiphertext() {
         val model = ModelKey()

@@ -15,9 +15,30 @@ import java.io.File
  */
 class BackendLadderTest {
 
-    /** Measured on the Pixel 10 Pro: the GPU shows the first word in 3.7 s against the CPU's 17.4 s (see BackendLadder). */
+    /** A Mali Pixel (8a: Tensor G3) leads with the GPU and ends at the CPU. */
     @Test fun aPixelLeadsWithTheGpuAndEndsAtTheCpu() {
-        assertEquals(listOf(BackendKind.GPU, BackendKind.CPU), BackendLadder.order(socModel = "Tensor G5", hardware = "blazer"))
+        assertEquals(listOf(BackendKind.GPU, BackendKind.CPU), BackendLadder.order(socModel = "Tensor G3", hardware = "akita"))
+    }
+
+    /**
+     * The Pixel 10's PowerVR (Tensor G5) runs the general file on the CPU (the maintainer 2026-10-26): cached GPU kernels decode
+     * at half speed there and GPU loads take 13.7 s cached / 56.5 s cold, against the CPU's 5.3 / 13.2 s and ~13.5 tok/s.
+     */
+    @Test fun thePixel10sPowerVrRunsTheGeneralFileOnTheCpu() {
+        assertEquals(listOf(BackendKind.CPU), BackendLadder.order(socModel = "Tensor G5", hardware = "blazer"))
+        assertEquals(listOf(BackendKind.CPU), BackendLadder.order(socModel = " tensor g5 ", hardware = "frankel"))
+        assertEquals(false, BackendLadder.isPowerVr("Tensor G4"))
+    }
+
+    /**
+     * The CPU rung runs a 4096 window whatever is asked (the maintainer 2026-10-26, "processor only": long reply 7.8 s against
+     * 10.4 s on the Pixel 10 Pro's CPU); the GPU keeps what it was asked until measured, and nothing is ever raised.
+     */
+    @Test fun onlyTheCpuRungTakesTheSmallWindow() {
+        assertEquals(4096, BackendLadder.contextTokens(BackendKind.CPU, 8192))
+        assertEquals(2048, BackendLadder.contextTokens(BackendKind.CPU, 2048))
+        assertEquals(8192, BackendLadder.contextTokens(BackendKind.GPU, 8192))
+        assertEquals(4096, BackendLadder.contextTokens(BackendKind.NPU, 4096))
     }
 
     /**
@@ -119,5 +140,46 @@ class BackendLadderTest {
         repeat(40) { memo.remember("key-$it", BackendKind.CPU) }
         assertTrue("the memo grew to ${file.readLines().size} lines", file.readLines().size <= 16)
         assertEquals(BackendKind.CPU, memo.remembered("key-39"))  // the newest verdict is the one kept
+    }
+
+    /**
+     * An image turn tries only the rungs that run a vision encoder; on an NPU bundle that carries one (the Snapdragon
+     * 8 Elite's, the maintainer 2026-11-12) that is the NPU itself, with the GPU encoder beside it.
+     */
+    @Test fun anImageTurnKeepsTheNpuOnlyOnABundleThatSeesImages() {
+        assertEquals(listOf(BackendKind.NPU), BackendLadder.visionLadder(listOf(BackendKind.NPU), requireNpu = true))
+        assertEquals(listOf(BackendKind.GPU, BackendKind.CPU), BackendLadder.visionLadder(listOf(BackendKind.GPU, BackendKind.CPU), requireNpu = false))
+        assertEquals(listOf(BackendKind.CPU), BackendLadder.visionLadder(listOf(BackendKind.CPU), requireNpu = false))
+    }
+
+    /**
+     * The maintainer 2026-11-12 ("yes": image turns on the Pixel 10 move to the GPU if the measurement says so). Pixel 10 Pro,
+     * E2B, three cached GPU runs against the CPU, every answer right: first token 0.72 / 1.50 / 4.15 s for 1 / 4 / 10
+     * pictures against 2.09 / 6.31 / 14.37 s, turns 3.9 / 11.7 / 26.8 s against 5.4 / 15.1 / 36.5 s, no slowdown from run
+     * to run (the 10-26 cached-kernel halving was text decode). Text on the general file stays on the CPU there.
+     */
+    @Test fun thePixel10sImageTurnsLeadWithTheGpu() {
+        assertEquals(listOf(BackendKind.GPU, BackendKind.CPU), BackendLadder.visionOrder("Tensor G5", "blazer"))
+        assertEquals("text on the general file stays on the CPU", listOf(BackendKind.CPU), BackendLadder.order("Tensor G5", "blazer"))
+        assertEquals("elsewhere, the text ladder's vision rungs", listOf(BackendKind.GPU, BackendKind.CPU), BackendLadder.visionOrder("Tensor G4", "caiman"))
+        assertEquals("the emulator stays on the CPU", listOf(BackendKind.CPU), BackendLadder.visionOrder("", "ranchu"))
+    }
+
+    /**
+     * The maintainer 2026-11-12: "we should have in code a simple way of deciding whether to use gpu or cpu … use the data
+     * you gathered to come up with a rule". docs/bench/2026-11-12-images: flagship GPUs named all 10 pictures right
+     * (Snapdragon 8 Elite SM8750 and 8 Elite Gen 5 SM8850; Tensor G2 GS201, G4, G5), the mid-range ones did not, with no
+     * error (Galaxy A25, Exynos 1280: 2 of 10; Moto g54, Dimensity 7020: 0 of 10), and the CPU named every one right on
+     * every phone. So an image turn uses the GPU only on a Google Tensor or a Snapdragon 8-series chip; anywhere else it
+     * runs on the CPU. Text keeps its own ladder.
+     */
+    @Test fun imageTurnsUseTheGpuOnlyOnTensorAndSnapdragon8() {
+        val gpu = listOf(BackendKind.GPU, BackendKind.CPU); val cpu = listOf(BackendKind.CPU)
+        for (soc in listOf("SM8750", "SM8850", "sm8650", "Tensor G4", "Tensor G5", "Tensor G6", "GS201", "GS101", "Zuma", "zumapro"))
+            assertEquals(soc, gpu, BackendLadder.visionOrder(soc, "qcom"))
+        for (soc in listOf("s5e8825", "MT6855V/AZA", "MT6789", "SM7435", "SM6375", "s5e9945", ""))
+            assertEquals("'$soc': the CPU", cpu, BackendLadder.visionOrder(soc, "x"))
+        assertEquals("text keeps its ladder on a mid-range GPU", gpu, BackendLadder.order("s5e8825", "s5e8825"))
+        assertEquals("the emulator stays on the CPU", cpu, BackendLadder.visionOrder("SM8750", "ranchu"))
     }
 }

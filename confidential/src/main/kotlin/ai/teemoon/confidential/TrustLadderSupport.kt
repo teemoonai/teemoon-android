@@ -24,6 +24,8 @@ data class EnclaveGroup(
     val recipe: RecipeCard? = null,
     /** The per-node plaintext-egress rollup. Model enclave only; empty = no machine-readable findings indexed (NOT "nothing found"). */
     val egressFindings: List<NodeFinding> = emptyList(),
+    /** The quote checked here, but Intel's DCAP verdict on it is still out: the seal waits, never green (trust-pending-state). */
+    val quotePending: Boolean = false,
 ) {
     /** Header evidence for the recipe card — the exact inner compose the signed action log pinned, and whether it checked out. */
     data class RecipeCard(
@@ -105,11 +107,14 @@ data class NodeFindingSplit(val live: List<NodeFinding>, val latent: List<NodeFi
  * collapses behind a count. Severity-sorted, stable within a band.
  */
 fun splitNodeFindings(findings: List<NodeFinding>): NodeFindingSplit {
-    val sorted = findings.sortedBy { severityRank(it.severity) }
+    val sorted = findings.sortedBy { severityRank(it.severity.lowercase()) }
+    // the reviewer's words matched in any case: "ON" sank a live finding to latent (trust-audit-links-gated)
+    fun on(f: NodeFinding) = f.deployed.equals("on", ignoreCase = true)
+    fun info(f: NodeFinding) = f.severity.equals("info", ignoreCase = true)
     return NodeFindingSplit(
-        live = sorted.filter { it.deployed == "on" && it.severity != "info" },
-        latent = sorted.filter { it.deployed != "on" && it.severity != "info" },
-        info = sorted.filter { it.severity == "info" })
+        live = sorted.filter { on(it) && !info(it) },
+        latent = sorted.filter { !on(it) && !info(it) },
+        info = sorted.filter(::info))
 }
 
 /**

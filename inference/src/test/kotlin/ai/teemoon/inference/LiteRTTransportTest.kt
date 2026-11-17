@@ -16,7 +16,7 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class LiteRTTransportTest {
-    private class ScriptedEngine(val pieces: List<String>, val runTool: Boolean = false) : LocalEngineHandle {
+    private class ScriptedEngine(val pieces: List<String>, val runTool: Boolean = false, override val contextTokens: Int? = null) : LocalEngineHandle {
         var specs = ArrayList<LocalConversationSpec>(); var closed = false
         override suspend fun stream(spec: LocalConversationSpec, onPiece: suspend (String) -> Unit) {
             specs += spec
@@ -47,6 +47,20 @@ class LiteRTTransportTest {
         assertEquals(listOf(LocalRole.USER to "one", LocalRole.MODEL to "1"), spec.history)
         assertEquals(LocalRole.MODEL, LiteRTTransport.role("assistant")); assertEquals(LocalRole.TOOL, LiteRTTransport.role("tool")); assertEquals(LocalRole.USER, LiteRTTransport.role(null))
     }
+    /** IMAGES.md §4b: a turn with an image hands the runtime its bytes beside the question's text — never as text. */
+    @Test fun aTurnWithAnImageGivesTheEngineItsBytesAndOnlyTheTextAsTheQuestion() = runTest {
+        val engine = ScriptedEngine(listOf("a cat")); val t = transport(cache(Factory { engine }))
+        val jpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 7)
+        t.runTurn(listOf(msg("system", "be brief"), mapOf("role" to "user", "content" to wireContent("what is this?", listOf(WireImage("image/jpeg", jpeg))))),
+            includeTools = false, tools = emptyList()) {}
+        val spec = engine.specs.single()
+        assertEquals("what is this?", spec.userText)
+        assertTrue(spec.userImages.single().contentEquals(jpeg))
+        // A plain turn carries none.
+        val plain = ScriptedEngine(listOf("hi")); transport(cache(Factory { plain })).runTurn(listOf(msg("user", "hi")), includeTools = false, tools = emptyList()) {}
+        assertEquals(emptyList<ByteArray>(), plain.specs.single().userImages)
+    }
+
     @Test fun trimmingKeepsTheMostRecentTurnsThatFit() {
         val turns = listOf(msg("user", "a".repeat(400)), msg("assistant", "b".repeat(400)), msg("user", "c".repeat(400)))
         val kept = LiteRTTransport.trimmedHistory(turns, budgetTokens = 210)
@@ -64,7 +78,6 @@ class LiteRTTransportTest {
         val spec = engine.specs.single()
         assertFalse("thinking is off, as on iOS", spec.enableThinking)
         assertEquals("iOS answerReserveTokens", 4800, spec.maxOutputTokens)
-        assertEquals(LocalDefaults.TEMPERATURE, spec.temperature)
     }
     /** Gemma's thinking never streams into the bubble: the chip covers it, as it does for a cloud model's reasoning. */
     @Test fun thinkingNeverReachesAPartial_inEitherMarkup() = runTest {
@@ -197,6 +210,25 @@ class LiteRTTransportTest {
         val spec = engine.specs.single()
         assertEquals("the small window dropped the history", 4, spec.history.size)
         assertEquals("three", spec.userText)
+    }
+
+    /**
+     * The CPU rung builds a 4096 window when 8192 was asked (BackendLadder.contextTokens). The turn budgets by the
+     * window the engine HAS — budgeting by the request would hand a 4096 engine an 8192 prompt — and the developer
+     * card's request headers say which one ran.
+     */
+    @Test fun theTurnBudgetsByTheWindowTheEngineWasBuiltWith() = runTest {
+        // a ~3000-token turn fits 8192's history budget (~3390) and not 4096's (~2730)
+        val chat = listOf(msg("system", "be brief"), msg("user", "x".repeat(4 * 3000)), msg("assistant", "1"), msg("user", "two"), msg("assistant", "2"), msg("user", "three"))
+        val gpu = ScriptedEngine(listOf("ok"))
+        val asked = transport(cache(Factory { gpu })).runTurn(chat, includeTools = false, tools = emptyList()) {}
+        assertEquals(4, gpu.specs.single().history.size); assertEquals("8192", asked.report.requestHeaders?.get("context-tokens"))
+        val cpu = ScriptedEngine(listOf("ok"), contextTokens = 4096)
+        val factory = Factory { cpu }
+        val built = transport(cache(factory)).runTurn(chat, includeTools = false, tools = emptyList()) {}
+        assertEquals("asked for the default window", listOf("/models/gemma-4-E2B-it.litertlm@8192"), factory.opened)
+        assertEquals("the long turn no longer fits the 4096 window's history budget", 3, cpu.specs.single().history.size)
+        assertEquals("4096", built.report.requestHeaders?.get("context-tokens"))
     }
 
     /**

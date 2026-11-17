@@ -1,4 +1,4 @@
-// ports: teemoon/Providers/NearAIModelCatalog.swift @ v1.0.4
+// ports: teemoon/Providers/NearAIModelCatalog.swift @ 94488f2 (+ tierListSeen @ ea19232)
 package ai.teemoon.providers
 
 import kotlinx.serialization.SerialName
@@ -37,10 +37,23 @@ object NearAIModelCatalog {
         /** Attested, third-party hardware (Chutes). */
         TEE_THIRD_PARTY("attested on third-party hardware"),
         /** Passthrough to an upstream API — no enclave. */
-        PROXIED("proxied");
+        PROXIED("proxied"),
+        /**
+         * No id rule names it and the catalogue has not said (iOS 9862a35, audit gardener #7). Claims nothing, and is
+         * never "ordinary": a missing direct host degrades the session. The label is pending the maintainer's review.
+         */
+        UNKNOWN("not yet confirmed");
 
         /** Whether a model in this tier can present a verifiable attestation. */
-        val isAttestable: Boolean get() = this != PROXIED
+        val isAttestable: Boolean get() = this == TEE_OWN || this == TEE_THIRD_PARTY
+
+        companion object {
+            /**
+             * Strongest first. ONE order for the browser's trust sections and [ordered] (iOS displayOrder, 94488f2): a
+             * second list is how UNKNOWN first matched no section and its models went unlisted.
+             */
+            val displayOrder = listOf(TEE_OWN, TEE_THIRD_PARTY, UNKNOWN, PROXIED)
+        }
     }
 
     /**
@@ -51,12 +64,29 @@ object NearAIModelCatalog {
     private val tierCache = HashMap<String, Confidentiality>()
     private val tierLock = Any()
 
+    /**
+     * Whether near.ai's tier list (saved or live) has been recorded since launch (iOS ea19232). Not cleared by
+     * [resetTierCache], so a suite resetting the process-wide cache cannot flip another suite's answers; a test chooses
+     * with [tierListSeenOverride].
+     */
+    val tierListSeen: Boolean get() = tierListSeenOverride ?: tierListSeenFlag
+    @Volatile private var tierListSeenFlag = false
+    /** Test hook: null follows the flag. */
+    @Volatile var tierListSeenOverride: Boolean? = null
+
     fun recordTiers(tiers: Map<String, Confidentiality>) {
         if (tiers.isEmpty()) return
+        tierListSeenFlag = true
         synchronized(tierLock) {
             for ((id, tier) in tiers) tierCache[id.lowercase()] = tier
         }
+        // a verdict waiting on the tier re-reads it now (it waited for the next unrelated change before)
+        for (l in tierListeners) l()
     }
+
+    private val tierListeners = java.util.concurrent.CopyOnWriteArrayList<() -> Unit>()
+    /** Called after each [recordTiers]; the confidential session re-reads its verdict. */
+    fun onTiersRecorded(listener: () -> Unit) { tierListeners += listener }
 
     /**
      * What the catalogue has actually SAID about these ids, for saving beside a
@@ -102,6 +132,10 @@ object NearAIModelCatalog {
         if (byID == Confidentiality.PROXIED) return Confidentiality.PROXIED
         val cached = synchronized(tierLock) { tierCache[id.lowercase()] }
         if (cached != null) return cached
+        // Before near.ai's tier list has been seen once, no guess claims own fleet (iOS ea19232): a fresh install, a first
+        // setup before /v1/models answers, or cleared storage read z-ai/, qwen/, gemma… ids as "end-to-end encrypted" for
+        // an id near.ai had not vouched for. UNKNOWN claims nothing, and a missing direct host degrades.
+        if (byID == Confidentiality.TEE_OWN && !tierListSeen) return Confidentiality.UNKNOWN
         return byID
     }
 
@@ -150,8 +184,15 @@ object NearAIModelCatalog {
         // `typesafe/…` (jev) is proxied live (owned_by, 2026-10-02): filed own-fleet offline it read end-to-end
         // encrypted until the live tiers arrived — sending stayed fail-closed, the screen over-claimed.
         if (l.startsWith("x-ai/") || l.startsWith("deepseek/") || l.startsWith("typesafe/")) return Confidentiality.PROXIED
-        return Confidentiality.TEE_OWN
+        // Own fleet only by a namespace near.ai hosts itself. Anything else waits for the catalogue's owned_by: guessing
+        // own fleet put an "end-to-end encrypted" tag, and the attestation and E2EE capabilities, on unseen ids until
+        // the live tiers arrived (iOS 9862a35, audit gardener #7).
+        if (OWN_FLEET_NAMESPACES.any { l.startsWith(it) }) return Confidentiality.TEE_OWN
+        return Confidentiality.UNKNOWN
     }
+
+    /** The namespaces of near.ai's own fleet, lower-cased (iOS ownFleetNamespaces; keep the Python mirror in step). */
+    val OWN_FLEET_NAMESPACES = listOf("z-ai/", "zai-org/", "deepseek-ai/", "qwen/", "meta-llama/", "nearai/")
 
     // Identity/formatting helpers are catalog-generic — see [ModelCatalog],
     // which every adapter shares. Kept here as forwarders so near.ai call sites
@@ -212,11 +253,7 @@ object NearAIModelCatalog {
      * ties keep the server's order rather than inventing one.
      */
     fun ordered(models: List<KnownModel>): List<KnownModel> {
-        fun rank(m: KnownModel) = when (confidentiality(m.id)) {
-            Confidentiality.TEE_OWN -> 0
-            Confidentiality.TEE_THIRD_PARTY -> 1
-            Confidentiality.PROXIED -> 2
-        }
+        fun rank(m: KnownModel) = Confidentiality.displayOrder.indexOf(confidentiality(m.id))
         return models.withIndex().sortedWith(Comparator { a, b ->
             val ra = rank(a.value); val rb = rank(b.value)
             if (ra != rb) return@Comparator ra - rb

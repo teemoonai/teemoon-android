@@ -1,4 +1,4 @@
-// ports: teemoon/Confidential/ModelArtifact.swift @ v1.0.5 (canonicalRepo: the HF-cache path names the repo, not the snapshot)
+// ports: teemoon/Confidential/ModelArtifact.swift @ v1.1.0 (canonicalRepo: the HF-cache path names the repo, not the snapshot)
 package ai.teemoon.confidential
 
 import ai.teemoon.providers.NearAIModelCatalog

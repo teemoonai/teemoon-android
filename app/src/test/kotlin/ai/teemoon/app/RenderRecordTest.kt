@@ -47,6 +47,32 @@ class RenderRecordTest {
         })
     }
 
+    /** 1.1's image prompts in 1.0.6's card (pm 2026-10-31): the second-download offer, and the refusal note with no title. */
+    @Test fun emitImageDownloadOffer() {
+        emit(record("chat.alert.imageDownload") {
+            IosAlert(ai.teemoon.app.imaging.ImageCopy.OFFER_DOWNLOAD_TITLE, ai.teemoon.app.imaging.ImageCopy.OFFER_DOWNLOAD_BODY,
+                listOf(ai.teemoon.app.imaging.ImageCopy.OFFER_DOWNLOAD to {}, ai.teemoon.app.imaging.ImageCopy.OFFER_NOT_NOW to {}), onDismiss = {})
+        })
+    }
+
+    /** An export opened or shared to teemoon, held until the tap (IncomingExport; pm 2026-11-01). */
+    @Test fun emitHeldExport() {
+        emit(record("chats.alert.heldExport") { IosAlert("", ImportCopy.FOOTER, listOf(ImportCopy.ROW to {}, "cancel" to {}), onDismiss = {}) })
+    }
+
+    @Test fun emitImageRefusal() {
+        emit(record("chat.alert.imageRefusal") { IosAlert(ai.teemoon.app.imaging.CantSeeRoute.alertTitle("glm-5p3"), ai.teemoon.app.imaging.CantSeeRoute.alertMessage(hasText = true), ai.teemoon.app.imaging.CantSeeRoute.alertButtons(hasText = true).map { it to {} }, onDismiss = {}) })
+    }
+
+    /** A choice of three in 1.0.6's alert (the maintainer 2026-10-31, "Revert all to 1.0.6"): stacked pills, the unencrypted send red. */
+    @Test fun emitThreeChoiceAlert() {
+        val choices = E2EESendChoice.choices(hardFailure = false, provenanceOnly = false)
+        emit(record("chat.alert.e2ee") {
+            IosAlert("end-to-end encryption unavailable", E2EESendChoice.message(hardFailure = false, provenanceOnly = false, cause = null), choices.map { it.label to {} }, onDismiss = {},
+                destructive = choices.filter { it.isDestructive }.map { it.label }.toSet())
+        })
+    }
+
     /**
      * The values are RESOLVED, which is the whole point. A caller that overrides
      * the style must show up as the overridden size — a source-reading tool sees

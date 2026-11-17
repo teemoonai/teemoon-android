@@ -115,6 +115,35 @@ class LocalModelStorageTest {
      * An NPU bundle carries no CPU or GPU graph, so a ref that names one must ALSO say it needs the NPU — otherwise
      * the engine walks a ladder whose every other rung fails on a tensor lookup rather than on the accelerator.
      */
+    /**
+     * the maintainer 2026-10-26 (a): a Tensor bundle not measured reading images is taken to carry no vision encoder. Text
+     * stays on it; image turns run the general file when that is downloaded too, and until then images need it as a second
+     * download. No catalogued bundle is unmeasured now (the G5's and the G6's read images: below), so the test marks one.
+     */
+    @Test fun anUnmeasuredTensorBundlesImagesRunTheGeneralFileBesideIt() {
+        // every Tensor bundle in the catalog now reads images (G5 18531682, G6 below), so the path is held with one marked not to
+        val unmeasured = gemma.copy(npuBundles = gemma.npuBundles.mapValues { (_, b) -> b.copy(seesImages = false) })
+        val dir = tmp.newFolder(); val storage = LocalModelStorage(dir, listOf(unmeasured.forDevice("Tensor G6")))
+        val bundle = LocalModelCatalog.npuBundle(unmeasured, "tensor g6")!!
+        storage.npuFile(gemma, bundle).apply { parentFile?.mkdirs() }.writeText("npu")
+        val npuOnly = storage.ref(gemma.id, "Tensor G6")!!
+        assertEquals(true, npuOnly.requiresNpu)
+        assertEquals(null, npuOnly.imageBundleFile)
+        assertEquals(false, npuOnly.seesImages)
+        assertEquals(true, npuOnly.imagesNeedSecondDownload)
+        storage.file(gemma).writeText("general")
+        val both = storage.ref(gemma.id, "Tensor G6")!!
+        assertEquals("text stays on the NPU", true, both.requiresNpu)
+        assertEquals(bundle.fileName, File(both.bundleFile).name)
+        assertEquals(gemma.fileName, File(both.imageBundleFile!!).name)
+        assertEquals(gemma.sizeMB, both.imageSizeMB)
+        assertEquals(true, both.seesImages)
+        assertEquals(false, both.imagesNeedSecondDownload)
+        // the general file alone sees images and needs nothing more
+        val general = LocalModelStorage(tmp.newFolder()).apply { file(gemma).apply { parentFile?.mkdirs() }.writeText("g") }.ref(gemma.id, "")!!
+        assertEquals(true, general.seesImages); assertEquals(false, general.imagesNeedSecondDownload)
+    }
+
     @Test fun anInstalledNpuBundleWinsAndIsMarkedAsNeedingTheNpu() {
         val dir = tmp.newFolder(); val storage = LocalModelStorage(dir)
         val bundle = LocalModelCatalog.npuBundle(gemma, "tensor g5")!!
@@ -138,5 +167,51 @@ class LocalModelStorageTest {
         assertEquals(false, storage.isInstalled(gemma))          // the general one is still absent
         assertEquals(true, storage.isInstalled(gemma, bundle))
         assertNull(storage.ref(gemma.id))                        // and without a chip name there is nothing to run
+    }
+
+    /**
+     * The maintainer 2026-11-12 ("i say we just use snapdragon npu for images"): the Snapdragon 8 Elite's NPU bundle carries
+     * the vision encoder (the S25 Ultra read 1, 4 and 10 pictures on it, 0.13–0.32 s to the first token, 2026-11-12), so
+     * its image turns stay on the NPU bundle — no second download, no general file. Tensor's bundles still need it.
+     */
+    @Test fun aSnapdragon8ElitesImagesStayOnTheNpuBundle() {
+        val storage = LocalModelStorage(tmp.newFolder(), LocalModelCatalog.forDevice("SM8750"))
+        val bundle = LocalModelCatalog.npuBundle(gemma, "SM8750")!!
+        storage.npuFile(gemma, bundle).apply { parentFile?.mkdirs() }.writeText("npu")
+        val ref = storage.ref(gemma.id, "SM8750")!!
+        assertEquals(true, ref.requiresNpu)
+        assertEquals("images on the NPU bundle itself", null, ref.imageBundleFile)
+        assertEquals(true, ref.seesImages)
+        assertEquals(false, ref.imagesNeedSecondDownload)
+    }
+
+    /**
+     * The maintainer 2026-11-12 ("B is good"): the Tensor G5's NPU bundle reads images itself — Firebase Test Lab's Pixel 10,
+     * 2026-11-12: 1, 4 and 10 pictures all named right, 10 in 1.50 s to the first token (its GPU 6.17 s, CPU 28.3 s), at
+     * 1.7 GB against the GPU's 4.3 — so its image turns stay on the NPU bundle, with no second download.
+     */
+    /**
+     * The maintainer 2026-11-12 ("yes", G6 as B): the Tensor G6's NPU bundle reads images itself — Firebase Test Lab's Pixel
+     * 11 and 11 Pro, 2026-11-12: 10 pictures named right in 0.85 / 0.97 s to the first token (their GPUs 3.16 / 3.35 s).
+     */
+    @Test fun aTensorG6sImagesStayOnTheNpuBundle() {
+        val storage = LocalModelStorage(tmp.newFolder(), LocalModelCatalog.forDevice("Tensor G6"))
+        val bundle = LocalModelCatalog.npuBundle(gemma, "tensor g6")!!
+        storage.npuFile(gemma, bundle).apply { parentFile?.mkdirs() }.writeText("npu")
+        val ref = storage.ref(gemma.id, "Tensor G6")!!
+        assertEquals("images on the NPU bundle itself", null, ref.imageBundleFile)
+        assertEquals(true, ref.seesImages)
+        assertEquals(false, ref.imagesNeedSecondDownload)
+    }
+
+    @Test fun aTensorG5sImagesStayOnTheNpuBundle() {
+        val storage = LocalModelStorage(tmp.newFolder(), LocalModelCatalog.forDevice("Tensor G5"))
+        val bundle = LocalModelCatalog.npuBundle(gemma, "tensor g5")!!
+        storage.npuFile(gemma, bundle).apply { parentFile?.mkdirs() }.writeText("npu")
+        val ref = storage.ref(gemma.id, "Tensor G5")!!
+        assertEquals(true, ref.requiresNpu)
+        assertEquals("images on the NPU bundle itself", null, ref.imageBundleFile)
+        assertEquals(true, ref.seesImages)
+        assertEquals(false, ref.imagesNeedSecondDownload)
     }
 }

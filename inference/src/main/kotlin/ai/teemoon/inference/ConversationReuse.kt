@@ -32,10 +32,16 @@ data class KeptConversation(
 )
 
 object ConversationReuse {
+    /**
+     * IMAGES.md §4b @ 00f72739: a request with any image, the question's or an earlier one, prefills everything and keeps
+     * nothing — the kept transcript is text, so a conversation that saw an image is never the next turn's seed.
+     */
+    fun reusable(requestImages: Int): Boolean = requestImages == 0
+
     /** True when [spec] would seed exactly what [kept] already holds, so only [LocalConversationSpec.userText] needs sending. */
     fun canReuse(kept: KeptConversation?, spec: LocalConversationSpec): Boolean =
         kept != null && kept.systemMessage == spec.systemMessage && kept.toolDescriptions == spec.tools.map { it.descriptionJson } &&
-            kept.maxOutputTokens == spec.maxOutputTokens && kept.enableThinking == spec.enableThinking && kept.transcript == spec.history
+            kept.maxOutputTokens == spec.maxOutputTokens && kept.enableThinking == spec.enableThinking && kept.transcript == spec.history && reusable(spec.requestImages)
 
     /**
      * What the Conversation holds after a turn that answered [rawAnswer] — or null when it must not be kept. The raw
@@ -43,7 +49,7 @@ object ConversationReuse {
      * the next history will not match and the turn rebuilds.
      */
     fun afterTurn(spec: LocalConversationSpec, rawAnswer: String, toolsRan: Int, completed: Boolean): KeptConversation? {
-        if (!completed || toolsRan > 0 || spec.enableThinking || rawAnswer.isEmpty()) return null
+        if (!completed || toolsRan > 0 || spec.enableThinking || rawAnswer.isEmpty() || !reusable(spec.requestImages)) return null
         return KeptConversation(spec.systemMessage, spec.tools.map { it.descriptionJson }, spec.maxOutputTokens, spec.enableThinking,
             spec.history + (LocalRole.USER to spec.userText) + (LocalRole.MODEL to rawAnswer))
     }

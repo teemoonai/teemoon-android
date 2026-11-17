@@ -57,7 +57,7 @@ class OnDeviceDecodeBenchTest {
      * One run. [sink] is what each piece is handed to: the point of the test is comparing a no-op sink against one
      * that does what the app does, so a slow consumer shows up as a slow "decode rate" exactly as it does in the app.
      */
-    private fun run(label: String, path: String, constrained: Boolean, speculative: Boolean?, tokens: Int, context: Int = 4096, temperature: Float = 0.8f, sink: suspend (String) -> Unit) = runBlocking {
+    private fun run(label: String, path: String, constrained: Boolean, speculative: Boolean?, tokens: Int, context: Int = 4096, sink: suspend (String) -> Unit) = runBlocking {
         ExperimentalFlags.enableConversationConstrainedDecoding = constrained
         ExperimentalFlags.enableSpeculativeDecoding = speculative
         val factory = LiteRtLmEngineFactory(ctx.cacheDir.path, ::log, nativeLibraryDir = npuDir,
@@ -66,12 +66,12 @@ class OnDeviceDecodeBenchTest {
         try {
             val spec = LocalConversationSpec(systemMessage = null, history = emptyList(), tools = emptyList(),
                 userText = "Write a short paragraph about the planet Jupiter.", maxOutputTokens = tokens,
-                enableThinking = false, temperature = temperature)
+                enableThinking = false)
             val wall = System.currentTimeMillis()
             engine.stream(spec, sink)
             val elapsed = System.currentTimeMillis() - wall
             val b = engine.benchmark()
-            log("$label [backend=${factory.backendLabel} ctx=$context temp=$temperature constrained=$constrained speculative=$speculative] " +
+            log("$label [backend=${factory.backendLabel} ctx=$context constrained=$constrained speculative=$speculative] " +
                 "ttft=${b?.timeToFirstTokenSeconds}s prefill=${b?.prefillTokens}tok (${b?.prefillTokensPerSecond?.toInt()}tok/s) " +
                 "decode=${b?.decodeTokens}tok (${b?.decodeTokensPerSecond?.toInt()}tok/s) wall=${elapsed}ms")
         } finally { engine.close() }
@@ -420,11 +420,5 @@ class OnDeviceDecodeBenchTest {
         val common = off.commonPrefixWith(on)
         log("greedy-compare verdict: identical=${off == on} commonPrefixChars=${common.length} of off=${off.length}/on=${on.length}; divergence after: \"" + common.takeLast(60).replace('\n', ' ') + "\"")
         ExperimentalFlags.enableSpeculativeDecoding = null
-    }
-
-    /** Sampling is the per-token cost that fell back to the CPU. Greedy skips the distribution entirely. */
-    @Test fun decodeGreedy() {
-        val path = modelPath(); assumeTrue("no on-device model installed", path != null)
-        run("greedy", path!!, constrained = true, speculative = null, tokens = 96, temperature = 0f) { }
     }
 }

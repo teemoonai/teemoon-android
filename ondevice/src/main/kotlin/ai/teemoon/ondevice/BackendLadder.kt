@@ -68,12 +68,82 @@ object BackendLadder {
      * @param socModel `Build.SOC_MODEL` ("Tensor G5"), or empty when the device will not say.
      * @param hardware `Build.HARDWARE` ("blazer", "ranchu").
      */
+    /**
+     * The rungs an image turn may run on: those with a vision encoder beside them — the GPU and the CPU; and the NPU when
+     * the bundle is NPU-only ([requireNpu]) and an image turn reaches it at all, which only a bundle that carries the
+     * encoder does (NpuBundle.seesImages: the Snapdragon 8 Elite's and the Tensor G5's and G6's; LocalModelStorage routes an
+     * unmeasured bundle's to the general file).
+     */
+    /**
+     * The order for an image turn on the general file: the GPU then the CPU where the GPU reads images right
+     * ([readsImagesOnGpu]), else the CPU alone. The Pixel 10's PowerVR leads with the GPU here though its text does not (the
+     * maintainer 2026-11-12, on the measurement): Pixel 10 Pro, E2B, three cached GPU runs against the CPU, every answer right —
+     * first token 0.72 / 1.50 / 4.15 s for 1 / 4 / 10 pictures against 2.09 / 6.31 / 14.37 s, no slowdown from run to run.
+     * Its text on the general file stays on the CPU ([order]): the cached-kernel halving of 10-26 was text decode.
+     */
+    fun visionOrder(socModel: String, hardware: String): List<BackendKind> = when {
+        hardware.lowercase() in EMULATORS -> listOf(BackendKind.CPU)
+        readsImagesOnGpu(socModel) -> listOf(BackendKind.GPU, BackendKind.CPU)
+        else -> listOf(BackendKind.CPU)
+    }
+
+    /**
+     * A GPU whose image turns are right: a Google Tensor's or a Snapdragon 8-series' (the maintainer 2026-11-12, "use the
+     * data you gathered to come up with a rule"; docs/bench/2026-11-12-images). Those named all 10 pictures right
+     * (Snapdragon 8 Elite and 8 Elite Gen 5; Tensor G2, G4, G5); two mid-range GPUs named them WRONG with no error — the
+     * Galaxy A25's Mali-G68 (Exynos 1280) 2 of 10, the Moto g54's (Dimensity 7020) 0 of 10, gibberish even for one — and
+     * the CPU named every one right on every phone. A wrong answer that looks right is the failure this app cannot ship,
+     * so every other chip's image turns run on the CPU: slower (14–54 s for 10 pictures), never wrong that way.
+     * `Build.SOC_MODEL`: "SM8750", "Tensor G5"; the Pixel 6 and 7 read "GS101" / "GS201", the Pixel 8 "Zuma".
+     */
+    fun readsImagesOnGpu(socModel: String): Boolean {
+        val soc = socModel.trim().lowercase()
+        return soc.startsWith("sm8") || soc.startsWith("tensor") || soc.startsWith("gs") || soc.startsWith("zuma")
+    }
+
+    fun visionLadder(full: List<BackendKind>, requireNpu: Boolean): List<BackendKind> =
+        full.filter { it == BackendKind.GPU || it == BackendKind.CPU || (requireNpu && it == BackendKind.NPU) }
+
     fun order(socModel: String, hardware: String): List<BackendKind> {
         // The emulator's GPU initializes on the host's software adapter and then dies at decode. The honest probe
         // would catch that, but only after paying a full model load for it, so skip straight to the floor.
         if (hardware.lowercase() in EMULATORS) return listOf(BackendKind.CPU)
+        // The Pixel 10 family's PowerVR GPU (Tensor G5), measured on a Pixel 10 Pro 2026-10-26 with the general Gemma 4
+        // E2B file: LiteRT's cached GPU kernels decode at HALF speed (5-6 tok/s against 10-13 on a fresh compile;
+        // deleting only *_mldrift_program_cache.bin restores it), and GPU loads take 13.7 s cached / 56.5 s cold. The
+        // CPU rung loads in 5.3 / 13.2 s and decodes at ~13.5 tok/s; Google AI Edge Gallery offers this phone the CPU
+        // alone for the file. the maintainer 2026-10-26: the CPU. The cost is prefill (~120 tok/s at 4 threads against the GPU's
+        // 600+), paid on long histories — on this phone the general file only serves image turns (text runs the NPU
+        // bundle), and cpuThreads is tuned for it. Mali (Pixel 8a, 6a) keeps the GPU: no slowdown there.
+        if (isPowerVr(socModel)) return listOf(BackendKind.CPU)
         return listOf(BackendKind.GPU, BackendKind.CPU)
     }
+
+    /** `Build.SOC_MODEL` of a chip whose GPU is a PowerVR: the Tensor G5. */
+    fun isPowerVr(socModel: String): Boolean = socModel.trim().lowercase() == "tensor g5"
+
+    /**
+     * The CPU rung's thread count. LiteRT-LM 0.18.0's `Backend.CPU` takes one count for prefill and decode alike (its two
+     * parameters are one setting under two names). 4 was measured best for DECODE on the Pixel 10 Pro (2026-09-16: 14
+     * tok/s default, 17 at 4, 16 at 6, 14 at 8); prefill wants more. Per-chip values come from GalleryParityBenchTest's
+     * thread sweep. `null` is the runtime's own default.
+     */
+    fun cpuThreads(socModel: String): Int? = CPU_THREADS_DEFAULT
+
+    private const val CPU_THREADS_DEFAULT = 4
+
+    /**
+     * The KV window a rung is built with, for a [requested] one. The CPU rung takes 4096 (Gallery's own maxTokens 4000):
+     * Pixel 10 Pro, general Gemma 4 E2B, CPU at 4 threads, 2026-10-26 (GalleryParityBenchTest t11, medians of 3), a long
+     * reply took 7.8 s at 4096 against 10.4 s at 8192, prefill 180 tok/s against 124, and 180 MB less. The cost is half
+     * the history and a search payload sized to it (BraveWebSearchTool's budget, ~1,500 tokens instead of ~4,200).
+     * the maintainer 2026-10-26 ("processor only"): the CPU rung alone — the Pixel 10's image turns and any CPU fallback. GPU
+     * phones keep 8192 until an A/B there says otherwise; the NPU bundle's window is compiled in and never asked here.
+     */
+    fun contextTokens(kind: BackendKind, requested: Int): Int =
+        if (kind == BackendKind.CPU) minOf(requested, CPU_CONTEXT_TOKENS) else requested
+
+    const val CPU_CONTEXT_TOKENS = 4096
 
     /**
      * Speculative decoding (`ExperimentalFlags.enableSpeculativeDecoding`: the bundle's MTP drafter proposes a batch,

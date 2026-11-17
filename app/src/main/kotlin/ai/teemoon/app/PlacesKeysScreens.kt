@@ -1,6 +1,6 @@
 // ports: teemoon/Views/Settings/PlacesKeysViews.swift @ v1.0.4 — REBUILD in Compose (PlacesKeysHubView, PlaceManageRow's title/subtitle rule,
 //        MachinesPlaceManageView, CloudKeysManageView)
-//        teemoon/Views/Settings/CloudKeyProviderPickerView.swift @ v1.0.5 (CloudKeyProviderPickerScreen)
+//        teemoon/Views/Settings/CloudKeyProviderPickerView.swift @ v1.0.6 (CloudKeyProviderPickerScreen)
 package ai.teemoon.app
 
 import ai.teemoon.providers.LocalServerKind
@@ -76,7 +76,7 @@ object CloudKeyPicker {
             presetName = it.name,
             title = it.name.lowercase(),
             caption = WhereProviderPresentation.presetCaption(it),
-            showsE2EE = ProviderCapability.END_TO_END_ENCRYPTION in it.capabilities,
+            showsE2EE = it.claimsEndToEndEncryption,
         )
     }
 
@@ -114,7 +114,7 @@ fun PlacesKeysHubScreen(machineCount: Int, cloudBadge: String, onOpenMachines: (
         // The value gives way, never the title (LabeledContent), and it ends at the chevron. As a second weighted child
         // beside the title's column it got half the row and stopped mid-row (seen on the Pixel, 2026-10-04).
     }
-    Footer("to switch model mid-chat, tap the model chip above the message field — not here.")
+    Footer(SettingsCopy.PLACES_PAGE_FOOTER)
 }
 
 @Composable

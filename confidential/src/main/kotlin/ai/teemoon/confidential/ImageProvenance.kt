@@ -1,5 +1,6 @@
 // ports: teemoon/Confidential/ImageProvenance.swift @ v1.0.1 (the ImageProvenance value type and its
-//        failureReason table only; ProvenanceVerifier.kt is the Sigstore/Rekor half)
+//        failureReason table only; ProvenanceVerifier.kt is the Sigstore/Rekor half; identityNotThisBuild @ e03c78a5,
+//        the outage's source @ cf8002d5)
 package ai.teemoon.confidential
 
 /** Whether one image digest traces to a pinned near.ai workflow. */
@@ -25,6 +26,8 @@ sealed interface ImageProvenance {
         data object SignatureInvalid : Reason
         data class CertificateChainInvalid(val detail: String) : Reason
         data class IdentityNotTrusted(val got: String) : Reason
+        /** Inside near.ai's org but not the image's own build (wrong repo, workflow or branch). Definitive, like [IdentityNotTrusted]. */
+        data class IdentityNotThisBuild(val got: String) : Reason
         data class DigestMismatch(val expected: String, val got: String) : Reason
         /**
          * Definitive: the attestation was fetched and is absent/wrong (e.g.
@@ -36,8 +39,11 @@ sealed interface ImageProvenance {
          * either way. Callers should treat the check as inconclusive rather
          * than failed.
          */
-        data class FetchTransient(val detail: String) : Reason
+        data class FetchTransient(val detail: String, val from: TransientSource = TransientSource.GITHUB) : Reason
     }
+
+    /** Only the wording follows the source; every source is equally inconclusive (T2b). */
+    enum class TransientSource { GITHUB, DOCKER_HUB }
 
     val isVerified: Boolean get() = this is Verified
 
@@ -51,10 +57,14 @@ sealed interface ImageProvenance {
             is Verified -> null
             is Unverified -> when (reason) {
                 is Reason.FetchFailed -> "no published attestation (GitHub 404)"
-                is Reason.FetchTransient -> "couldn’t reach GitHub (rate-limited or offline)"
+                is Reason.FetchTransient -> when (reason.from) {
+                    TransientSource.GITHUB -> "couldn’t reach GitHub (rate-limited or offline)"
+                    TransientSource.DOCKER_HUB -> "couldn’t reach Docker Hub (rate-limited or offline)"
+                }
                 is Reason.SignatureInvalid -> "signature didn’t verify"
                 is Reason.CertificateChainInvalid -> "certificate didn’t chain to Sigstore’s roots"
                 is Reason.IdentityNotTrusted -> "signed by an identity outside near.ai’s org"
+                is Reason.IdentityNotThisBuild -> "signed inside near.ai, but not by this image’s build"
                 is Reason.DigestMismatch -> "signed digest doesn’t match the running image"
                 is Reason.MalformedBundle -> "attestation bundle was malformed"
             }

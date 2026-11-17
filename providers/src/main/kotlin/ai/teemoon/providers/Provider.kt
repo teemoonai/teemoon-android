@@ -212,8 +212,11 @@ data class Provider(
             // still be an overclaim.
             // isNearAI, not `endpoint.contains("near.ai")` — that was true for api.linear.ai and near.ai.evil.com,
             // and handed them both capabilities (iOS daf3486, "one near.ai host rule").
-            if (isNearAI &&
-                NearAIModelCatalog.confidentiality(model) == NearAIModelCatalog.Confidentiality.TEE_OWN
+            // UNKNOWN too (an own-fleet guess before the tier list is seen, iOS cdcae74b): not knowing the tier must not
+            // send plain TLS without asking. The attested path proves it or degrades and the gate asks. What the screens
+            // CLAIM is [claimsEndToEndEncryption], not this.
+            if (isNearAI && NearAIModelCatalog.confidentiality(model).let {
+                    it == NearAIModelCatalog.Confidentiality.TEE_OWN || it == NearAIModelCatalog.Confidentiality.UNKNOWN }
             ) {
                 caps += ProviderCapability.ATTESTATION
                 caps += ProviderCapability.END_TO_END_ENCRYPTION
@@ -222,6 +225,14 @@ data class Provider(
             if (supportsModelBrowsing) caps += ProviderCapability.MODEL_BROWSING
             return caps
         }
+
+    /**
+     * Whether a screen may say "end-to-end encrypted" / show the e2ee tag (iOS cdcae74b). Stricter than [capabilities]:
+     * a near.ai id is claimed only once its tier says own fleet.
+     */
+    val claimsEndToEndEncryption: Boolean
+        get() = ProviderCapability.END_TO_END_ENCRYPTION in capabilities &&
+            (!isNearAI || NearAIModelCatalog.confidentiality(model) == NearAIModelCatalog.Confidentiality.TEE_OWN)
 
     private fun openAIHost(): String? {
         var s = endpoint

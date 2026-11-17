@@ -1,13 +1,15 @@
-// ports: teemoon/Confidential/ConfidentialSession.swift @ ebc9bdb (e2eeKey and attestationOutcome poll to their deadline)
+// ports: teemoon/Confidential/ConfidentialSession.swift @ v1.0.6 (e2eeKey and attestationOutcome poll to their deadline)
+//        teemoon/Confidential/ConfidentialSession.swift, +Verdict.swift, +Refresh.swift @ 38647a07 (S30: sendPending, pendingKind,
+//        provenancePending, staleRefetchPending, provenanceUncheckedAsks, chipState, the pending confirm reasons)
 //        teemoon/Confidential/ConfidentialSession+Verdict.swift @ v1.0.4
-//        teemoon/Confidential/ConfidentialSession+Refresh.swift @ ebc9bdb (adopt: the record and its verifiers in one step)
+//        teemoon/Confidential/ConfidentialSession+Refresh.swift @ v1.0.6 (adopt: the record and its verifiers in one step)
 //        teemoon/Confidential/ConfidentialSession+Verifiers.swift @ v1.0.4
 //        teemoon/Confidential/ConfidentialSession+Verdict.swift @ v1.0.4 (a sealed session reads VERIFYING until provenance settles)
 //        teemoon/Confidential/ConfidentialSession+Verifiers.swift @ v1.0.4 (provenanceSettled, with a run token)
-//        teemoon/Confidential/ConfidentialSession.swift @ ebc9bdb (verdictsPending / settleVerifiers / abandonTurn; prepareTurn settles)
-//        teemoon/Confidential/ConfidentialSession.swift @ ebc9bdb (verdictsPending is attested-only)
-//        teemoon/Confidential/ConfidentialSession+Refresh.swift @ ebc9bdb (clearDerivedState drops the verifier handles)
-//        teemoon/Confidential/ConfidentialSession+Refresh.swift @ ebc9bdb (directHostMissing; a failed fetch retried once a minute)
+//        teemoon/Confidential/ConfidentialSession.swift @ v1.0.6 (verdictsPending / settleVerifiers / abandonTurn; prepareTurn settles)
+//        teemoon/Confidential/ConfidentialSession.swift @ v1.0.6 (verdictsPending is attested-only)
+//        teemoon/Confidential/ConfidentialSession+Refresh.swift @ v1.0.6 (clearDerivedState drops the verifier handles)
+//        teemoon/Confidential/ConfidentialSession+Refresh.swift @ v1.0.6 (directHostMissing; a failed fetch retried once a minute)
 //        teemoon/Confidential/ConfidentialSession+Verdict.swift @ v1.0.4 (e2eeDegradedReason names the directory)
 //        teemoon/Confidential/ConfidentialSession+Verifiers.swift @ v1.0.4 (an inconclusive pass keeps the last verdict)
 //        TEEContext / prepareTurn / finishTurn / canSeal are here since the E2EE row landed; NOT here:
@@ -80,6 +82,16 @@ class ConfidentialSession(
         /** Previews and capture harnesses must not fetch (iOS reads process flags; here the host says so). */
         val skipLiveAttestation: Boolean = false,
         val now: () -> Instant = { Instant.now() },
+        /**
+         * near.ai's tier list, asked for again with each attestation while it has never been seen: a keyless GET of
+         * /v1/models that records the tiers (NearAIModelCatalog.fetchLive). Null: not wired (tests, previews).
+         */
+        val fetchTiers: (suspend () -> Boolean)? = null,
+        /**
+         * [TIER_DEADLINE_MS] (iOS VerdictDeadline(after:)). Null only for a test of the window BEFORE the deadline that
+         * runs the scheduler to idle: advanceUntilIdle would cross any deadline, however long.
+         */
+        val tierDeadlineMs: Long? = TIER_DEADLINE_MS,
     )
 
     /**
@@ -106,7 +118,7 @@ class ConfidentialSession(
             if (model != null && model != p.model) return null
             return rec
         }
-        set(value) { attestationStored = value; touch() }
+        set(value) { attestationStored = value; touch(); if (value != null) activeProviderSource()?.let(::watchTier) }
     /** Backing storage; the public accessor applies the read gate. */
     private var attestationStored: AttestationRecord? = null
 
@@ -115,12 +127,18 @@ class ConfidentialSession(
      * `@Observable`; Compose collects this and re-reads the snapshot. The
      * value is a counter, never the state itself.
      */
+    // sentBeforeConfirmed settle state (settleDue): declared before anything that touches, since init does
+    private val awaitingSettle = LinkedHashSet<String>()
+    /** E2EE messages held while their record was pending: counted on a pass, never on a hard fail (countsAsE2EE). */
+    private val heldE2EE = HashMap<String, Int>()
+    private val failedRecords = HashSet<String>()
     private val _changes = MutableStateFlow(0L)
     val changes: StateFlow<Long> = _changes.asStateFlow()
-    private fun touch() { _changes.value += 1 }
+    private fun touch() { _changes.value += 1; settleDue() }
 
     /** Set to true when the attestation fetch fails, so the UI can stop showing a spinner. */
     var attestationFetchFailed = false
+        set(value) { field = value; touch() }
     /**
      * The server answered; near.ai's directory just lists no confidential
      * host for this model. Distinct from unreachable, and retried.
@@ -216,6 +234,15 @@ class ConfidentialSession(
     /** Image-provenance result for the active attestation's manifest. null = not yet checked. A definitive Incomplete degrades. */
     var imageProvenance: ManifestProvenance? = null
         set(value) { field = value; touch() }
+    /**
+     * No image could be checked: the record's provenance pass settled inconclusive (GitHub 403/429, the network) with no
+     * earlier verdict for this record to keep. The seal is fine — the chip and the send are unchanged; the trust screen
+     * says so (trust-provenance-unchecked, the maintainer 2026-11-06).
+     */
+    var provenanceUnchecked: Boolean = false
+        set(value) { field = value; touch() }
+    /** What [imageProvenance] was computed for: an inconclusive re-check keeps it only for the same record (T2). */
+    private var provenanceKey: String? = null
     /** Verdict of the model-layer (inner) compose hash check (null = not attempted). HASH_MISMATCH degrades; FETCH_FAILED is advisory. */
     var modelLayerVerification: ModelLayerVerification? = null
         set(value) { field = value; touch() }
@@ -243,6 +270,85 @@ class ConfidentialSession(
     /** Real DCAP verification (dcap-qvl) outcome for the active record's quotes. null = not yet checked; a hard failure degrades. */
     var dcapVerification: RecordDcapVerification? = null
         set(value) { field = value; touch() }
+
+    /**
+     * The 1.1.0 near.ai trust scope over the GPU node's report (NearTrustScope, pm 2026-11-04): null without one. (a) or
+     * (b) mismatch is a hard break and degrades like a DCAP hard failure; not bound / absent is soft, shown, never a
+     * degrade. Kept for the record and DCAP verdict it was computed from: the getters below read it on every frame.
+     */
+    val nearScope: NearTrustScope?
+        get() {
+            nearScopeOverride?.let { return it }
+            val att = attestation ?: return null
+            val dcap = dcapVerification
+            nearScopeCache?.let { (a, d, v) -> if (a === att && d === dcap) return v }
+            return computeNearScope(att, dcap).also { nearScopeCache = Triple(att, dcap, it) }
+        }
+    private var nearScopeCache: Triple<AttestationRecord, RecordDcapVerification?, NearTrustScope?>? = null
+    /** Tests only: a scope as the send-gate vectors state it, in place of one computed from a report (iOS sets trustScope). */
+    internal var nearScopeOverride: NearTrustScope? = null
+
+    /** The running revisions' files, hash-checked, for the chat path and the answering proxy; reset with the record. */
+    var composeBodies: Map<DeployLog.Source, String> = emptyMap()
+        set(value) { field = value; nearScopeCache = null; touch() }
+
+    /** (c)'s fetches for the current record, by (commit, file); reset with the record. */
+    var composeFileFetches: Map<Pair<String, String>, ComposeFileFetch> = emptyMap()
+        set(value) { field = value; nearScopeCache = null; touch() }
+    private var composeFilesJob: Job? = null
+    /** The DCAP verdict is being published and (c) is about to start from it: pending across that step, so no read between counts it settled. */
+    private var composeFilesStarting = false
+    /**
+     * (c) still fetching its pairs and their bodies: a check still running, as iOS counts trustScopeTask until TrustScope.run
+     * has them (pm 2026-11-07, parity). A send in this window waits or asks, and a mark made in it does not settle.
+     */
+    private val composeFilesPending: Boolean get() = composeFilesStarting || composeFilesJob?.isActive == true
+
+    /** Fetches (c)'s pairs once (a) has bound the log: before that nothing from it is named as running. */
+    private fun verifyComposeFiles() {
+        composeFilesJob?.cancel()
+        val firstScope = nearScope?.takeIf { it.deployLogBinding == DeployLogBinding.Bound } ?: return
+        val att = attestation
+        composeFilesJob = scope.launch {
+            suspend fun fetch(commit: String, file: String): Boolean {
+                if ((commit to file) in composeFileFetches) return true
+                val got = ProvenanceService.default.fetchComposeFile(commit, file)
+                if (!isActive || attestation !== att) return false
+                composeFileFetches = composeFileFetches + ((commit to file) to got)
+                return true
+            }
+            // Audit's rule A (2026-11-06): every newest whole file first — the walk reads its service names from them,
+            // and the whole log is walked — then the reported pairs, newest first, up to the cap; the rest "not fetched".
+            for (src in firstScope.wholeFileSources) if (!fetch(src.commit, src.file)) return@launch
+            val walked = nearScope?.takeIf { it.deployLogBinding == DeployLogBinding.Bound } ?: return@launch
+            for ((commit, file) in ComposeFiles.toFetch(walked.runningServices)) if (!fetch(commit, file)) return@launch
+            // The chat path and the answering proxy read the running revisions' bodies (iOS b3d90fac, 4d2a41e3).
+            val running = (nearScope?.takeIf { it.deployLogBinding == DeployLogBinding.Bound } ?: return@launch)
+                .runningServices.mapNotNull(ChatPath::sourceOf).distinct()
+            val bodies = HashMap<DeployLog.Source, String>()
+            for (src in running) {
+                ProvenanceService.default.fetchComposeBody(src)?.let { bodies[src] = it }
+                if (!isActive || attestation !== att) return@launch
+            }
+            composeBodies = bodies
+        }.also { it.invokeOnCompletion { touch() } }   // the end of the pending window is a change: the gate and settleDue re-read
+    }
+
+    private fun computeNearScope(att: AttestationRecord, dcap: RecordDcapVerification?): NearTrustScope? {
+        val report = att.gpuNodeReport ?: return null
+        val nonce = att.gpuNonce ?: return null
+        val manager = dcap?.manager
+        val managerTcb = (manager as? DcapVerification.Verified)?.tcbStatus
+        val nodeTcb = (dcap?.gpu as? DcapVerification.Verified)?.tcbStatus
+        val osImageHash = ((report["info"] as? kotlinx.serialization.json.JsonObject)?.get("os_image_hash") as? kotlinx.serialization.json.JsonPrimitive)?.content
+        // Either side of the comparison unchecked is not a disagreement, and an unchecked manager quote is not a failure.
+        val unchecked = manager is DcapVerification.Unchecked || (manager != null && dcap.gpu is DcapVerification.Unchecked)
+        return NearTrustScope.from(report, nonce, att.gpuIntelQuote, osImageHash, managerDcap = manager?.takeUnless { it.isUnchecked }?.let { !it.isHardFailure },
+            tcbDiffers = managerTcb != null && nodeTcb != null && managerTcb != nodeTcb, launcherIndex = LauncherIndex.NotChecked,
+            fetched = composeFileFetches, hardwareUnchecked = unchecked, bodies = composeBodies, host = att.gpuNodeHost)
+    }
+
+    private val nearScopeBroken: Boolean get() = nearScope?.severity == NearTrustScope.Severity.HARD
     /** NVIDIA NRAS outcome for the record's GPU evidence. null = not yet checked or no GPU evidence; Failed degrades. */
     var gpuAttestation: NrasVerification? = null
         set(value) { field = value; touch() }
@@ -274,7 +380,67 @@ class ConfidentialSession(
     internal var attestedContext: String? = null
 
     init {
+        // a tier list that lands from anywhere (the catalogue, the heal, the keyless load below) re-reads the verdict
+        val me = java.lang.ref.WeakReference(this)
+        NearAIModelCatalog.onTiersRecorded { me.get()?.let { s -> s.scope.launch { s.touch() } } }
         refreshAttestation()
+    }
+
+    // MARK: Verdict deadline (teemoon-ios VerdictDeadline.swift @ 83b8d527, the tier half)
+    // The model: teemoon-ios formal/TeemoonTrust.tla, TierTimeout with fairness (liveness: TeemoonTrust_tier.cfg; safety:
+    // TeemoonTrust_tier_safety.cfg); MAPPING's TierResolve row is the keyless fetch. The maintainer 2026-11-14: the 20 s caps the
+    // tier ONLY — every other leg keeps its own bounded timeout (iOS's commit also caps them; not ported, by that call).
+
+    /** The model whose tier is being watched, and the one still unknown at the deadline (can't check, soft). */
+    private var tierModel: String? = null
+    private var tierGaveUpOn: String? = null
+    private var tierLoadJob: kotlinx.coroutines.Job? = null
+    private var tierTimerJob: kotlinx.coroutines.Job? = null
+
+    /**
+     * near.ai's tier was still unknown at [TIER_DEADLINE_MS]: can't check, never "verifying…" forever. Soft — out of
+     * [verdictsPending], the send asks — and it ends the unpublished-image exemption (TLC found a given-up tier beside
+     * an unpublished image waved through, iOS CouldntCheckAsks).
+     */
+    val tierGaveUp: Boolean
+        get() {
+            val provider = activeProviderSource() ?: return false
+            if (ProviderCapability.ATTESTATION !in provider.capabilities) return false
+            return tierGaveUpOn == provider.model && NearAIModelCatalog.confidentiality(provider.model) == NearAIModelCatalog.Confidentiality.UNKNOWN
+        }
+
+    /**
+     * Loads near.ai's tier list for an unknown tier and starts its deadline. Independent of a key, the heal and UI-test
+     * seeding: without it the tier stays unknown and the chat reads "verifying…" forever (the 1.1.0 regression).
+     */
+    private fun watchTier(provider: Provider) {
+        if (ProviderCapability.ATTESTATION !in provider.capabilities) return
+        val model = provider.model
+        if (NearAIModelCatalog.confidentiality(model) != NearAIModelCatalog.Confidentiality.UNKNOWN) return
+        if (tierModel != model) {
+            tierLoadJob?.cancel(); tierTimerJob?.cancel(); tierLoadJob = null; tierTimerJob = null
+            tierGaveUpOn = null; tierModel = model
+        }
+        val load = services.fetchTiers
+        if (tierLoadJob == null && load != null) tierLoadJob = scope.launch {
+            for (attempt in 0..TIER_RETRY_DELAYS_MS.size) {
+                if (attempt > 0) delay(TIER_RETRY_DELAYS_MS[attempt - 1])
+                if (runCatching { load() }.getOrElse { if (it is kotlinx.coroutines.CancellationException) throw it; false }) { touch(); break }
+                warn("[tier] near.ai tier list attempt ${attempt + 1} failed")
+            }
+            if (tierModel == model) tierLoadJob = null
+        }
+        // Once given up, a re-verify reloads the list but the chip does not go back to "verifying…".
+        val deadline = services.tierDeadlineMs ?: return
+        if (tierTimerJob != null || tierGaveUpOn == model) return
+        tierTimerJob = scope.launch {
+            delay(deadline)
+            if (tierModel == model && NearAIModelCatalog.confidentiality(model) == NearAIModelCatalog.Confidentiality.UNKNOWN) {
+                warn("[tier] $model still unknown after the deadline — can't check")
+                tierGaveUpOn = model; touch()
+            }
+            tierTimerJob = null
+        }
     }
 
     // MARK: Request lifecycle
@@ -288,14 +454,32 @@ class ConfidentialSession(
     // MARK: TEE context (ConfidentialSession.swift 178–203)
 
     /** Whether a request can be sealed right now: an attesting provider, a gated record, and a usable peer. */
-    val canSeal: Boolean get() = currentTeeContext()?.e2eePeer != null
+    val canSeal: Boolean get() = currentPeerExists()
 
     /** The context for one attested request — the only place the derivation lives. */
-    fun currentTeeContext(): TeeContext? {
+    fun currentTeeContext(): TeeContext? = currentTeeContext(apiKey = null)
+
+    private fun currentTeeContext(apiKey: String?): TeeContext? {
         val provider = activeProviderSource() ?: return null
         if (ProviderCapability.ATTESTATION !in provider.capabilities) return null
         val record = attestation ?: return null
-        return TeeContext.from(provider, credentialFor(provider), record, warn)
+        return TeeContext.from(provider, apiKey ?: credentialFor(provider), record, warn)
+    }
+
+    /**
+     * Whether the current context carries an E2EE peer: the same derivation, without the API key. The peer comes from
+     * the record alone, and the chip, the alert and the composer ask this on every recomposition — each ask decrypted
+     * the key from the Android Keystore on the main thread (1.5 s across one chat open, verification and a send on the
+     * Pixel 10 Pro, 2026-11-07). Only a request reads the key.
+     */
+    private fun currentPeerExists(): Boolean {
+        // TeeContext.from's own conditions, and the model key's conversion, without making the peer: the chip, the alert
+        // and the composer read canSeal on every recomposition, and each read drew a fresh random client key (E2EE.kt).
+        // A SEND still derives its own peer in prepareTurn (pm 2026-11-14: one peer per send, never per record).
+        val provider = activeProviderSource() ?: return false
+        if (ProviderCapability.ATTESTATION !in provider.capabilities || provider.openAIBaseUrl == null) return false
+        val key = attestation?.modelEd25519PubKey ?: return false
+        return E2EEPeer.keyUsable(key)
     }
 
     /**
@@ -303,7 +487,11 @@ class ConfidentialSession(
      * attests, derive the context, and open the bookkeeping. The view model
      * must not write E2EE fields itself.
      */
-    suspend fun prepareTurn(): TeeContext? {
+    suspend fun prepareTurn(place: Provider? = null): TeeContext? {
+        // The turn was composed for [place]; a switch since then must not open a request on the provider now selected
+        // (T3, 2026-11-06: the gate read the new provider while the turn went to the old one). No context: an
+        // attested place then refuses before the wire (ChatViewModel.mustRefuseUnsealedSend).
+        if (place != null && !ownsTurn(place)) { warn("[turn] ${place.id} is no longer selected — opening nothing"); return null }
         refreshAttestationIfStale()
         val provider = activeProviderSource()
         if (provider != null && ProviderCapability.ATTESTATION in provider.capabilities) {
@@ -330,9 +518,82 @@ class ConfidentialSession(
     val awaitsFirstRecord: Boolean get() = attestationState == AttestationState.VERIFYING && attestation == null
 
     /**
-     * A hard-block-capable verdict has been asked for and has not answered:
-     * DCAP, GPU (NRAS) or TLS. Provenance is not counted — its failures are
-     * soft, and it is neutral while in flight by design.
+     * What a send waits for in [prepareTurn] (S30, the maintainer 2026-11-07: "the user feels like the e2ee is theater if
+     * status show verifying and the message still goes out"; iOS 38647a07). HARDWARE — a verdict, a stale record's
+     * refetch, the near.ai tier — asks "still checking near.ai's hardware" at the settle timeout; PROVENANCE alone asks
+     * its own question. formal/ NothingPendingAtSend.
+     */
+    enum class PendingKind { HARDWARE, PROVENANCE }
+
+    val pendingKind: PendingKind? get() = if (verdictsPending) PendingKind.HARDWARE else if (provenancePending) PendingKind.PROVENANCE else null
+
+    /**
+     * Image provenance in flight for the current record. Never drop it from [sendPending]: the chip reads verifying
+     * until it answers (formal/ ChipNeverVerifyingAtSend).
+     */
+    val provenancePending: Boolean
+        get() {
+            val provider = activeProviderSource()
+            if (provider == null || ProviderCapability.ATTESTATION !in provider.capabilities) return false
+            return imageProvenance == null && !provenanceSettled && provenanceJob != null
+        }
+
+    /** The current attestation fetch has not finished; read by [staleRefetchPending]. */
+    var attestationFetchInFlight = false
+        private set(value) { field = value; touch() }
+    private var attestationAttempt = 0
+
+    /**
+     * A record past [ATTESTATION_MAX_AGE_SECONDS] whose refetch is in flight: a send now would seal to the old key while
+     * the new record's checks are about to run — the Pixel's 15:07:30 send, which went out at once and left the chip on
+     * "verifying" for its whole reply.
+     */
+    val staleRefetchPending: Boolean
+        get() {
+            if (!attestationFetchInFlight || attestationJob?.isCancelled != false) return false
+            val record = attestation ?: return false
+            return services.now().epochSecond - record.fetchedAt.epochSecond > ATTESTATION_MAX_AGE_SECONDS
+        }
+
+    /** Every pending kind: the gate, the marks and the chip read this, never [verdictsPending] alone. */
+    val sendPending: Boolean get() = pendingKind != null
+
+    /**
+     * The provenance lookup ended inconclusive (T2b: GitHub or Docker Hub unreachable or rate-limited, no verdict) and
+     * nothing else degrades: the chip keeps its look and the send asks "couldn't confirm near.ai's software" (S30).
+     */
+    val provenanceUncheckedAsks: Boolean
+        get() = provenanceUnchecked && imageProvenance == null && attestation != null &&
+            attestationState != AttestationState.DEGRADED && attestationState != AttestationState.NONE
+
+    /**
+     * What the chip reads; the gate reads [attestationState]. Once "send anyway" answered a pending ask for this record
+     * a send may leave while it runs, so the chip must not read verifying (formal/ ChipNeverVerifyingAtSend): hardware
+     * pending reads "encrypted · hardware not confirmed", provenance alone the T2b look.
+     */
+    val chipState: AttestationState
+        get() {
+            val state = attestationState
+            if (state != AttestationState.VERIFYING) return state
+            val kind = pendingKind ?: return state
+            if (!hasConfirmed(pending = true)) return state
+            return if (kind == PendingKind.HARDWARE) AttestationState.DEGRADED else AttestationState.OK
+        }
+
+    /**
+     * The title's "encrypted · hardware not confirmed" (trust-caption-sealed): a soft state that asks, or a pending one
+     * answered with "send anyway", whose send is still sealed and whose last request didn't go out plain.
+     */
+    val sealedButHardwareUnconfirmed: Boolean
+        get() {
+            val asksAboutHardware = sendPolicy == TrustSendPolicy.CONFIRM && !provenanceUncheckedAsks
+            val answeredWhileChecking = chipState == AttestationState.DEGRADED && attestationState == AttestationState.VERIFYING
+            return (asksAboutHardware || answeredWhileChecking) && softButSealed && lastRequestUsedE2EE != false
+        }
+
+    /**
+     * The hardware kind of pending: a DCAP, GPU (NRAS), TLS or trust-scope (compose files) verdict not in yet, a stale
+     * record's refetch, or the near.ai tier still unknown (S30). Provenance is [provenancePending].
      */
     val verdictsPending: Boolean
         get() {
@@ -344,8 +605,17 @@ class ConfidentialSession(
             if (provider == null || ProviderCapability.ATTESTATION !in provider.capabilities) return false
             return (dcapJob != null && dcapVerification == null) ||
                 (nrasJob != null && gpuAttestation == null) ||
-                (tlsJob != null && tlsAttestation == null)
+                (tlsJob != null && tlsAttestation == null) ||
+                composeFilesPending ||
+                staleRefetchPending ||
+                (NearAIModelCatalog.confidentiality(provider.model) == NearAIModelCatalog.Confidentiality.UNKNOWN && !tierGaveUp)
         }
+
+    /** Intel's DCAP verdict has been asked and has not answered (an enclave's seal waits on it: trust-pending-state). */
+    val dcapPending: Boolean get() = dcapJob != null && dcapVerification == null
+
+    /** The TLS check has been asked and has not answered (the transport row shows it as checking: trust-pending-state Q2). */
+    val tlsPending: Boolean get() = tlsJob != null && tlsAttestation == null
 
     /**
      * Waits until no hard-block-capable verdict is pending, or [waitingUpToMs].
@@ -354,7 +624,7 @@ class ConfidentialSession(
      */
     suspend fun settleVerifiers(waitingUpToMs: Long) {
         repeat((waitingUpToMs / SETTLE_POLL_MS).toInt().coerceAtLeast(1)) {
-            if (!verdictsPending) return
+            if (!sendPending) return
             delay(SETTLE_POLL_MS)
         }
     }
@@ -380,6 +650,9 @@ class ConfidentialSession(
         lastE2EEFailReason = null
     }
 
+    /** Whether [place] — the provider and model a turn was sent to — is still the one selected. */
+    fun ownsTurn(place: Provider): Boolean = activeProviderSource()?.let { it.id == place.id && it.model == place.model } == true
+
     /** What a failed request reports back: the HTTP status, if any, and its user-facing line. */
     data class RequestError(val httpStatus: Int?, val userMessage: String)
 
@@ -391,10 +664,17 @@ class ConfidentialSession(
     fun recordRequestOutcome(isE2EEActive: Boolean?, error: RequestError?) {
         if (isE2EEActive != null) {
             lastRequestUsedE2EE = isE2EEActive
-            if (isE2EEActive) e2eeMessageCount += 2  // one sent + one received
+            // one sent + one received; a reply sent while its record was still being checked counts only once that
+            // record passes, and never once it failed (SentBeforeConfirmed.countsAsE2EE)
+            val key = attestation?.let(::recordKeyOf)
+            if (isE2EEActive) when {
+                key != null && key in failedRecords -> Unit
+                key != null && key in awaitingSettle -> heldE2EE[key] = (heldE2EE[key] ?: 0) + 2
+                else -> e2eeMessageCount += 2
+            }
         }
         if (lastRequestUsedE2EE != true && error != null) {
-            lastE2EEFailReason = error.httpStatus?.let { "Server rejected request (HTTP $it)" } ?: error.userMessage
+            lastE2EEFailReason = error.httpStatus?.let { "the server rejected the request (http $it)." } ?: error.userMessage
         }
     }
 
@@ -415,7 +695,10 @@ class ConfidentialSession(
      * Close the turn. Outcome and (optional) signature check are recorded here
      * so the view-model does not increment counters.
      */
-    fun finishTurn(isE2EEActive: Boolean?, error: RequestError?, verification: ResponseVerification?) {
+    fun finishTurn(isE2EEActive: Boolean?, error: RequestError?, verification: ResponseVerification?, place: Provider? = null) {
+        // A turn that ends after a switch books nothing on the provider now selected: B never earned A's "E2EE used",
+        // its message count or its verified responses (T3, 2026-11-06).
+        if (place != null && !ownsTurn(place)) { warn("[turn] ${place.id} finished after a switch — not booked"); return }
         recordRequestOutcome(isE2EEActive, error)
         verification?.let { recordVerification(it) }
     }
@@ -476,7 +759,11 @@ class ConfidentialSession(
             touch(); return
         }
         attestationJob?.cancel()
+        attestationFetchInFlight = false
+        attestationAttempt += 1
         attestationFetchFailed = false
+        // One refresh's answer, not the session's: a later refresh that fails must read DEGRADED, not NONE (T5).
+        noConfidentialEndpoint = false
         // A genuine provider *or model* switch must reset every piece of
         // attestation-derived state — otherwise the previous model's name,
         // images, drift and verdict bleed into the new selection. This clear
@@ -488,6 +775,7 @@ class ConfidentialSession(
         // so no later refresh ever saw a change, and the old model's state
         // stuck permanently (observed: GLM-5.1 → 5.2 still showing 5.1).
         val provider = activeProviderSource()
+        provider?.let(::watchTier)
         val context = provider?.let { "${it.id}|${it.model}" }
         warn("[refresh] context ${attestedContext ?: "nil"} -> ${context ?: "nil"} keepExisting=$keepExisting")
         if (context != attestedContext) clearDerivedState(resetCounts = true)
@@ -501,7 +789,10 @@ class ConfidentialSession(
         val apiKey = credentialFor(provider)
         directHostMissing = false
         attestationAttemptedAt = services.now()
+        val attempt = attestationAttempt
+        attestationFetchInFlight = true
         attestationJob = scope.launch {
+          try {
             // Adopt results only while this job still speaks for the CURRENT
             // (provider, model): a cancelled-but-completing fetch from the
             // previous selection must never write its record back over the
@@ -549,7 +840,7 @@ class ConfidentialSession(
                     return@launch
                 }
                 warn("[refresh] adopting record model=${record.model ?: "nil"} composePath=${record.modelComposePath ?: "nil"}")
-                adopt(record, provider)
+                adopt(record, provider, gpuNodeUrl)
             } catch (e: kotlinx.coroutines.CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -559,6 +850,7 @@ class ConfidentialSession(
                 if (attestation?.providerID == provID) warn("Keeping cached attestation")
                 attestationFetchFailed = true
             }
+          } finally { if (attestationAttempt == attempt) attestationFetchInFlight = false }
         }
     }
 
@@ -573,6 +865,7 @@ class ConfidentialSession(
         // Cancel AND drop the handles: a cancelled verifier never answers, and
         // a handle with no answer reads as a verdict still pending.
         dcapJob?.cancel(); dcapJob = null
+        composeFilesJob?.cancel(); composeFilesJob = null; composeFileFetches = emptyMap(); composeBodies = emptyMap()
         nrasJob?.cancel(); nrasJob = null
         tlsJob?.cancel(); tlsJob = null
         attestation = null
@@ -580,6 +873,7 @@ class ConfidentialSession(
         directHostMissing = false
         modelArtifact = null
         imageProvenance = null
+        provenanceUnchecked = false
         modelLayerVerification = null
         modelLayerManifest = null
         dcapVerification = null
@@ -628,9 +922,13 @@ class ConfidentialSession(
      */
     fun verifyImageProvenance(record: AttestationRecord) {
         provenanceJob?.cancel()
-        // A transient pass keeps this; only evidence replaces it.
-        val previous = imageProvenance
+        // A transient pass keeps this, for the same record only; only evidence replaces it. A re-verify that landed
+        // on another node showed the old node's digests (T2, 2026-11-06; iOS provenanceKey).
+        val key = provenanceKey(record)
+        val previous = if (provenanceKey == key) imageProvenance else null
         imageProvenance = null
+        provenanceUnchecked = false
+        provenanceKey = key
         modelLayerVerification = null
         modelLayerManifest = null
         modelArtifact = null
@@ -704,51 +1002,81 @@ class ConfidentialSession(
                 // last verdict instead of degrading or dropping back to pending (iOS
                 // fbedb79: a rate-limited re-sweep blanked a verified sheet); the
                 // next refresh retries.
-                warn("[provenance] inconclusive (transient fetch errors only) — keeping the last verdict")
+                warn("[provenance] inconclusive (transient fetch errors only) — keeping this record's last verdict")
                 imageProvenance = previous
+                provenanceUnchecked = previous == null
                 return@launch
             }
-            imageProvenance = result
+            // A pass over no near.ai image vouches for nothing: read it as ProvenanceService's own fail-closed answer
+            // for a manifest with none (pm, T2 2026-11-06).
+            imageProvenance = if (result is ManifestProvenance.AllVerified && result.verified.isEmpty())
+                ManifestProvenance.Incomplete(emptyList(), emptyList(), result.thirdParty) else result
           } finally {
             if (provenanceRun === run) provenanceSettled = true
           }
         }
     }
 
+    /** The manifests and the model layer a provenance verdict is about. Another node gives another key (iOS provenanceKey). */
+    internal fun provenanceKey(record: AttestationRecord): String =
+        AttestationRecord.sha256Hex(listOf(record.composeManifest ?: "", record.gpuNodeComposeManifest ?: "", record.modelComposePath ?: "",
+            record.modelComposeCommit ?: "", record.modelFileHash ?: "").joinToString("\u001F"))
+
     /**
      * Never split this with a suspension: [verdictsPending] only sees a launched job, so a record without its
      * verifiers would let a send through (iOS ebc9bdb).
      */
-    fun adopt(record: AttestationRecord, provider: Provider) {
+    fun adopt(record: AttestationRecord, provider: Provider, directBase: String? = null) {
         attestation = record
         verifyImageProvenance(record)
         verifyDcap(record)
         verifyGpu(record)
-        verifyTls(provider)
+        verifyTls(provider, directBase)
     }
 
     /** Runs real DCAP verification over the record's quotes. Fail-closed: a hard failure degrades via [attestationState]. */
     fun verifyDcap(record: AttestationRecord) {
-        dcapJob?.cancel()
+        dcapJob?.cancel(); dcapJob = null   // as verifyGpu: a cancelled job left behind reads as pending forever
         dcapVerification = null
+        composeFilesJob?.cancel(); composeFileFetches = emptyMap(); composeBodies = emptyMap()
         val service = services.verifyDcap ?: return
         dcapJob = scope.launch {
-            val result = service(record)
+            // A verifier that throws still answers (pm sweep 2026-11-06): no verdict read pending forever. Fail-closed,
+            // as an unreachable collateral already is.
+            val result = try { service(record) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+                // our bug is not evidence: couldn't check, soft (near-send-gate-rule reverses trust-verifier-error's "hard")
+                warn("[dcap] verifier threw: $e"); RecordDcapVerification(gateway = DcapVerification.Unchecked(VERIFIER_ERROR))
+            }
             if (!isActive) return@launch
-            dcapVerification = result
-            if (result.hasHardFailure) warn("[dcap] hard failure — degrading session")
+            composeFilesStarting = true
+            try {
+                dcapVerification = result
+                if (result.hasHardFailure) warn("[dcap] hard failure — degrading session")
+                // the manager quote's verdict is what (a) waited on: a bound log's compose files can be checked now
+                verifyComposeFiles()
+            } finally { composeFilesStarting = false }
+            touch()
         }
     }
 
     /** Verifies the record's GPU evidence against NVIDIA NRAS. Skipped when there is no nvidia_payload; fail-closed once evidence exists. */
     fun verifyGpu(record: AttestationRecord) {
-        nrasJob?.cancel()
+        // cancel AND drop the handle (F2, iOS's TLA+ model): a record with no GPU evidence returns below, and a kept
+        // cancelled job never answers — verdictsPending read it as NVIDIA still checking, "verifying" forever
+        nrasJob?.cancel(); nrasJob = null
         gpuAttestation = null
-        val payload = record.nvidiaPayload?.takeIf { it.isNotEmpty() } ?: return
+        // A model node that answered with no nvidia_payload couldn't be checked (S37 B4): soft, never verified, about this record
+        val payload = record.nvidiaPayload?.takeIf { it.isNotEmpty() } ?: run {
+            if (record.modelIntelQuote?.isNotEmpty() == true) gpuAttestation = NrasVerification.Inconclusive(NrasVerification.EVIDENCE_ABSENT)
+            return
+        }
         val service = services.verifyNras ?: return
         val nonce = record.modelNonce
         nrasJob = scope.launch {
-            val result = service(payload, nonce)
+            // A throw is not NVIDIA's verdict: inconclusive (soft), never pending forever.
+            val result = try { service(payload, nonce) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+                warn("[nras] verifier threw: $e"); NrasVerification.Inconclusive(VERIFIER_ERROR)
+            }
             if (!isActive) return@launch
             gpuAttestation = result
         }
@@ -759,16 +1087,23 @@ class ConfidentialSession(
      * model's authoritative direct host; when the model has no direct host, TLS
      * attestation isn't applicable (NotPerformed). Fail-closed: Failed degrades.
      */
-    fun verifyTls(provider: Provider) {
-        tlsJob?.cancel()
+    fun verifyTls(provider: Provider, resolvedDirectBase: String? = null) {
+        tlsJob?.cancel(); tlsJob = null   // as verifyGpu: a cancelled job left behind reads as pending forever
         tlsAttestation = null
         val service = services.verifyTls ?: return
         val model = provider.model
         tlsJob = scope.launch {
-            val directBase = services.directBase(model) ?: run { tlsAttestation = TlsAttestation.NotPerformed; return@launch }
+            // The host the record was fetched from, when there is one (T4, 2026-11-06): asking the directory a second
+            // time could answer "no host", and NotPerformed hid the TLS section and let the chip go green unchecked.
+            val directBase = resolvedDirectBase ?: services.directBase(model)
+            if (!isActive) return@launch
+            if (directBase == null) { tlsAttestation = TlsAttestation.NotPerformed; return@launch }
             // No credential is passed: the probe is deliberately unauthenticated —
             // it rides an any-trust connection whose peer is only verified AFTER the fact.
-            val result = service(directBase)
+            // A throw is not a fingerprint mismatch: inconclusive (soft), never pending forever.
+            val result = try { service(directBase) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+                warn("[tls] verifier threw: $e"); TlsAttestation.Inconclusive(VERIFIER_ERROR)
+            }
             if (!isActive) return@launch
             tlsAttestation = result
             if (result is TlsAttestation.Failed) warn("[tls] failed — ${result.reason}")
@@ -821,6 +1156,8 @@ class ConfidentialSession(
             // A hard failure breaks the hardware root of trust. Out-of-date TCB is
             // flagged in the sheet, not degraded (matching near.ai's own verifier).
             if (dcapVerification?.hasHardFailure == true) return AttestationState.DEGRADED
+            // Fail-closed: the action log or the boot log does not bind to the model's hardware (NearTrustScope (a)/(b)).
+            if (nearScopeBroken) return AttestationState.DEGRADED
             // Fail-closed: a quote that does not echo our request nonce may be a replay.
             if (attestation.nonceEchoed == false) return AttestationState.DEGRADED
             // Fail-closed: GPU evidence that didn't verify — whether NVIDIA rejected
@@ -832,11 +1169,18 @@ class ConfidentialSession(
             // (hard, possible MITM) or an unreachable check (inconclusive). NotPerformed
             // (no direct host) is neutral; null = in flight.
             if (tlsAttestation?.isUnverified == true) return AttestationState.DEGRADED
+            // Intel couldn't be asked about a quote: soft, the send asks (near-send-gate-rule, iOS couldntCheckHardware).
+            if (couldntCheckHardware) return AttestationState.DEGRADED
+            // near.ai's tier list never came: can't check, soft, the send asks (formal/ TierTimeout, iOS 83b8d527).
+            if (tierGaveUp) return AttestationState.DEGRADED
             // Fail-closed: a present-but-malformed key is a broken E2EE promise, not
             // "no E2EE expected". Both e2eeDegradedReason and e2eeBindingIntact
             // require 32 bytes; without this gate a wrong-length key with a verified
             // model quote read as OK (green chip) because e2eeKeyBoundToModelTEE
             // returns null — not false — when the length is wrong.
+            // A record past its age whose refetch failed is no longer vouched for: soft, never green forever
+            // (trust-stale-record, the maintainer 2026-11-06).
+            if (recordStaleUnconfirmed) return AttestationState.DEGRADED
             val key = attestation.modelEd25519PubKey
             if (key != null && key.size != 32) return AttestationState.DEGRADED
             if (key != null) {
@@ -847,13 +1191,21 @@ class ConfidentialSession(
                 if (mqv != null) {
                     if (!mqv.isVerified) return AttestationState.DEGRADED
                     if (attestation.e2eeKeyBoundToModelTEE == false) return AttestationState.DEGRADED
+                    // A DCAP, NRAS or TLS verdict asked for and not answered is not a pass (T1, 2026-11-06): OK said
+                    // "confirmed by Intel and NVIDIA" before either had answered. Same send gate: prepareTurn settles.
+                    // Before the unpublished-image case too, which asks nothing at the gate (iOS d3ca003b).
+                    if (verdictsPending) return AttestationState.VERIFYING
                     // Sealed, but a digest has no published attestation — not OK.
                     if (provenance?.isUnpublishedOnly == true) return AttestationState.DEGRADED
-                    // Sealed, and provenance is still being fetched: not green yet.
-                    // Every hard verdict above already had its say; only the
-                    // green-or-orange decision waits. The send gate is unchanged —
-                    // VERIFYING allows exactly as OK did here.
+                    // Sealed, and provenance is still being fetched: not green yet; the send waits for it (S30).
                     if (provenance == null && !provenanceSettled && provenanceJob != null) return AttestationState.VERIFYING
+                    // The near.ai tier is still unknown: it could resolve to third-party and the send go plain, so never
+                    // "verified" yet (iOS ae1430ef; chip-verifying-until-tier-known, the maintainer 2026-11-07). verdictsPending
+                    // holds the send (S30). A belt: no state reaches it with the tier UNKNOWN — still unknown, verdictsPending
+                    // returned VERIFYING above; given up, tierGaveUp returned DEGRADED earlier — so it is an equivalent mutant
+                    // (audit, 05c07fa), kept as iOS keeps it; the invariant is held by TierDeadlineTest.
+                    if (activeProviderSource()?.let { NearAIModelCatalog.confidentiality(it.model) } == NearAIModelCatalog.Confidentiality.UNKNOWN)
+                        return AttestationState.VERIFYING
                     return AttestationState.OK
                 }
                 // No model attestation available — can't confirm E2EE key provenance.
@@ -877,30 +1229,55 @@ class ConfidentialSession(
             if (provider == null || ProviderCapability.ATTESTATION !in provider.capabilities) return null
             val attestation = attestation ?: return when {
                 directHostMissing -> "near.ai lists no confidential host for this model yet."
-                attestationFetchFailed -> "Could not reach the attestation server."
+                attestationFetchFailed -> "couldn't reach the attestation server."
                 else -> null // still loading
             }
-            if (dcapVerification?.hasHardFailure == true) return "The hardware quote failed Intel DCAP verification."
-            if (attestation.codeIdentityVerified == false) return "The running code does not match the attested manifest."
-            if (modelComposeIntegrityFailed) return "The running recipe doesn’t match the signed action log — the launched configuration is unverified."
-            if (unpublishedOnlyButE2EEIntact) return "An image has no published attestation — the send is still sealed."
-            if (imageProvenance is ManifestProvenance.Incomplete) return "An image could not be traced to near.ai's published source."
-            if (attestation.nonceEchoed == false) return "The attestation did not echo this session's nonce (possible replay)."
+            if (dcapVerification?.hasHardFailure == true) return "the hardware quote failed intel dcap verification."
+            if (attestation.codeIdentityVerified == false) return "the running code doesn't match the attested manifest."
+            nearScope?.hardBreakReason?.let { return it }
+            // before (a) binds the log it may not be called signed (near-trust-scope v4)
+            if (modelComposeIntegrityFailed) return if (nearScope?.deployLogBinding == DeployLogBinding.Bound) NearTrustScope.RECIPE_UNVERIFIED else NearTrustScope.RECIPE_UNVERIFIED_UNBOUND
+            if (unpublishedOnlyButE2EEIntact) return "an image has no published attestation. the send is still sealed."
+            if (imageProvenance is ManifestProvenance.Incomplete) return "an image couldn't be traced to near.ai's published source."
+            if (attestation.nonceEchoed == false) return "the attestation didn't echo this session's nonce (possible replay)."
+            if (couldntCheckHardware) {
+                // our verifier broke: our bug, not the hardware's (trust-hardware-fail-lines), and not an outage either
+                if (dcapVerification?.uncheckedReason == VERIFIER_ERROR) return VERIFIER_BROKE
+                return INTEL_UNREACHABLE
+            }
             gpuAttestation?.let { gpu ->
-                if (gpu is NrasVerification.Failed) return "NVIDIA GPU attestation failed verification."
-                if (gpu is NrasVerification.Inconclusive) return "NVIDIA GPU attestation couldn't be completed (service unreachable)."
+                if (gpu is NrasVerification.Failed) return "nvidia gpu attestation failed verification."
+                // teemoon's own fault is never called an outage (pm, 2026-11-06): the approved fault line, as the row says
+                // no GPU evidence was sent (S37 B4): nothing was unreachable, so never "(service unreachable)"
+                if (gpu is NrasVerification.Inconclusive) return when (gpu.reason) {
+                    NrasVerification.TEEMOON_FAULT -> VERIFIER_ERROR
+                    NrasVerification.EVIDENCE_ABSENT -> NrasVerification.EVIDENCE_ABSENT
+                    else -> "nvidia gpu attestation couldn't be completed (service unreachable)."
+                }
             }
             tlsAttestation?.let { tls ->
-                if (tls.isUnverified) return if (tls.isHardFailure) "The connection could not be verified to end inside the enclave (possible interception)."
-                else "The connection to the enclave couldn't be verified (attestation unreachable)."
+                // A1: the probe is of the model node's certificate, never the chat's connection (iOS 123d0b28)
+                if (tls.isUnverified) return if (tls.isHardFailure) "the model node's tls certificate doesn't match its attestation."
+                else if (tls.reason == NrasVerification.TEEMOON_FAULT) VERIFIER_ERROR
+                else "teemoon couldn't check the model node's tls certificate (unreachable)."
             }
             if (lastRequestUsedE2EE == false) lastE2EEFailReason?.let { return it }
             val key = attestation.modelEd25519PubKey
-            if (key == null || key.size != 32) return "The model's encryption key is unavailable."
-            val mqv = attestation.modelQuoteVerification ?: return "The model's hardware attestation is unavailable."
-            if (!mqv.isVerified) return "The model's hardware attestation failed verification."
-            if (attestation.e2eeKeyBoundToModelTEE == false) return "The encryption key is not bound to verified hardware."
+            if (key == null || key.size != 32) return "the model's encryption key is unavailable."
+            val mqv = attestation.modelQuoteVerification ?: return "the model's hardware attestation is unavailable."
+            if (!mqv.isVerified) return "the model's hardware attestation failed verification."
+            if (attestation.e2eeKeyBoundToModelTEE == false) return "the encryption key isn't bound to verified hardware."
+            if (recordStaleUnconfirmed) return "couldn't reach the attestation server."
+            // LAST: GPU/TLS hard failures and a missing key name themselves first (pm 2026-11-14, iOS verify-deadline)
+            if (tierGaveUp) return TIER_REASON
             return null
+        }
+
+    /** The record is older than [ATTESTATION_MAX_AGE_SECONDS] and the refetch that should replace it failed. */
+    val recordStaleUnconfirmed: Boolean
+        get() {
+            val record = attestation ?: return false
+            return attestationFetchFailed && services.now().epochSecond - record.fetchedAt.epochSecond > ATTESTATION_MAX_AGE_SECONDS
         }
 
     /**
@@ -912,11 +1289,13 @@ class ConfidentialSession(
      * unverified") instead of the misleading "send unencrypted".
      */
     val provenanceBlockedButE2EEIntact: Boolean
-        get() = imageProvenance is ManifestProvenance.Incomplete && e2eeBindingIntact
+        // an unpublished-only image is not a provenance block: it exempts only itself (sendgate 0.5.11, iOS 3f5d91a3).
+        // Counted as one, an unpublished image beside a stale record offered "send unencrypted" over a sealed send.
+        get() = (imageProvenance as? ManifestProvenance.Incomplete)?.let { !it.isUnpublishedOnly } == true && e2eeBindingIntact
 
     /** Clean GitHub 404s only, with the model key bound to verified hardware. Send stays sealed and ungated; the session is not fully verified. */
     val unpublishedOnlyButE2EEIntact: Boolean
-        get() = imageProvenance?.isUnpublishedOnly == true && e2eeBindingIntact
+        get() = imageProvenance?.isUnpublishedOnly == true && e2eeBindingIntact && !tierGaveUp
 
     /**
      * Key bound to a verified model TEE; GPU/TLS not in an unverified state.
@@ -928,6 +1307,12 @@ class ConfidentialSession(
         get() {
             val att = attestation ?: return false
             if (dcapVerification?.hasHardFailure == true) return false
+            // not hard is not verified: a quote Intel couldn't check binds nothing (near-send-gate-rule)
+            if (couldntCheckHardware) return false
+            if (nearScopeBroken) return false
+            // the model recipe's hash mismatch is evidence (degradeIsHardFailure counts it): never an intact binding.
+            // Shipped 1.0.6 missed it here, so an unpublished image beside it sent unasked (audit's F1 addendum).
+            if (modelComposeIntegrityFailed) return false
             if (att.codeIdentityVerified == false) return false
             if (att.nonceEchoed == false) return false
             val key = att.modelEd25519PubKey ?: return false
@@ -955,6 +1340,7 @@ class ConfidentialSession(
             if (att.codeIdentityVerified == false) return true
             if (modelComposeIntegrityFailed) return true
             if (dcapVerification?.hasHardFailure == true) return true
+            if (nearScopeBroken) return true
             if (att.nonceEchoed == false) return true
             // HARD only for a genuine negative verdict (NVIDIA rejection / nonce
             // replay; TLS fingerprint mismatch). An unreachable NRAS/TLS check is
@@ -984,7 +1370,95 @@ class ConfidentialSession(
      * is exactly how the Siri/Shortcuts intent bypassed the gate on iOS.
      */
     val sendPolicy: TrustSendPolicy
-        get() = TrustVerdict.sendPolicy(requiresConfirmation = requiresE2EEConfirmation, hardFailure = degradeIsHardFailure)
+        get() {
+            val policy = TrustVerdict.sendPolicy(requiresConfirmation = requiresE2EEConfirmation, hardFailure = degradeIsHardFailure)
+            // S30: an inconclusive provenance lookup asks before the send (T2b), once per record
+            return if (policy == TrustSendPolicy.ALLOW && provenanceUncheckedAsks) TrustSendPolicy.CONFIRM else policy
+        }
+
+    /** DCAP couldn't fetch or read Intel's collateral for a quote, or (a) couldn't for the compose manager's (iOS). */
+    val couldntCheckHardware: Boolean
+        get() = dcapVerification?.hasUnchecked == true || nearScope?.deployLogBinding == DeployLogBinding.Unchecked
+
+    /**
+     * A soft state in which the send would still go out sealed — the same peer the send seals to — and not the
+     * provenance-only case: the "still checking near.ai's hardware" confirm, never "send unencrypted"
+     * (near-send-gate-rule, the maintainer 2026-11-06). The predicate is the send's own, not [e2eeBindingIntact].
+     */
+    val softButSealed: Boolean
+        get() = !degradeIsHardFailure && !provenanceBlockedButE2EEIntact && currentPeerExists()
+
+    /**
+     * The sent-before-confirmed mark for a reply sent sealed NOW (MessageEntity.sentBeforeConfirmed, the maintainer approved
+     * 2026-11-06): "pending|<recordKey>" while anything is still pending for this record ([sendPending], S30), else null.
+     * recordKey = "<fetchedAt epoch ms>|<gatewayNonce ?: gpuNonce, lowercase hex>". Resolved per record later (phase 3).
+     */
+    fun sentBeforeConfirmedMark(sealed: Boolean): String? {
+        if (!sealed || !sendPending) return null
+        val key = recordKeyOf(attestation ?: return null)
+        awaitingSettle += key
+        return "pending|$key"
+    }
+
+    private fun recordKeyOf(att: AttestationRecord) = "${att.fetchedAt.toEpochMilli()}|${(att.gatewayNonce ?: att.gpuNonce ?: "").lowercase()}"
+
+    /**
+     * reply-machine.json sentBeforeConfirmedResolution, the trust side: a record a reply was sent on while its hard
+     * verdicts were pending says how they settled — "pass", "hardFail", or "unsettled" (an outage, or the record was
+     * replaced before they answered: the mark stays pending). The app rewrites the stored marks (SentBeforeConfirmed).
+     */
+    var onRecordSettled: ((recordKey: String, outcome: String) -> Unit)? = null
+
+    private fun settleDue() {
+        if (awaitingSettle.isEmpty()) return
+        val current = attestation?.let(::recordKeyOf)
+        // Losing the attestation capability (an unknown tier resolving to third-party) is not a verdict (F5, iOS 0e339959):
+        // verdictsPending reads false then with the checks still running, and the policy reads allow.
+        val attests = activeProviderSource()?.let { ProviderCapability.ATTESTATION in it.capabilities } == true
+        for (key in awaitingSettle.toList()) {
+            // the record's own verdicts, whatever provider is selected now: a switch away is not a pass
+            val outstanding = (dcapJob != null && dcapVerification == null) || (nrasJob != null && gpuAttestation == null) || (tlsJob != null && tlsAttestation == null) || composeFilesPending ||
+                // S30: the pending window ends only when nothing is pending (iOS: settles on sendPending)
+                (attests && sendPending)
+            if (key == current && attests && outstanding) continue
+            awaitingSettle -= key
+            // iOS settleSentBeforeConfirmed: hard is degradeIsHardFailure — every hard check, trust scope included (it read
+            // only DCAP, NVIDIA and TLS, so a broken scope cleared the mark); a pass is the policy reading allow; anything
+            // else (an outage, a soft state) leaves the mark pending.
+            val outcome = if (key != current || !attests) "unsettled" else when {
+                degradeIsHardFailure -> "hardFail"
+                sendPolicy == TrustSendPolicy.ALLOW -> "pass"
+                else -> "unsettled"
+            }
+            val held = heldE2EE.remove(key) ?: 0
+            if (outcome == "pass") e2eeMessageCount += held
+            if (outcome == "hardFail") failedRecords += key
+            onRecordSettled?.invoke(key, outcome)
+        }
+    }
+
+    /** (record, reason) pairs the user has already said "send anyway" to. */
+    private val confirmedDegrades = HashSet<String>()
+
+    /** One confirm per (record, reason): the record is its fetch time and nonce; a pending confirm is its own reason. */
+    fun confirmationKey(pending: Boolean): String? {
+        val att = attestation ?: return null
+        val record = "${att.fetchedAt.toEpochMilli()}|${att.gatewayNonce ?: att.gpuNonce ?: ""}"
+        // F4 strict (iOS b3d00c3a, sendgate.json 0.5.15; the maintainer 2026-11-07): a couldn't-check already known (policy
+        // confirm) is what the ask answers, even while other checks run — one answer covers the record. "pending" only when
+        // nothing is known yet.
+        // S30: the pending reason names its kind, so a hardware answer never covers provenance and back (sendgate.json 0.6.0)
+        val pendingReason = if (pendingKind == PendingKind.PROVENANCE) "provenancePending" else "pending"
+        val reason = if (pending && sendPolicy != TrustSendPolicy.CONFIRM) pendingReason
+            else e2eeDegradedReason ?: (if (provenanceUncheckedAsks) "provenanceUnchecked" else "")
+        return "$record|$reason"
+    }
+    fun hasConfirmed(pending: Boolean): Boolean = confirmationKey(pending)?.let { it in confirmedDegrades } ?: false
+    fun rememberConfirmation(pending: Boolean) { confirmationKey(pending)?.let { confirmedDegrades += it; touch() } }
+
+    /** The policy the composer asks with: a confirm already given for this record and reason doesn't ask again. */
+    val sendPolicyAfterConfirmations: TrustSendPolicy
+        get() = if (sendPolicy == TrustSendPolicy.CONFIRM && hasConfirmed(pending = false)) TrustSendPolicy.ALLOW else sendPolicy
 
     /** Whether sending a message requires user confirmation because E2EE is expected but cannot be established. */
     val requiresE2EEConfirmation: Boolean
@@ -993,7 +1467,8 @@ class ConfidentialSession(
             if (provider == null || ProviderCapability.ATTESTATION !in provider.capabilities) return false
             // Unpublished image + sealed E2EE: no modal. The ladder still names the
             // digest. Shopping for another CVM's report would be a false verify.
-            if (unpublishedOnlyButE2EEIntact) return false
+            // an unpublished image exempts only itself (sendgate 0.5.11): any hard break beside it still blocks
+            if (unpublishedOnlyButE2EEIntact && !recordStaleUnconfirmed && !degradeIsHardFailure) return false
             return attestationState == AttestationState.DEGRADED
         }
 
@@ -1002,9 +1477,27 @@ class ConfidentialSession(
 
     companion object {
         private const val SETTLE_POLL_MS = 100L
+        /**
+         * How long an unknown near.ai tier may hold the verdict (the maintainer 2026-11-14, "Yes", the same on both apps): past it
+         * the state settles to the soft degrade, where the send asks, instead of "verifying" forever.
+         */
+        const val TIER_DEADLINE_MS = 20_000L
+        /** The keyless tier list's retries after its first try (iOS VerdictDeadline.tierRetryDelays). */
+        private val TIER_RETRY_DELAYS_MS = listOf(2_000L, 4_000L)
+        /** The degrade reason, and the ask's body, when the tier list never came (iOS VerdictDeadline.tierReason; the maintainer approved the verify card 2026-11-14). */
+        const val TIER_REASON = "near.ai's model list didn't load, so teemoon couldn't confirm this model runs on its own hardware."
 
         /** Maximum age before the Ed25519 key is considered stale and refetched. */
         const val ATTESTATION_MAX_AGE_SECONDS: Long = 600 // 10 minutes
+        /**
+         * A verifier that threw (trust-verifier-error, the maintainer 2026-11-06): its reason line. The raw exception goes to
+         * the log only — it is our failure, not evidence, and it names nothing the reader can check.
+         */
+        const val VERIFIER_ERROR = "this check failed inside teemoon, so it proves nothing."
+        /** The hero's cause when the DCAP verifier threw (+ "sending is blocked until it re-verifies."), the maintainer 2026-11-06. */
+        const val VERIFIER_BROKE = "a hardware check broke inside teemoon."
+        /** near-send-gate-words (the maintainer 2026-11-06): the cause when Intel couldn't be asked about a quote. */
+        const val INTEL_UNREACHABLE = "intel's hardware check couldn't be completed (service unreachable)."
         const val ATTESTATION_RETRY_INTERVAL_SECONDS: Long = 60
 
         /**
@@ -1013,11 +1506,12 @@ class ConfidentialSession(
          * fetch, or a gap in the published map — and all three are "couldn't
          * check", which must not read as "nothing to encrypt".
          *
-         * The id the guess does not know classifies as own fleet, so an unknown
-         * model degrades too. That is the safe direction: it asks.
+         * An id the guess does not know is UNKNOWN (iOS 9862a35), and it degrades
+         * too. That is the safe direction: it asks.
          */
-        fun outcomeWhenNoDirectHost(model: String): MissingHostOutcome =
-            if (NearAIModelCatalog.confidentiality(model) == NearAIModelCatalog.Confidentiality.TEE_OWN)
-                MissingHostOutcome.DEGRADED else MissingHostOutcome.ORDINARY
+        fun outcomeWhenNoDirectHost(model: String): MissingHostOutcome = when (NearAIModelCatalog.confidentiality(model)) {
+            NearAIModelCatalog.Confidentiality.TEE_OWN, NearAIModelCatalog.Confidentiality.UNKNOWN -> MissingHostOutcome.DEGRADED
+            NearAIModelCatalog.Confidentiality.TEE_THIRD_PARTY, NearAIModelCatalog.Confidentiality.PROXIED -> MissingHostOutcome.ORDINARY
+        }
     }
 }

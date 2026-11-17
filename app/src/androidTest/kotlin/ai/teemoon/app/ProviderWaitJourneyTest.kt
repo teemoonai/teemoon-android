@@ -1,6 +1,6 @@
 package ai.teemoon.app
 
-// ports: teemoonUITests/ProviderWaitUITests.swift @ 9e090f8
+// ports: teemoonUITests/ProviderWaitUITests.swift @ v1.0.6
 //
 // A provider that sends no response headers for a while: the chip says the request is waiting on it, on the first
 // request and on a search turn's follow-up — and not before 5 s.

@@ -2,9 +2,10 @@
 //        the createConversation calls, the sendMessageStream text extraction, getBenchmarkInfo) — REBUILD over
 //        com.google.ai.edge.litertlm:litertlm-android 0.18.0. Everything runtime-neutral is :inference's LiteRTTransport.
 // ports: teemoon/Inference/LiteRTTransport.swift @ v1.0.4 (constrained decoding off, set per conversation)
+// ports: teemoon/Inference/LiteRTTransport.swift @ afc4327 (EngineCache.build's load events and the 250 ms cache watch during initialize())
 package ai.teemoon.ondevice
 
-import ai.teemoon.inference.BridgedTool
+import ai.teemoon.inference.LiteRTLiveTools
 import ai.teemoon.inference.ConversationReuse
 import ai.teemoon.inference.KeptConversation
 import ai.teemoon.inference.LiteRTToolBridge
@@ -32,6 +33,9 @@ import com.google.ai.edge.litertlm.tool
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
@@ -82,16 +86,41 @@ class LiteRtLmEngineFactory(
      * the bundle was never run on) keeps failing every turn with nowhere to go.
      */
     private val onNpuUnusable: (modelPath: String, reason: String) -> Unit = { _, _ -> },
+    /** Each load's start, end, and the first cache file written during it: the chip's load line (EngineLoadLine). */
+    private val loadEvents: EngineLoadEvents = EngineLoadEvents.None,
+    /** The CPU rung's threads; null takes [BackendLadder.cpuThreads] for this chip. Benches sweep it; 0 is the runtime's default. */
+    private val cpuThreadsOverride: Int? = null,
+    /** Benches only: the rungs to walk instead of [BackendLadder.order] (e.g. the GPU on a Pixel 10, to measure what (A) moved away from). */
+    private val ladderOverride: List<BackendKind>? = null,
+    /** Benches only: false opens the engine with no cacheDir, as Google AI Edge Gallery does for downloaded models. */
+    private val diskCache: Boolean = true,
 ) : LocalEngineFactory {
     /** What the last successful open ran on. "cpu" until something better is PROVEN — never a hopeful claim. */
     @Volatile override var backendLabel: String = label(BackendKind.CPU); private set
 
-    override suspend fun open(modelPath: String, contextTokens: Int, requireNpu: Boolean): LocalEngineHandle = withContext(Dispatchers.IO) {
+    override suspend fun open(modelPath: String, contextTokens: Int, requireNpu: Boolean): LocalEngineHandle = open(modelPath, contextTokens, requireNpu, vision = false)
+
+    /** The first rung this file would try (the memo's proven one, else the ladder's head) decides the window. */
+    override fun contextTokensFor(modelPath: String, requested: Int, requireNpu: Boolean): Int {
+        if (requireNpu) return requested
+        val ladder = ladderOverride ?: BackendLadder.order(socModel, hardware)
+        val first = memo.reorder(ladder, BackendMemo.key(modelPath, ladder)).firstOrNull() ?: return requested
+        return BackendLadder.contextTokens(first, requested)
+    }
+
+    override suspend fun open(modelPath: String, contextTokens: Int, requireNpu: Boolean, vision: Boolean): LocalEngineHandle = withContext(Dispatchers.IO) {
         ExperimentalFlags.enableBenchmark = true
         // Constrained decoding is NOT set here: it is per conversation, see Handle.stream.
         // An NPU bundle has one rung by construction. Walking the rest would spend a model load per rung to learn
         // what the file already says, and report "Input tensor not found" instead of "this device has no NPU".
-        val ladder = if (requireNpu) listOf(BackendKind.NPU) else BackendLadder.order(socModel, hardware)
+        val full = if (requireNpu) listOf(BackendKind.NPU) else ladderOverride
+            ?: if (vision) BackendLadder.visionOrder(socModel, hardware) else BackendLadder.order(socModel, hardware)
+        // IMAGES.md §4b: the vision executor is created only for a turn with an image — text-only turns keep today's
+        // memory (iOS afc4327; Android loaded it on every open from 70cfc1f until 2026-10-26, pm's decision to align).
+        // Such a turn tries only the rungs that run a vision encoder, and never falls back to a text-only engine: the
+        // turn would then go without its image, which a message never does.
+        val ladder = if (vision) BackendLadder.visionLadder(full, requireNpu) else full
+        if (vision && ladder.isEmpty()) throw LocalInferenceError.LoadFailed("this model can't see images on this phone")
         if (requireNpu && nativeLibraryDir == null) throw LocalInferenceError.LoadFailed("this model needs the NPU and no native library directory was given")
         val key = BackendMemo.key(modelPath, ladder)
         val order = memo.reorder(ladder, key)
@@ -104,26 +133,54 @@ class LiteRtLmEngineFactory(
             // a drafter: `Capabilities` reads the bundle's header, the same check iOS has.
             val speculative = BackendLadder.wantsSpeculativeDecoding(kind, socModel, hardware) && hasDrafter(modelPath)
             ExperimentalFlags.enableSpeculativeDecoding = if (speculative) true else null
-            val engine = Engine(EngineConfig(modelPath = modelPath, backend = backendFor(kind), maxNumTokens = contextTokens, cacheDir = cacheDir))
-            val started = System.currentTimeMillis()
-            try {
-                // withTimeoutOrNull cannot interrupt a blocking JNI call — it lets US stop waiting on one that has
-                // wedged, and the abandoned native thread dies with the process. Better than an open that never returns.
-                val ok = withTimeoutOrNull(probeTimeoutMs) {
-                    engine.initialize()
-                    probeDecodes(engine)
+            // The CPU rung's window is 4096 (BackendLadder.contextTokens); the handle reports it, the transport budgets by it.
+            val window = if (requireNpu) contextTokens else BackendLadder.contextTokens(kind, contextTokens)
+            run {
+                val engine = Engine(EngineConfig(modelPath = modelPath, backend = backendFor(kind),
+                    visionBackend = if (vision) visionBackendFor(kind) else null, maxNumTokens = window,
+                    // one engine for any count up to the message limit; was 1, which refused a second image
+                    maxNumImages = if (vision) LocalConversationSpec.MAX_IMAGES_PER_TURN else null,
+                    // beside the model, deleted with it (EngineCache); the factory's own [cacheDir] keeps only the backend memo
+                    cacheDir = if (diskCache) EngineCache.directoryFor(modelPath).apply { mkdirs() }.path else null))
+                val started = System.currentTimeMillis()
+                // The chip's load line reads what the load does on disk, never a timer (EngineLoadLine): whether this
+                // bundle's cache was there, and the first file LiteRT writes while it initializes. Only during
+                // initialize(): on iOS the program cache grew after a load had ended, which a longer watch would
+                // misread as a rebuild. Every rung and the vision-less retry are loads of their own.
+                val bundle = File(modelPath)
+                val before = EngineCache.snapshot(bundle)
+                loadEvents.began(started, imageCapable = vision, cachePresent = EngineCache.present(bundle, vision))
+                val watch = launch {
+                    while (isActive) {
+                        delay(CACHE_WATCH_MS)
+                        if (EngineCache.snapshot(bundle) != before) { loadEvents.rebuildSeen(System.currentTimeMillis()); break }
+                    }
                 }
-                if (ok != true) throw LocalInferenceError.LoadFailed(
-                    if (ok == null) "the ${label(kind)} backend did not answer within ${probeTimeoutMs / 1000}s" else "the ${label(kind)} backend loaded but produced nothing",
-                )
-                memo.remember(key, kind)
-                backendLabel = label(kind)
-                log("[litert] engine on ${label(kind)} (ready in ${System.currentTimeMillis() - started}ms)")
-                return@withContext Handle(engine, log, label(kind), speculative, reuseConversations)
-            } catch (t: Throwable) {
-                lastFailure = t; runCatching { engine.close() }
-                // The reason matters more than the failure: this line is how the next device's story gets read.
-                log("[litert] ${label(kind)} refused after ${System.currentTimeMillis() - started}ms: ${t.message}")
+                // Nothing interrupts a blocking JNI load. withTimeoutOrNull around it could not even stop the waiting —
+                // a call that never suspends holds the coroutine until it returns (A7, pm sweep 2026-11-06). The load
+                // runs on its own thread: we stop waiting at the deadline, and an engine that finishes after it is closed
+                // then, not left loaded beside the next rung's. Until then nothing here may close it under the load.
+                var abandonedLoad = false
+                try {
+                    val loaded = BlockingDeadline.run(probeTimeoutMs, block = { try { engine.initialize() } finally { watch.cancel() } },
+                        abandoned = { r -> runCatching { engine.close() }; log("[litert] ${label(kind)} load finished after its deadline (${if (r.isSuccess) "loaded" else "failed"}) — closed") })
+                    if (loaded == null) { abandonedLoad = true; throw LocalInferenceError.LoadFailed("the ${label(kind)} backend did not answer within ${probeTimeoutMs / 1000}s") }
+                    val ok = withTimeoutOrNull(probeTimeoutMs) { probeDecodes(engine) }
+                    if (ok != true) throw LocalInferenceError.LoadFailed(
+                        if (ok == null) "the ${label(kind)} backend did not answer within ${probeTimeoutMs / 1000}s" else "the ${label(kind)} backend loaded but produced nothing",
+                    )
+                    memo.remember(key, kind)
+                    backendLabel = label(kind)
+                    log("[litert] engine on ${label(kind)}${if (vision) " with vision" else ""}, window $window (ready in ${System.currentTimeMillis() - started}ms)")
+                    return@withContext Handle(engine, log, label(kind), speculative, reuseConversations, sees = vision,
+                        contextTokens = window.takeIf { it != contextTokens })
+                } catch (t: Throwable) {
+                    lastFailure = t; if (!abandonedLoad) runCatching { engine.close() }
+                    // The reason matters more than the failure: this line is how the next device's story gets read.
+                    log("[litert] ${label(kind)}${if (vision) " with vision" else ""} refused after ${System.currentTimeMillis() - started}ms: ${t.message}")
+                } finally {
+                    watch.cancel(); loadEvents.ended(System.currentTimeMillis())
+                }
             }
         }
         val reason = lastFailure?.message ?: "no backend could load the model"
@@ -154,20 +211,33 @@ class LiteRtLmEngineFactory(
         } finally { runCatching { conversation.close() } }
     }
 
+    /**
+     * The vision encoder runs on the GPU beside a GPU text model, and on the CPU beside a CPU one — EXCEPT on a PowerVR
+     * (Pixel 10), where the text model is on the CPU (BackendLadder) but the encoder stays on the GPU: Google AI Edge
+     * Gallery's own Gemma 4 E2B config does the same ("accelerators": "gpu,cpu" with the GPU removed on a Pixel 10,
+     * "visionAccelerator": "gpu", allowlist 1_0_20), and teemoon's CPU encoder cost ~5 s of a 9.4 s image turn there
+     * (2026-10-26). To be measured on the phone before 1.1.0's head-to-head.
+     */
+    private fun visionBackendFor(kind: BackendKind): Backend =
+        // an NPU bundle's encoder runs on the GPU beside it (the S25 Ultra, 2026-11-12)
+        if (kind == BackendKind.GPU || kind == BackendKind.NPU || (kind == BackendKind.CPU && BackendLadder.isPowerVr(socModel))) Backend.GPU() else backendFor(BackendKind.CPU)
+
     private fun backendFor(kind: BackendKind): Backend = when (kind) {
         BackendKind.GOOGLE_TENSOR -> Backend.GOOGLE_TENSOR()
         // Non-null by construction: the rung is only in the ladder when a dispatch directory exists.
         BackendKind.NPU -> Backend.NPU(nativeLibraryDir!!)
         BackendKind.GPU -> Backend.GPU()
-        // Four threads, MEASURED (Pixel 10 Pro, Gemma 4 E2B, raw runtime, 2026-09-16): the runtime's default gave
+        // The count is BackendLadder.cpuThreads (4 below). Four threads, MEASURED (Pixel 10 Pro, Gemma 4 E2B, raw runtime, 2026-09-16): the runtime's default gave
         // 14 tok/s decode, 4 threads 17, 6 threads 16, 8 threads 14. The big cluster is the useful part; spreading
         // decode across the small cores costs more in synchronisation than it gains. One device's number, so a
         // conservative one — four is also the common size of a big cluster on other SoCs.
-        BackendKind.CPU -> Backend.CPU(CPU_THREADS, CPU_THREADS)
+        BackendKind.CPU -> (cpuThreadsOverride ?: BackendLadder.cpuThreads(socModel)).let { n ->
+            if (n == null || n == 0) Backend.CPU() else Backend.CPU(n, n) }
     }
 
     private companion object {
-        const val CPU_THREADS = 4
+        /** How often the load watches its cache directory (iOS: 250 ms). */
+        const val CACHE_WATCH_MS = 250L
 
         /** Lowercase, as every string this app shows is; it rides the developer-mode request headers as `backend`. */
         fun label(kind: BackendKind): String = when (kind) {
@@ -182,6 +252,8 @@ class LiteRtLmEngineFactory(
         private val engine: Engine, private val log: (String) -> Unit,
         override val backend: String, override val speculative: Boolean,
         private val reuse: Boolean,
+        override val sees: Boolean = false,
+        override val contextTokens: Int? = null,
     ) : LocalEngineHandle {
         private var conversation: Conversation? = null
         /** What [conversation] holds, when it may serve the next turn; null = rebuild. See ConversationReuse. */
@@ -193,15 +265,17 @@ class LiteRtLmEngineFactory(
         /**
          * This turn's tools, by name. A kept Conversation's ToolManager holds the shims it was built with, so the shims
          * look the tool up here at call time — or a reused conversation would run LAST turn's bridge callbacks (its
-         * chip, its sources, its executed list) for this turn's search.
+         * chip, its sources, its executed list) for this turn's search. Only while a turn runs, and only from its own
+         * conversation (G7): a stopped decode that calls late runs nothing, never the next turn's search.
          */
-        @Volatile private var liveTools: Map<String, BridgedTool> = emptyMap()
+        private val liveTools = LiteRTLiveTools()
         private val toolRuns = AtomicInteger(0)
 
         override suspend fun stream(spec: LocalConversationSpec, onPiece: suspend (String) -> Unit) {
-            liveTools = spec.tools.associateBy { it.name }
             toolRuns.set(0)
-            val reused = reuse && conversation != null && ConversationReuse.canReuse(kept, spec)
+            // A request with any image, the question's or an earlier one, starts its own conversation and is not kept: the
+            // reuse key is the text transcript, which an image is not part of (IMAGES.md §4b @ 00f72739).
+            val reused = reuse && ConversationReuse.reusable(spec.requestImages) && conversation != null && ConversationReuse.canReuse(kept, spec)
             kept = null
             lastConversation = if (reused) "reused (${spec.history.size} turns)" else "rebuilt"
             val conv = if (reused) {
@@ -209,10 +283,16 @@ class LiteRtLmEngineFactory(
                 conversation!!
             } else {
                 conversation?.let { runCatching { it.close() } }
+                val id = liveTools.newConversation()
                 val config = ConversationConfig(
                     systemInstruction = spec.systemMessage?.let { Contents.of(it) },
-                    initialMessages = spec.history.map { (role, text) -> liteRtMessage(role, text) },
-                    tools = spec.tools.map { tool(OpenApiShim(it.name, it.descriptionJson, { n -> liveTools[n] }, toolRuns)) },
+                    // earlier turns go in with their images, the images first as in the question (§4b @ 00f72739)
+                    initialMessages = spec.history.mapIndexed { i, (role, text) ->
+                        val images = spec.historyImages.getOrNull(i).orEmpty().takeIf { sees && role == LocalRole.USER }.orEmpty()
+                        if (images.isEmpty()) liteRtMessage(role, text)
+                        else Message.user(Contents.of(images.map { Content.ImageBytes(it) } + listOfNotNull(text.takeIf { it.isNotEmpty() }?.let { Content.Text(it) })))
+                    },
+                    tools = spec.tools.map { tool(OpenApiShim(it.name, it.descriptionJson, { n, args -> liveTools.run(id, n, args) }, toolRuns)) },
                     maxOutputToken = spec.maxOutputTokens,
                     thinkingConfig = ThinkingConfig(spec.enableThinking),
                 )
@@ -226,9 +306,13 @@ class LiteRtLmEngineFactory(
             }
             val raw = StringBuilder()
             lastBenchmark = null
+            liveTools.begin(spec.tools)
             withContext(Dispatchers.IO) {
                 try {
-                    conv.sendMessageAsync(Message.user(spec.userText)).collect { message ->
+                    // IMAGES.md §4b: the images first, in the order attached, then the question, in one user message.
+                    val ask = spec.userImages.takeIf { sees && it.isNotEmpty() }?.let { images -> Message.user(Contents.of(images.map { Content.ImageBytes(it) } + Content.Text(spec.userText))) }
+                        ?: Message.user(spec.userText)
+                    conv.sendMessageAsync(ask).collect { message ->
                         val text = message.contents.contents.filterIsInstance<Content.Text>().joinToString("") { it.text }
                         if (text.isNotEmpty()) { raw.append(text); onPiece(text) }
                     }
@@ -240,10 +324,13 @@ class LiteRtLmEngineFactory(
                 } catch (t: Throwable) {
                     // The binding's own failures arrive without a stack in the error card; the log keeps it.
                     log("[litert] stream failed: " + t.stackTraceToString().take(2000)); releaseUnkept(); throw t
+                } finally {
+                    // Before the gate opens for the next turn: a decode still winding down calls nothing from here on.
+                    liveTools.end()
                 }
             }
             // Reached only on a completed stream: a cancelled or failed one threw above with [kept] still null.
-            if (reuse) kept = ConversationReuse.afterTurn(spec, raw.toString(), toolsRan = toolRuns.get(), completed = true)
+            if (reuse && ConversationReuse.reusable(spec.requestImages)) kept = ConversationReuse.afterTurn(spec, raw.toString(), toolsRan = toolRuns.get(), completed = true)
             if (kept == null) releaseUnkept()
         }
 
@@ -278,16 +365,15 @@ class LiteRtLmEngineFactory(
      */
     private class OpenApiShim(
         private val name: String, private val descriptionJson: String,
-        /** The CURRENT turn's tool of this name — see Handle.liveTools. */
-        private val live: (String) -> BridgedTool?, private val runs: AtomicInteger,
+        /** Runs the CURRENT turn's tool of this name, if this shim's conversation is the running one — see Handle.liveTools. */
+        private val call: suspend (name: String, argumentsJson: String) -> String, private val runs: AtomicInteger,
     ) : OpenApiTool {
         // The binding wants the flat function object; see LiteRTToolBridge.flatDescription for why.
         override fun getToolDescriptionJsonString(): String = LiteRTToolBridge.flatDescription(descriptionJson)
         // Synchronous by LiteRT's contract, called from its loop; the tool does network, so block an IO thread, not the caller's.
         override fun execute(paramsJsonString: String): String {
             runs.incrementAndGet()
-            val tool = live(name) ?: return "[Tool '$name' not found]"
-            return runBlocking(Dispatchers.IO) { tool.execute(paramsJsonString) }
+            return runBlocking(Dispatchers.IO) { call(name, paramsJsonString) }
         }
     }
 

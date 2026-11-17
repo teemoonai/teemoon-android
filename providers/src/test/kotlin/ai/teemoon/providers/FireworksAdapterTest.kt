@@ -157,6 +157,24 @@ class FireworksAdapterTest {
         )
     }
 
+    /**
+     * Fireworks' list since 2026-10 dates a retiring model as an OBJECT. One such row used to fail the whole decode, and
+     * the generic probe's capability-less rows took over: no Fireworks model could take images (the maintainer's Pixel, 2026-10-28,
+     * glm-5p3-flash). Both spellings read; the dated row stays out of the picker as before.
+     */
+    @Test fun aDeprecationDateObjectNeitherBreaksTheListNorTheCapabilities() = runTest {
+        val page = """{"models":[${chat("glm-5p3-flash", "GLM 5.3 Flash", image = true)},
+            ${chat("gpt-oss-120b", "GPT OSS 120B", extra = ""","deprecationDate":{"day":7,"month":11,"year":2026}""")},
+            ${chat("kimi-k2p6", "Kimi K2.6", extra = ""","deprecationDate":"2026-10-15"""")}],"nextPageToken":""}"""
+        val result = FireworksAdapter.listModels(baseUrl = "https://api.fireworks.ai/inference/v1", apiKey = "k",
+            fetch = { url, _, _ -> if ("/v1/accounts/fireworks/models" in url) 200 to page.toByteArray() else error("fell back to $url") })
+        val models = (result as EndpointModelCatalog.ProbeResult.Connected).models
+        assertEquals(listOf("accounts/fireworks/models/glm-5p3-flash"), models.map { it.id })
+        assertEquals(setOf(ModelCapability.TOOLS, ModelCapability.VISION), models.single().capabilities)
+        val decoded = json.decodeFromString(FireworksAdapter.ModelsResponse.serializer(), page).models
+        assertEquals(listOf(null, "2026-11-07", "2026-10-15"), decoded.map { it.deprecationDate })
+    }
+
     companion object {
         private fun chat(
             slug: String,

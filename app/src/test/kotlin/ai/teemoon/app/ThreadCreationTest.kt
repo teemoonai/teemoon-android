@@ -27,12 +27,21 @@ class ThreadCreationTest {
         override suspend fun deleteAllMessages() { messages.clear() }
         override suspend fun deleteMessagesSince(threadId: String, sinceMs: Long) { messages.removeAll { it.threadId == threadId && it.timestamp >= sinceMs } }
         override suspend fun deleteMessages(ids: List<String>) { messages.removeAll { it.id in ids } }
+        override suspend fun rewriteSentBeforeConfirmed(from: String, to: String?): Int { var n = 0; messages.replaceAll { if (it.sentBeforeConfirmed == from) { n++; it.copy(sentBeforeConfirmed = to) } else it }; return n }
         override suspend fun setTimestamp(id: String, timestamp: Long) { messages.replaceAll { if (it.id == id) it.copy(timestamp = timestamp) else it } }
         override fun observePreviews() = flowOf(emptyList<ThreadPreview>())
         override suspend fun threadIdsWithContent(needle: String) = emptyList<String>()
         override suspend fun indexableMessageIds() = emptyList<String>()
         override suspend fun messagesByIds(ids: List<String>) = emptyList<MessageEntity>()
         override suspend fun startThread(thread: ThreadEntity, first: MessageEntity) {}
+        override suspend fun setTitleIfNone(id: String, title: String) {}
+        override suspend fun insertAttachments(attachments: List<ai.teemoon.chat.AttachmentEntity>) {}
+        override suspend fun attachmentsFor(messageIds: List<String>) = emptyList<ai.teemoon.chat.AttachmentEntity>()
+        override fun observeAttachments(threadId: String) = kotlinx.coroutines.flow.flowOf(emptyList<ai.teemoon.chat.AttachmentEntity>())
+        override suspend fun attachmentPaths() = emptyList<String>()
+        override suspend fun threadExists(id: String) = threads.any { it.id == id }
+        override suspend fun insertThread(thread: ThreadEntity) { threads += thread }
+        override suspend fun insertMessages(messages: List<MessageEntity>) { this.messages += messages }
     }
 
     @Test fun newChatReusesAnEmptyCurrentThreadAndMintsOneOtherwise() = runTest {

@@ -1,4 +1,4 @@
-// ports: teemoon/Inference/ProviderWait.swift @ 4510788
+// ports: teemoon/Inference/ProviderWait.swift @ v1.0.6
 package ai.teemoon.inference
 
 /**
@@ -20,6 +20,6 @@ data class ProviderWait(val turn: Int, val sentAtMs: Long, val providerName: Str
         /** Below this a missing response is ordinary latency. */
         const val THRESHOLD_MS = 5_000L
 
-        fun label(providerName: String, seconds: Int) = "waiting for $providerName... ${seconds}s"
+        fun label(providerName: String, seconds: Int) = "waiting for $providerName\u2026 ${seconds}s"
     }
 }

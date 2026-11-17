@@ -1,4 +1,4 @@
-// ports: teemoonTests/PrivateHostTests.swift @ v1.0.5 — the private-host half. That Swift suite was WRITTEN from
+// ports: teemoonTests/PrivateHostTests.swift @ v1.1.0 — the private-host half. That Swift suite was WRITTEN from
 //        this one: the label-count bug was reported upstream from here on 2026-09-20, and iOS then added the
 //        both-ends-of-every-range cases which were mirrored back. What it still had and this did not — the trailing
 //        root dot, `::1`, the shipped presets as public hosts — is folded in above.

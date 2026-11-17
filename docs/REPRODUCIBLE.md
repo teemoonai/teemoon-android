@@ -23,6 +23,10 @@ the Android SDK (`ANDROID_HOME` or `local.properties`), and Python 3. Then, for 
     curl -sLO https://github.com/teemoonai/teemoon-android/releases/download/vX.Y.Z-NNNN/teemoon-X.Y.Z-NNNN.apk
     python3 tools/verify_release.py teemoon-X.Y.Z-NNNN.apk rebuilt.apk
 
+The default build is this GitHub APK, with no Google Play libraries (`tools/check_store.py github` checks its dex
+files and manifest, in both release workflows). The Play bundle is the same source built with `-Pteemoon.store=play`,
+which adds Play In-App Review; it is not the build this page verifies.
+
 `verify_release.py` compares every zip entry of the two files and excuses only the signature: the
 `META-INF` signature files and the APK Signing Block, which is not an entry. A differing resource, dex file
 or native library fails with its name. `apksigcopier compare` or `diffoscope` reach the same verdict.
@@ -40,6 +44,12 @@ aside by the comparison like any other.
   checkout reproduces, and the AGP version.
 - Native libraries are packed exactly as their upstream releases ship them: the build never strips them, because
   stripping depends on which NDK a machine has, or whether it has one at all, and a stripped build fails this check.
+- One native library is built from source since 1.1.0: the isolated image decoder's Wuffs
+  (`app/src/main/cpp`, `docs/IMAGE_DECODER.md`). The NDK (r27c, 27.2.12479018) and CMake (3.22.1) are pinned in
+  `app/build.gradle.kts` and installed by that exact version in every workflow; the flags are deterministic (no build
+  id, source paths mapped to `.`). Two clean builds on a Mac gave a byte-identical `libteemoon_wuffs.so` (arm64
+  bce2972d…52a3, 2026-10-25). The upstream libraries are still packed unstripped: with the NDK installed, all twelve
+  match the 1.0.6 ledger byte for byte.
 - bundletool's universal-APK step is deterministic for a given bundle.
 
 Measured before the first verified release (2026-10-07): two clean builds of the same tag on a Mac were

@@ -62,8 +62,10 @@ first. Every user-visible trust string must trace to a code path that establishe
 **Dependencies.** New third-party dependencies need a justification in the PR. The current
 set is OkHttp, kotlinx.serialization, Room and the rest of AndroidX/Compose, BouncyCastle,
 kotlinx.coroutines, secp256k1-kmp, dcap-qvl-android, litertlm-android, Coil, the markdown
-renderer and Paparazzi (test), plus the vendored LiteRT and QNN runtimes
-(`ondevice/src/main/jniLibs`). Forbidden: Firebase, any analytics or crash-reporting SDK, Play Services
+renderer and Paparazzi (test), Play In-App Review (`com.google.android.play:review`, in the Play bundle only:
+`-Pteemoon.store=play`; the default build, the GitHub APK, carries no Google Play libraries), plus the vendored LiteRT and QNN runtimes
+(`ondevice/src/main/jniLibs`) and Wuffs, the memory-safe image decoder vendored as source and built only into the
+isolated decoder process (the maintainer, 2026-10-25; `docs/IMAGE_DECODER.md`). Forbidden: Firebase, any analytics or crash-reporting SDK, Play Services
 beyond In-App Review, Retrofit, okhttp-sse. "No analytics" is a product claim and this
 list is its enforcement. **No new network destinations:** the hosts this app talks to are
 the provider presets, the attestation services, the model downloads and Brave web search. Adding one is a

@@ -4,7 +4,7 @@
 //        "thinking" header, a capped turn marked truncated, and the audit's sentinel (3917.8) — the thought is in no
 //        partial, not the reply, not reasoning, not the card's body or headers, not the log.
 //
-// The maintainer, 2026-10-22: Gemma's thinking is handled like cloud reasoning — the "thinking…" timer, then the answer; the
+// the maintainer, 2026-10-22: Gemma's thinking is handled like cloud reasoning — the "thinking…" timer, then the answer; the
 // thought is never shown or stored. The GPU bundle sends it in Message.channels["thought"], which the factory never
 // reads; the Tensor NPU bundle writes it INLINE as `<|channel>thought…<channel|>` (Pixel 10 Pro, 2026-10-22).
 package ai.teemoon.inference

@@ -1,5 +1,5 @@
-// ports: teemoon/Views/Settings/ModelBrowserView.swift @ v1.0.5 (the browser; the equipped marking d7a30c9 added and
-//        bf7a86e removed is not here), teemoon/Views/Settings/ModelDetailView.swift @ v1.0.4 (+ the providers section @ 835d7c8),
+// ports: teemoon/Views/Settings/ModelBrowserView.swift @ v1.0.6 (the browser; the equipped marking d7a30c9 added and
+//        bf7a86e removed is not here), teemoon/Views/Settings/ModelDetailView.swift @ 0e98aaf1 (+ the providers section @ 835d7c8),
 //        teemoon/Presentation/ModelBrowserQuery.swift @ v1.0.4 — REBUILD in Compose (one screen: the search field
 //        is always there; a large catalogue simply starts empty until the live list lands)
 //
@@ -10,6 +10,8 @@
 // SearchFirstModelBrowser.swift, which this header used to name.
 package ai.teemoon.app
 
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.contentDescription
 import ai.teemoon.providers.KnownModel
 import ai.teemoon.providers.ModelBrowserDoor
 import ai.teemoon.providers.ModelBrowserListing
@@ -60,6 +62,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import ai.teemoon.inference.ReasoningLevel
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.style.TextAlign
@@ -83,12 +86,21 @@ fun ModelBrowserScreen(
     /** The setup's current model — the row that wears the check. Empty for a picker that opens with no pick. */
     selectedModel: String = "",
     onCopyID: (String) -> Unit = {},
-    /** Preview/test seam: the sort and filters the screen opens with. */
+    /** The sort and filters the screen opens with (the where sheet's, IMAGES.md §4e; a preview's or a test's). */
     initialQuery: ModelBrowserQuery = ModelBrowserQuery(),
+    /** Filters the where sheet carried in: kept on even when this list wouldn't offer them (ModelBrowserListing.of). */
+    carriedFilters: Set<ModelBrowserQuery.Filter> = emptySet(),
+    /**
+     * Preview/test seam: open on the failed state. A loader's result lands a frame after the first composition, and a
+     * snapshot taken under load drew the empty list instead (ModelBrowserSnapshotTest, 2026-11-06).
+     */
+    initialLoadFailed: Boolean = false,
+    /** Developer mode: a model's card lists its reasoning levels (read-only); off, no reasoning row at all. */
+    developerMode: Boolean = false,
 ) {
     var live by remember { mutableStateOf<List<KnownModel>?>(null) }
     var loading by remember { mutableStateOf(false) }
-    var loadFailed by remember { mutableStateOf(false) }
+    var loadFailed by remember { mutableStateOf(initialLoadFailed) }
     var query by remember { mutableStateOf(initialQuery) }
     var detail by remember { mutableStateOf<KnownModel?>(null) }
     // A model's card is a push inside the browser: system back returns to the list, not out of the browser
@@ -108,12 +120,13 @@ fun ModelBrowserScreen(
     detail?.let { m ->
         // An alias has no providers of its own; ask about the model it redirects to.
         ModelDetailScreen(m, confidentiality = if (door.showsConfidentialityTags) NearAIModelCatalog.confidentiality(m.id).label else null, onCopyID = onCopyID, onBack = { detail = null },
-            offersLoader = door.offersLoader?.let { load -> { load(m.aliasOf ?: m.id) } })
+            offersLoader = door.offersLoader?.let { load -> { load(m.aliasOf ?: m.id) } },
+            developerMode = developerMode)
         return
     }
     val effective = live ?: door.models
     val listing = ModelBrowserListing.of(effective, query, tiered = door.showsConfidentialityTags,
-        selectedID = selectedModel, allowsCustomID = door.allowsCustomID)
+        selectedID = selectedModel, allowsCustomID = door.allowsCustomID, carried = carriedFilters)
     // `.searchable`: the field is above the list's top and appears on a pull, not as a permanent row — the list starts
     // scrolled past it here, so the first frame matches iOS and pulling down reveals it.
     val pillPx = with(LocalDensity.current) { 52.dp.roundToPx() }
@@ -212,14 +225,23 @@ private fun ModelRow(row: ModelBrowserListing.Row, onPick: (KnownModel) -> Unit,
         m.vendor.lowercase().takeIf { row.showsVendor && it.isNotEmpty() },
         row.tier?.label?.takeIf { row.showsTier },
     ).joinToString(" · ").ifEmpty { null }
+    // At the accessibility sizes the price and context go under the name: beside it they took the row and left the
+    // name "ki…" (pm 2026-11-04, the same squeeze on iOS's browser at AX5).
+    val fontScale = androidx.compose.ui.platform.LocalDensity.current.fontScale
+    val stacked = fontScale >= 1.5f
     Box {
-        InsetRow(m.displayName.lowercase(), subtitle = second, modifier = Modifier.heightIn(min = 50.dp), onClick = { onPick(m) }, onLongClick = { rowMenu = true },
+        InsetRow(m.displayName.lowercase(), subtitle = if (stacked) listOfNotNull(second, m.metaLabel.ifEmpty { null }).joinToString(" · ").ifEmpty { null } else second, modifier = Modifier.heightIn(min = 50.dp), onClick = { onPick(m) }, onLongClick = { rowMenu = true },
             leading = if (row.isSelected) ({ Text("✓", color = TeemoonColors.tint, style = MaterialTheme.typography.bodyMedium) }) else null,
+            // an eye after the name of a model whose list says it reads images (iOS SF "eye"; the maintainer 2026-11-07,
+            // in place of the photo glyph); the filter and the "· images" captions are unchanged
+            titleTags = if (m.capabilities?.contains(ai.teemoon.providers.ModelCapability.VISION) == true) ({
+                Box(Modifier.semantics { contentDescription = ai.teemoon.app.imaging.ImageModelChoice.MARKER }.testTag("browser.readsImages")) { EyeGlyph(TeemoonColors.secondaryLabel, 16.dp * fontScale.coerceAtMost(2f)) }
+            }) else null,
             trailing = {
                 // RETIRING in place of `new` when both would show: a model on its way out is the more
                 // decision-relevant fact, and two badges is where the name starts truncating.
                 if (m.isRetiring) Tag("retiring", warn = true) else if (m.isNew) Tag("new")
-                Text(m.metaLabel, style = MaterialTheme.typography.bodySmall, color = TeemoonColors.secondaryLabel, maxLines = 1)   // reference data — quiet gray; the name yields first
+                if (!stacked) Text(m.metaLabel, style = MaterialTheme.typography.bodySmall, color = TeemoonColors.secondaryLabel, maxLines = 1)   // reference data — quiet gray; the name yields first
             })
         DropdownMenu(expanded = rowMenu, onDismissRequest = { rowMenu = false }) {
             DropdownMenuItem(text = { Text("model info") }, onClick = { rowMenu = false; onInfo(m) })
@@ -236,15 +258,20 @@ private fun Tag(text: String, warn: Boolean = false) = Text(text, style = Materi
 @Composable
 fun ModelDetailScreen(model: KnownModel, confidentiality: String?, onCopyID: (String) -> Unit, onBack: () -> Unit, liveLoader: (suspend () -> KnownModel?)? = null,
     /** Who can serve this model (OpenRouter's routing table); null for a catalogue that publishes none. */
-    offersLoader: (suspend () -> List<ModelOffer>)? = null) {
+    offersLoader: (suspend () -> List<ModelOffer>)? = null,
+    /** Preview/test seam: the providers table already in hand, so a snapshot never races [offersLoader]. */
+    initialOffers: List<ModelOffer> = emptyList(),
+    /** Developer mode: the model's reasoning levels, read-only (ReasoningUi.modelInfoRow); off, no reasoning row (the maintainer 2026-11-13). */
+    developerMode: Boolean = false) {
     val uri = LocalUriHandler.current
     var live by remember { mutableStateOf<KnownModel?>(null) }
-    var offers by remember { mutableStateOf<List<ModelOffer>>(emptyList()) }
+    var offers by remember { mutableStateOf(initialOffers) }
     var copied by remember { mutableStateOf(false) }
     // Both at once: the card is worth less with either half missing, and the providers table is a second request.
     LaunchedEffect(model.id) { liveLoader?.let { l -> l()?.let { live = it } } }
     LaunchedEffect(model.id) { offersLoader?.let { l -> l().takeIf { it.isNotEmpty() }?.let { offers = it } } }
     val shown = live ?: model
+    val reasoningLevels = ReasoningUi.modelInfoRow(developerMode, shown.reasoningEfforts)
     // LabeledContent: the label keeps its width and the VALUE wraps — a long reasoning-effort list split "reasoning" mid-word.
     @Composable fun row(label: String, value: String) = Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
         Text(label, maxLines = 1, softWrap = false)
@@ -273,13 +300,16 @@ fun ModelDetailScreen(model: KnownModel, confidentiality: String?, onCopyID: (St
         if (shown.parameterSize != null || shown.quantization != null) {
             section("weights"); shown.parameterSize?.let { row("parameters", it) }; shown.quantization?.let { row("quantization", it) }
         }
-        if (shown.features.isNotEmpty() || shown.inputModalities.isNotEmpty() || shown.reasoningEfforts.isNotEmpty() || shown.knowledgeCutoff != null) {
-            section("what it can do"); if (shown.features.isNotEmpty()) chips(shown.features); if (shown.inputModalities.isNotEmpty()) row("accepts", shown.inputModalities.joinToString(", "))
-            if (shown.reasoningEfforts.isNotEmpty()) row("reasoning", shown.reasoningEfforts.joinToString(", "))
+        val features = ReasoningUi.modelInfoFeatures(developerMode, shown.features)
+        if (features.isNotEmpty() || shown.inputModalities.isNotEmpty() || reasoningLevels != null || shown.knowledgeCutoff != null) {
+            section("what it can do"); if (features.isNotEmpty()) chips(features); if (shown.inputModalities.isNotEmpty()) row("accepts", shown.inputModalities.joinToString(", "))
+            // read-only: the level is picked from the where sheet's reasoning bar (the maintainer 2026-11-13)
+            reasoningLevels?.let { row(ReasoningLevel.TITLE, it) }
             shown.knowledgeCutoff?.let { row("knows up to", it) }
         }
         shown.summary?.let { section("about"); Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant) }
-        if (shown.samplingParameters.isNotEmpty()) { section("request parameters"); chips(shown.samplingParameters); Text("what this model accepts. published by the provider, not guessed.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        val parameters = ReasoningUi.modelInfoParameters(developerMode, shown.samplingParameters)
+        if (parameters.isNotEmpty()) { section("request parameters"); chips(parameters); Text("what this model accepts. published by the provider, not guessed.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
         if (offers.isNotEmpty()) {
             section("providers")
             offers.forEach { offer -> ProviderOffer(offer, ::row) }

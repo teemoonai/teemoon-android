@@ -4,6 +4,7 @@ package ai.teemoon.providers
 
 import java.io.IOException
 import java.nio.file.Files
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -191,5 +192,70 @@ class AddEditProviderModelTest {
         assertEquals(listOf("accounts/b/models/probed"), form.fetchedModels.map { it.id })
         assertEquals("untouched", 1, store.count(Provider.fireworks, "key-one"))
         assertEquals("not written", null, store.count(Provider.fireworks, "key-two"))
+    }
+
+    // MARK: - A stale probe (tier 3, pm's state-machine sweep 2026-11-06: "stale probe applied after endpoint edit → saves
+    // new endpoint with old model"). The answer for the endpoint and key the probe ASKED with is applied only while the
+    // form still holds them, and only for the newest probe.
+
+    private fun gatedFireworksForm(gate: kotlinx.coroutines.CompletableDeferred<Unit>, models: List<KnownModel>) =
+        AddEditProviderModel(AddEditProviderModel.Mode.Add).apply {
+            scheme = EndpointScheme.HTTPS; endpointHost = Provider.fireworks.endpoint.removePrefix("https://"); apiKey = "key-one"
+            probeCatalog = offlineCatalog().copy(liveCatalog = { _, _, _, _ -> gate.await(); EndpointModelCatalog.ProbeResult.Connected(models) })
+        }
+    private val oldModel = KnownModel(id = "accounts/a/models/old", displayName = "old", vendor = "a", price = "")
+
+    @Test fun aProbeAnsweredAfterTheEndpointChangedIsDropped() = runBlocking {
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val form = gatedFireworksForm(gate, listOf(oldModel))
+        val running = launch { form.probe(userInitiated = true) }
+        kotlinx.coroutines.yield()
+        form.endpointEdited("http://box.local:11434/v1")
+        gate.complete(Unit); running.join()
+        assertTrue("the old endpoint's list reached the new endpoint's form", form.fetchedModels.isEmpty())
+        assertFalse("the old endpoint's model was selected for the new endpoint", form.model == oldModel.id)
+        assertEquals(AddEditProviderModel.ConnState.Idle, form.conn)
+        assertFalse("the new endpoint reads as probed", form.hasProbed)
+    }
+
+    @Test fun aProbeAnsweredAfterTheKeyChangedIsDropped() = runBlocking {
+        val gate = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val form = gatedFireworksForm(gate, listOf(oldModel))
+        val running = launch { form.probe(userInitiated = true) }
+        kotlinx.coroutines.yield()
+        form.apiKey = "key-two"
+        gate.complete(Unit); running.join()
+        assertTrue("key-one's answer was applied under key-two", form.fetchedModels.isEmpty())
+        assertEquals("a dropped answer left the form testing", AddEditProviderModel.ConnState.Idle, form.conn)
+    }
+
+    @Test fun onlyTheNewestOfTwoProbesApplies() = runBlocking {
+        val first = kotlinx.coroutines.CompletableDeferred<Unit>()
+        val newer = KnownModel(id = "accounts/a/models/new", displayName = "new", vendor = "a", price = "")
+        val form = gatedFireworksForm(first, listOf(oldModel))
+        val one = launch { form.probe(userInitiated = true) }
+        kotlinx.coroutines.yield()
+        form.probeCatalog = offlineCatalog().copy(liveCatalog = { _, _, _, _ -> EndpointModelCatalog.ProbeResult.Connected(listOf(newer)) })
+        form.probe(userInitiated = true)
+        first.complete(Unit); one.join()
+        assertEquals(listOf(newer.id), form.fetchedModels.map { it.id })
+    }
+
+    /**
+     * IMAGES.md §4e "Into a provider's models" @ teemoon-ios bb2b89cf: the form opened from a filtered where sheet lists
+     * only the models that pass its filters, by the browser's own predicate — the first few, or all of them.
+     */
+    @Test fun theFormsModelRowsCarryTheWhereFilters() {
+        val m = AddEditProviderModel(AddEditProviderModel.Mode.Add)
+        val see = setOf(ModelCapability.VISION)
+        m.fetchedModels = listOf("t1", "v1", "t2", "v2", "t3", "v3", "v4").map { id ->
+            KnownModel(id = id, displayName = id, vendor = "x", price = "", contextWindow = "", capabilities = if (id.startsWith("v")) see else emptySet())
+        }
+        val images = setOf(ModelBrowserQuery.Filter.VISION)
+        assertEquals(listOf("v1", "v2", "v3"), m.shownModels(showAll = false, filters = images).map { it.id })
+        assertEquals(listOf("v1", "v2", "v3", "v4"), m.shownModels(showAll = true, filters = images).map { it.id })
+        assertEquals(m.recommendedModels, m.shownModels(showAll = false, filters = emptySet()))
+        assertEquals(m.fetchedModels, m.shownModels(showAll = true, filters = emptySet()))
+        assertEquals(4, m.modelCount(images))
     }
 }

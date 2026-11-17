@@ -56,7 +56,6 @@ import androidx.compose.foundation.background
 import ai.teemoon.providers.WhereLocality
 import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
@@ -115,19 +114,19 @@ fun TrustScreen(
             // chainSection: the headline, then the rail
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
                 Text("how your words reach ${snapshot.modelName} and come back — with no one else able to read them", style = MaterialTheme.typography.titleSmall)
-                val nodes = if (rung == TrustRung.EVERYDAY) TrustChain.everyday(snapshot.verdict.everydayClaims) else snapshot.expertNodes
+                val nodes = if (rung == TrustRung.EVERYDAY) TrustChain.everyday(snapshot.verdict.everydayClaims, halted = snapshot.chainHalted) else snapshot.expertNodes
                 ChainRail(nodes, rung, onJump = { rung = TrustRung.EXPERT })
             }
             val x = snapshot.expert
             if (rung == TrustRung.EXPERT) {
                 // known code: the enclave groups — every image the quote measures, traced to public source
                 Section("known code", x.knownCodeIntro) {
-                    x.enclaveGroups.forEach { EnclaveGroupView(it, rung, onCopy = { v -> onCopyScript?.invoke(v) }) }
+                    x.enclaveGroups.forEach { EnclaveGroupView(it, rung, onCopy = { v -> onCopyScript?.invoke(v) }, scope = if (it.primary) x.scope else null) }
                     x.knownCodeEmpty?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = TeemoonColors.secondaryLabel) }
                     x.auditStamp?.let { Text(it.text, style = MaterialTheme.typography.labelSmall, color = if (it.stale) TrustTone.ADVISORY.color() else TeemoonColors.secondaryLabel) }
                 }
                 if (x.hardware.isNotEmpty()) EvidenceCard("genuine hardware", x.hardwareSubtitle) { x.hardware.forEach { EvidenceRowView(it) } }
-                x.transport?.let { EvidenceCard("sealed transport", ExpertSections.TRANSPORT_SUBTITLE) { EvidenceRowView(it) } }
+                x.transport?.let { EvidenceCard(ExpertSections.TRANSPORT_TITLE, ExpertSections.TRANSPORT_SUBTITLE) { EvidenceRowView(it) } }
                 EvidenceCard("disclosed limits", ExpertSections.LIMITS_SUBTITLE) {
                     x.limits.forEach { (title, detail) -> LimitRow(title, detail) }
                 }
@@ -163,7 +162,7 @@ private fun RungPicker(rung: TrustRung, onPick: (TrustRung) -> Unit) {
 
 /** TrustLadderView+Hero.hero: the 40pt glyph in the hero colour, the title, the subtitle, the stamp line with re-verify. */
 @Composable
-private fun Hero(s: TrustSnapshot, onReverify: () -> Unit) {
+internal fun Hero(s: TrustSnapshot, onReverify: () -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         HeroGlyph(s.summary.headerIcon, s.heroTone.color())
         Text(s.verdict.heroTitle, style = MaterialTheme.typography.headlineLarge)   // TrustLadderView+Hero: .title.weight(.bold), 28pt
@@ -190,8 +189,11 @@ fun HeroGlyph(symbol: String, color: Color, modifier: Modifier = Modifier) {
     }
     // SF's laptopcomputer at 40pt is a wide glyph (~56pt across on the tag's capture); the others are square
     val wide = "laptop" in symbol || "desktopcomputer" in symbol
-    Box(modifier.size(if (wide) 60.dp else 48.dp), contentAlignment = Alignment.Center) {
-        Canvas(Modifier.size(if (wide) 60.dp else 44.dp)) {
+    // the mark is text and grows with the reader's text size, so the shape grows with it: at 200% a fixed 44dp shield
+    // had the ✓ spilling out of it (A6 screen check, pm 2026-11-06)
+    val grow = androidx.compose.ui.platform.LocalDensity.current.fontScale.coerceAtLeast(1f)
+    Box(modifier.size((if (wide) 60.dp else 48.dp) * grow), contentAlignment = Alignment.Center) {
+        Canvas(Modifier.size((if (wide) 60.dp else 44.dp) * grow)) {
             val w = size.width; val h = size.height
             if ("shield" in symbol) {
                 val path = Path().apply {
@@ -237,7 +239,9 @@ private fun ChainRail(nodes: List<ChainNode>, rung: TrustRung, onJump: (ChainNod
                     StatusIcon(node)
                     if (!last) {
                         val segment = when {
-                            node.dimmed -> TeemoonColors.separator
+                            // the line into a greyed or failing step is grey too: nothing green leads into a halted chain or a red ✕
+                            node.dimmed || nodes[index + 1].status == ChainNode.Status.FAIL ||
+                                nodes[index + 1].dimmed && node.status != ChainNode.Status.FAIL -> TeemoonColors.separator
                             node.status == ChainNode.Status.OK || node.status == ChainNode.Status.ORIGIN || node.status == ChainNode.Status.INFO -> TeemoonColors.verified.copy(alpha = 0.55f)
                             node.status == ChainNode.Status.ALERT -> TeemoonColors.orange.copy(alpha = 0.55f)
                             node.status == ChainNode.Status.FAIL -> TeemoonColors.red
@@ -257,7 +261,8 @@ private fun ChainRail(nodes: List<ChainNode>, rung: TrustRung, onJump: (ChainNod
                     Text(proofText(detail, tokenColor = TeemoonColors.label, proseColor = TeemoonColors.secondaryLabel), style = MaterialTheme.typography.bodySmall, color = TeemoonColors.secondaryLabel.copy(alpha = if (node.dimmed) 0.55f else 1f))
                     if (rung.showsValues) node.value?.let { ValuePill(it, node.copyValue) }
                     val showJump = node.jumpTitle != null && (rung.showsLinks || node.jumpAtEveryday)
-                    if (showJump || (rung.showsLinks && node.links.isNotEmpty())) Row(horizontalArrangement = Arrangement.spacedBy(14.dp), modifier = Modifier.padding(top = 2.dp)) {
+                    // LinkFlow, not a Row: a link that doesn't fit starts a new line instead of squeezing (2026-11-01)
+                    if (showJump || (rung.showsLinks && node.links.isNotEmpty())) LinkFlow(Modifier.padding(top = 2.dp)) {
                         if (showJump) Text("${node.jumpTitle} ↓", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium), color = TeemoonColors.tint, modifier = Modifier.clickable { onJump(node) })
                         if (rung.showsLinks) node.links.forEach { l -> Text("${l.title} ↗", style = MaterialTheme.typography.labelSmall.copy(fontWeight = FontWeight.Medium), color = TeemoonColors.tint, modifier = Modifier.clickable { runCatching { uri.openUri(l.url) } }) }
                     }
@@ -270,6 +275,12 @@ private fun ChainRail(nodes: List<ChainNode>, rung: TrustRung, onJump: (ChainNod
 @Composable
 private fun StatusIcon(node: ChainNode) {
     val size = 26.dp
+    // a step greyed by a block, a stale record or an earlier failure was not checked: an empty grey ring — a ✓ reads as
+    // passed (pm on trust-blocked-chain-and-gateway-row, 2026-11-06)
+    if (node.dimmed && node.status != ChainNode.Status.ORIGIN && node.status != ChainNode.Status.FAIL) {
+        Box(Modifier.size(size).padding(3.dp).border(1.5.dp, TeemoonColors.secondaryLabel, CircleShape))
+        return
+    }
     when (node.status) {
         ChainNode.Status.ORIGIN -> Box(Modifier.size(size).clip(CircleShape).background(TeemoonColors.fill), contentAlignment = Alignment.Center) {
             Icon(Icons.Filled.Lock, null, tint = TeemoonColors.secondaryLabel, modifier = Modifier.size(12.dp))
@@ -278,7 +289,8 @@ private fun StatusIcon(node: ChainNode) {
         ChainNode.Status.ALERT -> Text("⚠", color = TeemoonColors.orange, style = MaterialTheme.typography.titleMedium)
         ChainNode.Status.INFO -> FilledCircleGlyph("i", TeemoonColors.secondaryLabel)
         ChainNode.Status.FAIL -> FilledCircleGlyph("×", TeemoonColors.red)
-        ChainNode.Status.PENDING -> CircularProgressIndicator(Modifier.size(16.dp), strokeWidth = 2.dp, color = TeemoonColors.secondaryLabel)
+        // the spoke wheel, whole in every frame: Material's arc is a "," in a still (trust-pending-state Q5, the maintainer 2026-11-06)
+        ChainNode.Status.PENDING -> SpokeSpinner(TeemoonColors.secondaryLabel, Modifier.size(16.dp))
     }
 }
 
@@ -286,7 +298,10 @@ private fun StatusIcon(node: ChainNode) {
 @Composable
 fun FilledCircleGlyph(mark: String, color: Color, size: Dp = 22.dp) {
     Box(Modifier.size(size).clip(CircleShape).background(color), contentAlignment = Alignment.Center) {
-        Text(mark, color = TeemoonColors.groupedBackground, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold))
+        // The mark is sized to the disc, not the font scale: at 200% a text-sized "✓" outgrew the 22 dp disc and was
+        // clipped to a stroke (pm, trust-pending goldens 2026-11-06).
+        val markSize = with(androidx.compose.ui.platform.LocalDensity.current) { (size * 0.6f).toSp() }
+        Text(mark, color = TeemoonColors.groupedBackground, style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.Bold, fontSize = markSize, lineHeight = markSize))
     }
 }
 

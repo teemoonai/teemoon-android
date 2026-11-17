@@ -1,4 +1,4 @@
-// ports: teemoonTests/PlacesKeysBadgeTests.swift @ v1.0.5
+// ports: teemoonTests/PlacesKeysBadgeTests.swift @ v1.1.0
 package ai.teemoon.providers
 
 import org.junit.Assert.assertEquals

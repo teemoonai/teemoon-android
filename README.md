@@ -3,8 +3,8 @@
 **private AI chat, your key.**
 
 teemoon is a private AI chat app with no teemoon server: your phone talks directly to the model you pick — on the
-phone, on a computer you own, or in a cloud with your own key. no account, no analytics; keys live in the Android
-keystore and chats stay on the device.
+phone, on a computer you own, or in a cloud with your own key. no account, no analytics; keys are kept encrypted on
+the phone under a key the Android Keystore holds, and chats stay on the device.
 
 this is the Android client, a direct port of [teemoon-ios](https://github.com/teemoonai/teemoon-ios): the same code
 paths, screens and checks. where Android does something its own way, [`docs/ANDROID_NATIVE.md`](docs/ANDROID_NATIVE.md)
@@ -36,7 +36,7 @@ each release is rebuilt from its tag and compared with the apk: [`docs/REPRODUCI
   Brave Answers. live model lists with prices and per-model capabilities.
 - **verified end-to-end encryption.** near.ai's enclaves are checked on the phone, not trusted from the server: the
   Intel TDX quote via DCAP, the GPU's evidence via NVIDIA, the certificate bound to the attestation. a failed check
-  blocks sending; what is and isn't proven: [`ATTESTATION.md`](https://github.com/teemoonai/teemoon-ios/blob/main/ATTESTATION.md).
+  blocks sending; a soft degrade asks first. what is and isn't proven: [`ATTESTATION.md`](https://github.com/teemoonai/teemoon-ios/blob/main/ATTESTATION.md).
 - **audited clients.** Android and iOS source reviewed with claude fable for any way the app could leak your keys or
   your plaintext, published in [teemoonai/audits](https://github.com/teemoonai/audits/tree/main/client) and keyed to
   the release commit.
@@ -45,9 +45,19 @@ each release is rebuilt from its tag and compared with the apk: [`docs/REPRODUCI
   finds near.ai copies your plaintext, teemoon warns you and names the components at fault.
 - **web search.** Brave's LLM context API, streaming, with sources beside the reply. on near.ai the tool call, query
   and results stay end-to-end encrypted; Brave sees only the search itself, sent from your phone with your key.
+- **images.** take a photo, pick from your photos or paste — up to 10 per message, to a cloud model that reads images
+  or to Gemma 4 on the phone. photos are resized and their location removed on the phone before they're sent, and
+  every picture is decoded in an isolated process with no permissions (JPEG, PNG, GIF and BMP by the memory-safe
+  Wuffs). the model picker can show only the models that read images.
+- **images on the phone, decided by the phone.** whether Gemma 4 can read your images here is worked out when you send:
+  what the model needs against the memory this phone has, not a list of supported phones. a phone that can never fit
+  it says so and offers the smaller model; one that's short right now says how much to free.
+- **bring your near.ai chats.** import near.ai Private Chat's export file, images included.
 - **chat search.** on the phone and offline.
 - **the request, as sent.** developer mode shows each reply's request, keys masked.
-- **one permission.** notifications. nothing else.
+- **one permission prompt.** notifications, to say a reply is ready. the rest are granted at install and ask nothing:
+  internet, network state, a foreground service (two grants) so a reply or a download can finish after you leave the
+  app, and the app's own guard on its internal broadcasts.
 
 ### only on Android
 
@@ -79,9 +89,12 @@ tools/device_suite.sh UserJourneysTest # the user journeys on a device
 ```
 
 tests that call the real model providers (near.ai, OpenRouter and the rest, with your own keys, a few cents a run)
-are opt-in; see [`tools/live_cloud_suite.sh`](tools/live_cloud_suite.sh). [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)
-is the map of the code, and [`ports.json`](ports.json) names the Swift file and teemoon-ios tag each Kotlin file was
-ported from.
+are opt-in; see [`tools/live_cloud_suite.sh`](tools/live_cloud_suite.sh).
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) is the map of the code, and [`ports.json`](ports.json) names the Swift
+file each Kotlin file was ported from. Most also name the teemoon-ios release tag whose source matches it byte for
+byte. Where a port follows a later iOS change, it names a teemoon-ios development commit instead; that history is
+private, so those references can't be checked against the public repo. The audit doesn't rely on them: each release's
+audit page names the tagged commit of this repository that it reviewed.
 
 ## contributing
 
