@@ -26,7 +26,7 @@ Every public release of teemoon for Android, newest first. Each GitHub release i
 
 ### Known issues
 
-- Found after release (audit MEDIUM): only the first listed near.ai enclave is verified, but every enclave near.ai's key service admits under the app id holds the same key; a fix for listed enclaves is proposed for 1.1.1.
+- Found after release (audit MEDIUM): only the first listed near.ai enclave is verified, but every enclave near.ai's key service admits under the app id holds the same key; a fix for listed enclaves is planned for 1.1.1.
 - Accepted for this release: a near.ai model used sealed can turn proxied on a changed model list with no alert; a fix is planned for 1.1.1.
 - R8 shrinking is off, which draws Play's obfuscation notice; to be fixed before February 2027.
 
