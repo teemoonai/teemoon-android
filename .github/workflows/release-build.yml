@@ -19,6 +19,10 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.ref || github.ref }}
+      - name: check_store.py from the commit this workflow runs from (main), since the v1.1.0-3918 tag's tree has none; the APK is still built from the tag alone
+        run: |
+          git fetch --no-tags --depth=1 origin "${{ github.sha }}"
+          git show FETCH_HEAD:tools/check_store.py > "$RUNNER_TEMP/check_store.py"
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -39,7 +43,7 @@ jobs:
           NAME=$(grep -oE 'versionName = "[^"]+"' app/build.gradle.kts | cut -d'"' -f2); CODE=$(grep -oE 'versionCode = [0-9]+' app/build.gradle.kts | grep -oE '[0-9]+')
           mv teemoon-unsigned.apk "teemoon-$NAME-$CODE-unsigned.apk"; sha256sum "teemoon-$NAME-$CODE-unsigned.apk" | tee unsigned.sha256
       - name: no Google Play libraries in the APK (the maintainer 2026-11-01; the Play bundle alone is built with -Pteemoon.store=play)
-        run: python3 tools/check_store.py github teemoon-*-unsigned.apk
+        run: python3 "$RUNNER_TEMP/check_store.py" github teemoon-*-unsigned.apk
       - uses: actions/upload-artifact@v4
         with:
           name: unsigned-apk
