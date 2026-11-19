@@ -24,7 +24,7 @@ promises we can actually keep, not the fastest ones we could claim.
 The interesting attack surface here is the attestation and verification chain, not the
 UI chrome (the full account of what the app verifies, and what it does not prove, is the
 iOS repo's [`ATTESTATION.md`](https://github.com/teemoonai/teemoon-ios/blob/main/ATTESTATION.md);
-this port implements the same chain module for module):
+known limits found since are in [`CHANGELOG.md`](CHANGELOG.md), and where Android differs, [`docs/ANDROID_NATIVE.md`](docs/ANDROID_NATIVE.md)):
 
 - TDX quote parsing and structural validation (`confidential/TdxQuote.kt`)
 - DCAP cryptographic verification (`confidential/DcapService.kt`, `dcap-qvl-android`)
