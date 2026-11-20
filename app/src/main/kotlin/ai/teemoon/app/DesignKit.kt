@@ -167,6 +167,9 @@ val LocalOnGroupedGround = compositionLocalOf { false }
 /** `.lineLimit(1).minimumScaleFactor(0.8)` for a row's caption: one line, shrinking up to 20% before it would wrap. */
 val LocalSubtitleShrinksToFit = staticCompositionLocalOf { false }
 
+/** [NavBar]'s height with a one-line title (UIKit's 44pt bar): what a screen assumes before it has measured the bar. */
+val NavBarMinHeight = 44.dp
+
 /**
  * Whether [MoonGlyph] draws. Snapshots of the empty chat turn it off: it draws today's phase, and a golden image of today's
  * moon matches only on the days that share its phase (the share-in snapshots went red on 2026-11-19). The app always draws it.
@@ -213,7 +216,7 @@ fun NavBar(
     // The title's side inset is the WIDER control's width plus a gap (at most 80pt), the same on both sides so the title
     // stays centred — not a fixed 80pt, which cut "import from near.ai" to "import from near…" beside a lone back circle (pm
     // 2026-11-01) where UIKit's bar, which also lays the title out between the measured items, fits it.
-    Layout(modifier = modifier.fillMaxWidth().heightIn(min = 44.dp).padding(horizontal = 8.dp), content = {
+    Layout(modifier = modifier.fillMaxWidth().heightIn(min = NavBarMinHeight).padding(horizontal = 8.dp), content = {
         Box { leading() }
         Box { trailing() }
         // E2EETitleBlock: the title line AND the caption are ONE control (44pt minimum, the whole rectangle) with one
