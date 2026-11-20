@@ -32,10 +32,13 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.tag || github.event.release.tag_name }}
-      - name: check_store.py from the commit this workflow runs from (main), since the v1.1.0-3918 tag's tree has none; the APK is still built from the tag alone
+      - name: the checking scripts from the commit this workflow runs from (main), not from the tag it checks; the APK is still built from the tag alone
+        # A tag's own verify_release.py could be one that always reports a match. check_store.py comes from here too,
+        # since the v1.1.0-3918 tag's tree has none.
         run: |
           git fetch --no-tags --depth=1 origin "${{ github.sha }}"
           git show FETCH_HEAD:tools/check_store.py > "$RUNNER_TEMP/check_store.py"
+          git show FETCH_HEAD:tools/verify_release.py > "$RUNNER_TEMP/verify_release.py"
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -62,7 +65,7 @@ jobs:
         id: cmp
         run: |
           set +e
-          python3 tools/verify_release.py release/teemoon-*.apk rebuilt.apk | tee verdict.txt
+          python3 "$RUNNER_TEMP/verify_release.py" release/teemoon-*.apk rebuilt.apk | tee verdict.txt
           echo "rc=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
       - name: write the verdict into the release notes
         run: |
