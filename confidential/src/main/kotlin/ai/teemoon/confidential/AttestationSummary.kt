@@ -643,7 +643,9 @@ data class AttestationSummary(
     private val privacyAttentionLine: String
         get() {
             if (attestation?.modelEd25519PubKey == null) {
-                return "Encryption to the model is unavailable right now — messages use TLS to the verified enclave."
+                // Not "TLS to the verified enclave": with no model key nothing is sealed, and completions go to near.ai's
+                // gateway (TeeContext.from) over ordinary WebPKI TLS. Ahead of iOS's copy; reconcile when it lands there.
+                return "Encryption to the model is unavailable right now — messages go to near.ai's gateway over ordinary TLS, not sealed to the model."
             }
             if (lastRequestUsedE2EE == false && lastE2EEFailReason != null) return lastE2EEFailReason
             return "The model’s encryption could not be fully verified."
