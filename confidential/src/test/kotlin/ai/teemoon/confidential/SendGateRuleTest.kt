@@ -274,4 +274,19 @@ class SendGateRuleTest {
         for (status in listOf(-1, 401, 403, 408, 429, 500, 502, 503, 504)) assertTrue("$status is an outage", http(status).isUnchecked)
         assertTrue(DcapVerifier.collateralUnavailable(java.net.SocketTimeoutException("timeout")).isUnchecked)
     }
+
+    /**
+     * Android-ahead (the maintainer, 2026-11-20), not yet in conformance/sendgate.json: a record with the model's encryption
+     * key and NO model quote. Nothing vouches that the key lives in the enclave — the same break as a quote that fails or
+     * does not bind it — so it blocks; it used to ask and then seal to that key.
+     */
+    @Test fun aKeyWithNoModelQuoteBlocks() {
+        val s = session(emptyMap())
+        val record = s.attestation!!
+        assertEquals("the baseline sends", TrustSendPolicy.ALLOW, s.sendPolicy)
+        s.attestation = AttestationFixtures.clone(record, modelQuoteVerification = null, fetchedAt = record.fetchedAt)
+        assertNotNull("the key is still there", s.attestation!!.modelEd25519PubKey)
+        assertTrue("a key nothing vouches for is a hard break", s.degradeIsHardFailure)
+        assertEquals(TrustSendPolicy.BLOCK, s.sendPolicy)
+    }
 }

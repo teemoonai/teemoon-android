@@ -1353,13 +1353,15 @@ class ConfidentialSession(
                 // model TEE — both are hard breaks of the E2EE guarantee.
                 if (lastRequestUsedE2EE == false) return true
                 val mqv = att.modelQuoteVerification
-                if (mqv != null) {
-                    if (!mqv.isVerified) return true
-                    if (att.e2eeKeyBoundToModelTEE == false) return true
-                }
+                // A key with no model quote at all: nothing vouches that it lives in the enclave, which is the same
+                // break as a quote that fails or does not bind it. It asked to confirm and then sealed to that key;
+                // now it blocks like them (the maintainer, 2026-11-20).
+                if (mqv == null) return true
+                if (!mqv.isVerified) return true
+                if (att.e2eeKeyBoundToModelTEE == false) return true
             }
             // Remaining degrades — provenance Incomplete with E2EE intact, no
-            // Ed25519 key, or model attestation simply unavailable — are advisory.
+            // Ed25519 key — are advisory.
             return false
         }
 
