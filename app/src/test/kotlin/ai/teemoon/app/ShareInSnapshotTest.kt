@@ -21,7 +21,8 @@ class ShareInSnapshotTest {
         return ImageDecodeFrame.Decoded("image/jpeg", 96, 96, bytes, bytes)
     }
 
-    private fun newChat(draft: () -> ShareIn.Draft) = paparazzi.snapshot { TeemoonTheme {
+    // The empty chat draws the moon: pinned to the first quarter the golden images show, not today's phase.
+    private fun newChat(draft: () -> ShareIn.Draft) = paparazzi.snapshot { TeemoonTheme { androidx.compose.runtime.CompositionLocalProvider(LocalMoonPhase provides 2) {
         val d = androidx.compose.runtime.remember { draft() }
         // the strip as it stands once the share has landed (on the phone it arrives on its spring a frame after the
         // first draw, which a single snapshot would catch at height 0)
@@ -29,7 +30,7 @@ class ShareInSnapshotTest {
         ChatScreen(focusOnEmpty = false, vm = vm, title = "new chat", hasProvider = true, onOpenSettings = {}, webSearchState = WebSearchChipState.OFF,
             whereModel = "gemma 4 e2b", wherePlace = "on this device", whereLocality = WhereLocality.PHONE, onOpenWhere = {}, pickImages = { _, _ -> emptyList() },
             sharedDraft = d)
-    } }
+    } } }
 
     /** A TikTok photo post: three photos and its link, as the draft — nothing sent. */
     @Test fun share_photosAndLink() = newChat { ShareIn.draft("https://www.tiktok.com/@someone/photo/7311", listOf(photo(0xFF3B82F6.toInt()), photo(0xFFF97316.toInt()), photo(0xFF22C55E.toInt()))) }
