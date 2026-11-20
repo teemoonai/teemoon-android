@@ -23,8 +23,9 @@ jobs:
     env:
       TAG: ${{ inputs.tag || github.event.release.tag_name }}
       GH_TOKEN: ${{ github.token }}
-      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      # Whether the mirror's secrets are configured, as true/false: the keys themselves are given to the mirror step
+      # alone, never to the Gradle build of the tag above it.
+      R2_MIRROR: ${{ secrets.R2_ACCESS_KEY_ID != '' }}
       R2_ACCOUNT_ID: eb687f63827846141f75d375d6f9784a
       R2_BUCKET: teemoon-android-releases
     steps:
@@ -75,7 +76,7 @@ jobs:
           gh release edit "$TAG" --notes-file notes.md
           exit "$RC"
       - name: mirror the verified release to R2 (skipped without the secrets)
-        if: env.R2_ACCESS_KEY_ID != ''
+        if: env.R2_MIRROR == 'true'
         env:
           AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
