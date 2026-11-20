@@ -102,6 +102,14 @@ import kotlinx.coroutines.delay
  */
 internal fun shownChipLevel(whereLevel: String?, thinkHarderLevel: String?): String? = whereLevel?.let { thinkHarderLevel ?: it }
 
+
+/**
+ * Whether the transcript scrolls itself: the open's landing window and the pin to the end (both effects below). Snapshots
+ * turn it off: both run on wall-clock time (a second's window, 200 ms passes), so a single frame caught the transcript
+ * unscrolled, part-scrolled or pinned from run to run (DesignSnapshotTest.chat_transcript_dark). The app always scrolls.
+ */
+val LocalAutoScrollsTranscript = androidx.compose.runtime.staticCompositionLocalOf { true }
+
 @Composable
 fun ChatScreen(
     vm: ChatViewModel = viewModel(),
@@ -500,8 +508,9 @@ fun ChatScreen(
     // last row's bottom is re-pinned to the viewport's end on every layout, as iOS's settle window does; the reader's
     // first drag ends it.
     TraceWhile("chat:loading", !state.loaded)
+    val autoScrolls = LocalAutoScrollsTranscript.current
     LaunchedEffect(state.loaded) {
-        if (!state.loaded || state.messages.isEmpty()) return@LaunchedEffect
+        if (!autoScrolls || !state.loaded || state.messages.isEmpty()) return@LaunchedEffect
         listState.scrollToItem(state.messages.lastIndex)
         if (scrollToMessageId != null) return@LaunchedEffect   // a search hit lands on its match (the pin effect), not the end
         // NavTrace: the window, and how many times it moved the transcript (each move is one a reader can see)
@@ -538,7 +547,7 @@ fun ChatScreen(
     // The error card is a key too: it is appended under the prompt at the turn's end (ConversationView.items), and with
     // no reply row left (settle drops the empty placeholder) the reserve is 0 and the settle pin lands on the card.
     LaunchedEffect(state.isStreaming, state.messages.size, state.messages.lastOrNull()?.text?.length, state.lastError != null) {
-        if (state.messages.isEmpty()) return@LaunchedEffect
+        if (!autoScrolls || state.messages.isEmpty()) return@LaunchedEffect
         val info = listState.layoutInfo
         val userIndex = state.messages.indexOfLast { it.role == "user" }
         val userItem = info.visibleItemsInfo.firstOrNull { it.index == userIndex }

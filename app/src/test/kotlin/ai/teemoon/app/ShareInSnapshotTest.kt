@@ -21,8 +21,8 @@ class ShareInSnapshotTest {
         return ImageDecodeFrame.Decoded("image/jpeg", 96, 96, bytes, bytes)
     }
 
-    // The empty chat draws the moon: pinned to the first quarter the golden images show, not today's phase.
-    private fun newChat(draft: () -> ShareIn.Draft) = paparazzi.snapshot { TeemoonTheme { androidx.compose.runtime.CompositionLocalProvider(LocalMoonPhase provides 2) {
+    // The empty chat draws today's moon, which no golden image can hold every day: hidden here (LocalShowsMoon).
+    private fun newChat(draft: () -> ShareIn.Draft) = paparazzi.snapshot { TeemoonTheme { androidx.compose.runtime.CompositionLocalProvider(LocalShowsMoon provides false) {
         val d = androidx.compose.runtime.remember { draft() }
         // the strip as it stands once the share has landed (on the phone it arrives on its spring a frame after the
         // first draw, which a single snapshot would catch at height 0)

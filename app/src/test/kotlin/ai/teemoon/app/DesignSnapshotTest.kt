@@ -58,15 +58,16 @@ class DesignSnapshotTest {
         val imported = ThreadEntity("imp", "Montréal trip notes from near.ai", now - 200_000_000)
         val hit = ai.teemoon.chat.search.ChatSearchResult("m3", "t3", "user", now - 86_400_000, "flights to \u0001montreal\u0002 in may?")
         paparazzi.snapshot { TeemoonTheme { ThreadsScreen(threads = threads + imported, onOpen = {}, onNew = {}, onClose = {}, previews = previews,
-            initialQuery = "montreal", onSearch = { listOf(hit) }, nowMs = { now }) } }
+            initialQuery = "montreal", onSearch = { listOf(hit) }, initialHits = listOf(hit), nowMs = { now }) } }
     }
 
     /** The default theme IS dark: no `dark =` here, so this snapshot fails if the pin (Theme.kt) ever follows the system again. */
     @Test fun chat_transcript_dark() {
-        paparazzi.snapshot { TeemoonTheme { ChatScreen(focusOnEmpty = false, vm = chatVm(), title = "glm-5.2 · near.ai", hasProvider = true, onOpenSettings = {}, webSearchState = WebSearchChipState.OFF,
+        // the transcript's own scrolling runs on wall-clock time; off, the frame is the same every run (LocalAutoScrollsTranscript)
+        paparazzi.snapshot { TeemoonTheme { androidx.compose.runtime.CompositionLocalProvider(LocalAutoScrollsTranscript provides false) { ChatScreen(focusOnEmpty = false, vm = chatVm(), title = "glm-5.2 · near.ai", hasProvider = true, onOpenSettings = {}, webSearchState = WebSearchChipState.OFF,
             // the chip as the app sets it for that place (pm on the card: "choose where" under a glm-5.2 header was the
             // fixture's), and the "+" as the app always has it
-            whereModel = "glm-5.2", wherePlace = "near.ai", whereLocality = ai.teemoon.providers.WhereLocality.CLOUD, onOpenWhere = {}, pickImages = { _, _ -> emptyList() }) } }
+            whereModel = "glm-5.2", wherePlace = "near.ai", whereLocality = ai.teemoon.providers.WhereLocality.CLOUD, onOpenWhere = {}, pickImages = { _, _ -> emptyList() }) } } }
     }
 
     @Test fun whereSheet_dark() {

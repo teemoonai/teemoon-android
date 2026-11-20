@@ -73,11 +73,18 @@ fun ThreadsScreen(
     /** Opening a search hit: the hit rides along so the transcript can land on it. */
     onOpenHit: (String, ChatSearchResult) -> Unit = { id, _ -> onOpen(id) },
     nowMs: () -> Long = { System.currentTimeMillis() },
+    /**
+     * [initialQuery]'s answer, when the caller already has it: the first frame shows the results instead of the whole list
+     * while the search effect runs. Snapshots pass it — a single frame caught either state (DesignSnapshotTest). The app
+     * passes nothing and the effect answers as before; when it does, it sets the same hits.
+     */
+    initialHits: List<ChatSearchResult>? = null,
 ) {
     var query by remember(freshOpen) { mutableStateOf(initialQuery) }
     val listState = remember(freshOpen) { androidx.compose.foundation.lazy.LazyListState() }
-    var hits by remember { mutableStateOf<List<ChatSearchResult>?>(null) }
-    var hitsQuery by remember { mutableStateOf("") }
+    val seeded = initialHits?.takeIf { initialQuery.isNotBlank() }
+    var hits by remember { mutableStateOf(seeded) }
+    var hitsQuery by remember { mutableStateOf(if (seeded != null) initialQuery else "") }
     var indexUnavailable by remember { mutableStateOf(false) }
     var fallbackIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var pendingDeletion by remember { mutableStateOf<ThreadEntity?>(null) }

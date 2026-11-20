@@ -167,8 +167,11 @@ val LocalOnGroupedGround = compositionLocalOf { false }
 /** `.lineLimit(1).minimumScaleFactor(0.8)` for a row's caption: one line, shrinking up to 20% before it would wrap. */
 val LocalSubtitleShrinksToFit = staticCompositionLocalOf { false }
 
-/** The phase [MoonGlyph] draws; null (the app) means today's. Snapshots pin it so their golden images hold every day. */
-val LocalMoonPhase = staticCompositionLocalOf<Int?> { null }
+/**
+ * Whether [MoonGlyph] draws. Snapshots of the empty chat turn it off: it draws today's phase, and a golden image of today's
+ * moon matches only on the days that share its phase (the share-in snapshots went red on 2026-11-19). The app always draws it.
+ */
+val LocalShowsMoon = staticCompositionLocalOf { true }
 
 @Composable
 fun chromeBackground(): Color = if (LocalOnGroupedGround.current) TeemoonColors.groupedCard else TeemoonColors.secondaryBackground
@@ -1365,11 +1368,11 @@ fun E2EETag() {
  * colour at 56pt — a quiet mark, not an illustration. Phase 0 is new, 4 is full; the lit limb is a half disc
  * plus an ellipse whose width follows the phase.
  *
- * A snapshot of the empty chat provides [LocalMoonPhase]: a golden image of today's moon matches only on the days
- * that share its phase, which turned the share-in snapshots red on 2026-11-19.
+ * Snapshots hide it ([LocalShowsMoon]).
  */
 @Composable
-fun MoonGlyph(phase: Int = LocalMoonPhase.current ?: MoonPhase.index(), modifier: Modifier = Modifier) {
+fun MoonGlyph(phase: Int = MoonPhase.index(), modifier: Modifier = Modifier) {
+    if (!LocalShowsMoon.current) return
     // ChatView: `moonphase.*` at 32×32 in `.quaternary` (quaternaryLabel ≈ 18% of the label colour) — a mark, not a
     // picture. It was 56dp in tertiaryLabel here, three times the ink of the iOS one, until the captures were measured.
     val lit = TeemoonColors.label.copy(alpha = 0.18f); val dim = TeemoonColors.label.copy(alpha = 0.06f)
