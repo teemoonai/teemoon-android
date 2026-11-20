@@ -32,6 +32,7 @@ import com.google.ai.edge.litertlm.ThinkingConfig
 import com.google.ai.edge.litertlm.tool
 import java.io.File
 import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -161,10 +162,12 @@ class LiteRtLmEngineFactory(
                 // runs on its own thread: we stop waiting at the deadline, and an engine that finishes after it is closed
                 // then, not left loaded beside the next rung's. Until then nothing here may close it under the load.
                 var abandonedLoad = false
+                var initialized = false
                 try {
                     val loaded = BlockingDeadline.run(probeTimeoutMs, block = { try { engine.initialize() } finally { watch.cancel() } },
-                        abandoned = { r -> runCatching { engine.close() }; log("[litert] ${label(kind)} load finished after its deadline (${if (r.isSuccess) "loaded" else "failed"}) — closed") })
+                        abandoned = { r -> runCatching { engine.close() }; log("[litert] ${label(kind)} load finished after its deadline or a stop (${if (r.isSuccess) "loaded" else "failed"}) — closed") })
                     if (loaded == null) { abandonedLoad = true; throw LocalInferenceError.LoadFailed("the ${label(kind)} backend did not answer within ${probeTimeoutMs / 1000}s") }
+                    initialized = true
                     val ok = withTimeoutOrNull(probeTimeoutMs) { probeDecodes(engine) }
                     if (ok != true) throw LocalInferenceError.LoadFailed(
                         if (ok == null) "the ${label(kind)} backend did not answer within ${probeTimeoutMs / 1000}s" else "the ${label(kind)} backend loaded but produced nothing",
@@ -174,6 +177,12 @@ class LiteRtLmEngineFactory(
                     log("[litert] engine on ${label(kind)}${if (vision) " with vision" else ""}, window $window (ready in ${System.currentTimeMillis() - started}ms)")
                     return@withContext Handle(engine, log, label(kind), speculative, reuseConversations, sees = vision,
                         contextTokens = window.takeIf { it != contextTokens })
+                } catch (c: CancellationException) {
+                    // A stop, not a refusal: no next rung, and never the NPU-unusable marker below. An engine still
+                    // initializing is BlockingDeadline's to close when its load ends; closing it here would be under the load.
+                    if (initialized) runCatching { engine.close() }
+                    log("[litert] ${label(kind)} load stopped after ${System.currentTimeMillis() - started}ms")
+                    throw c
                 } catch (t: Throwable) {
                     lastFailure = t; if (!abandonedLoad) runCatching { engine.close() }
                     // The reason matters more than the failure: this line is how the next device's story gets read.

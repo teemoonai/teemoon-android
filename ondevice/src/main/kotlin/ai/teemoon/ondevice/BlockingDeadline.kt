@@ -1,6 +1,7 @@
 // android-only: waiting on a blocking native call with a deadline (A7, pm sweep 2026-11-06).
 package ai.teemoon.ondevice
 
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.withTimeoutOrNull
 
@@ -22,7 +23,16 @@ internal object BlockingDeadline {
             val late = synchronized(lock) { if (gaveUp) true else { done.complete(r); false } }
             if (late) abandoned(r)
         }, "teemoon-blocking-load").apply { isDaemon = true }.start()
-        val r = withTimeoutOrNull(timeoutMs) { done.await() }
+        val r = try {
+            withTimeoutOrNull(timeoutMs) { done.await() }
+        } catch (c: CancellationException) {
+            // The caller was cancelled (stop pressed mid-load): the same as the deadline, not a failure. The call keeps
+            // running and its result goes to [abandoned]; one that already finished goes there now, because nobody is
+            // left to use it. Rethrown, so the caller's ladder unwinds instead of reading this as a refused rung.
+            val finished = synchronized(lock) { if (done.isCompleted) done.getCompleted() else { gaveUp = true; null } }
+            finished?.let(abandoned)
+            throw c
+        }
             ?: synchronized(lock) { if (done.isCompleted) done.getCompleted() else { gaveUp = true; null } }
             ?: return null
         return r.getOrThrow()
