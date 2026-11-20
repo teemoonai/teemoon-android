@@ -233,8 +233,19 @@ class ChatViewModel(
 
     private fun isLive(g: ai.teemoon.chat.ReplyGeneration) = replies.live == g
 
+    /**
+     * The machine and [replyRows] have two writers: the turn and stop() on the main thread, and the stream's onText on
+     * the transport's IO thread (OpenAiTransport.runTurn calls back from inside its withContext(Dispatchers.IO)). On iOS
+     * this view model is @MainActor and they never meet; here a stop could land between a token's live check and its
+     * fire. One lock, held by [fire] and by onText's check-then-fire. Reentrant (fire's effects may fire), and nothing
+     * held under it blocks: the effects launch their writes and update state.
+     */
+    private val machineLock = Any()
+
     /** Sends [event] to the machine and applies what it returns. */
-    private fun fire(event: ai.teemoon.chat.ReplyEvent): List<ai.teemoon.chat.ReplyEffect> {
+    private fun fire(event: ai.teemoon.chat.ReplyEvent): List<ai.teemoon.chat.ReplyEffect> = synchronized(machineLock) { fireLocked(event) }
+
+    private fun fireLocked(event: ai.teemoon.chat.ReplyEvent): List<ai.teemoon.chat.ReplyEffect> {
         val before = replies.live
         val effects = replies.handle(event)
         var savedBySupersede = false
@@ -579,13 +590,20 @@ class ChatViewModel(
         }
         fun engine(context: TeeContext?): GenerationEngine {
             val callbacks = object : StreamCallbacks {
+                // Called on the transport's IO thread: the live check and the token's fire are one step under the
+                // machine's lock, so a stop on the main thread lands before it or after it, never between. The first
+                // token's recent-use write (a file) happens after the lock is let go.
                 override fun onText(text: String) {
-                    if (stopped() || !isLive(g)) return
-                    if (text.isNotEmpty()) { ctx.text = text; fire(ai.teemoon.chat.ReplyEvent.Token(g, text)) }
-                    if (text.isNotEmpty() && generation.markFirstToken(now())) onFirstToken(place)
-                    generation.output = text
-                    // The first text of Think Harder's new reply takes the old one out, in the same update.
-                    replaceStreamingText(text, generation.superseding.takeIf { it.isActive && !it.swapped && text.isNotEmpty() }?.noteText(text))
+                    val first = synchronized(machineLock) {
+                        if (stopped() || !isLive(g)) return
+                        if (text.isNotEmpty()) { ctx.text = text; fire(ai.teemoon.chat.ReplyEvent.Token(g, text)) }
+                        val first = text.isNotEmpty() && generation.markFirstToken(now())
+                        generation.output = text
+                        // The first text of Think Harder's new reply takes the old one out, in the same update.
+                        replaceStreamingText(text, generation.superseding.takeIf { it.isActive && !it.swapped && text.isNotEmpty() }?.noteText(text))
+                        first
+                    }
+                    if (first) onFirstToken(place)
                 }
                 // Every callback below is the stopped turn's no more (G1, pm sweep 2026-11-06): a stop, then a send, and
                 // the old search's sources joined the new reply, its spinners and its success landed on the new turn.

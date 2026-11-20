@@ -105,7 +105,8 @@ class ChatGeneration {
      */
     @Volatile var turn = 0L
     @Volatile var cancelled = false
-    var output = ""
+    /** Written by the stream's onText on the transport's IO thread, read on the main thread. */
+    @Volatile var output = ""
     var lastError: LlmError? = null
     var lastErrorThreadID: String? = null
     @Volatile var lastRequestDebugInfo: LastRequestDebugInfo? = null
