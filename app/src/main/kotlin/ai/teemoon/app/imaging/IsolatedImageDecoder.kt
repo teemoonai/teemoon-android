@@ -7,6 +7,7 @@ import android.content.ServiceConnection
 import android.os.IBinder
 import android.os.ParcelFileDescriptor
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -14,6 +15,17 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+
+/**
+ * [work] on a job of its own, not the caller's, waited for at most [timeoutMs]: null at the deadline, [work]'s result or
+ * throw before it. withTimeoutOrNull around blocking calls cannot keep its deadline — it waits for its children, and a
+ * blocking call never sees the cancellation — so here only the await is timed, and work that outlives the deadline is
+ * left to end on its own (the caller makes it end: [IsolatedImageDecoder] ends the decoder's process).
+ */
+internal suspend fun <T> awaitDetached(timeoutMs: Long, work: suspend CoroutineScope.() -> T): T? {
+    val job = CoroutineScope(Dispatchers.IO).async { coroutineScope(work) }
+    return withTimeoutOrNull(timeoutMs) { job.await() }
+}
 
 /** What turns untrusted image bytes into a stored image: the isolated service in the app, a fake in JVM tests. */
 fun interface ImageDecoderPort {
@@ -61,18 +73,20 @@ class IsolatedImageDecoder(context: Context) : ImageDecoderPort {
         val svc = bound() ?: return@withContext ImageDecodeFrame.Rejected(ImageRejection.DECODER_FAILED)
         val (inRead, inWrite) = ParcelFileDescriptor.createPipe()
         val (outRead, outWrite) = ParcelFileDescriptor.createPipe()
-        val result = withTimeoutOrNull(ImageCaps.DECODE_TIMEOUT_MS) {
-            coroutineScope {
-                val writer = async { runCatching { ParcelFileDescriptor.AutoCloseOutputStream(inWrite).use { it.write(bytes) } } }
-                val reader = async { ParcelFileDescriptor.AutoCloseInputStream(outRead).use { ImageDecodeFrame.read(it) } }
-                val call = async {
-                    try { svc.decode(inRead, outWrite, ImageCaps.MAX_LONG_SIDE, ImageCaps.THUMB_LONG_SIDE) }
-                    catch (_: Exception) { null }   // DeadObjectException: the service died mid-decode
-                    finally { runCatching { inRead.close() }; runCatching { outWrite.close() } }   // our copies: the reader sees EOF
-                }
-                writer.await(); call.await()
-                reader.await()
+        // The binder call and the pipe reads BLOCK, and a blocking call ignores cancellation: inside withTimeoutOrNull
+        // they held it past the deadline, and a hung decoder hung this call with it (the A7 trap, as BlockingDeadline
+        // in :ondevice). So they run detached and only the wait has the deadline; at it, the decoder is abandoned below
+        // and its process ended, which is what finally unblocks them.
+        val result = awaitDetached(ImageCaps.DECODE_TIMEOUT_MS) {
+            val writer = async { runCatching { ParcelFileDescriptor.AutoCloseOutputStream(inWrite).use { it.write(bytes) } } }
+            val reader = async { ParcelFileDescriptor.AutoCloseInputStream(outRead).use { ImageDecodeFrame.read(it) } }
+            val call = async {
+                try { svc.decode(inRead, outWrite, ImageCaps.MAX_LONG_SIDE, ImageCaps.THUMB_LONG_SIDE) }
+                catch (_: Exception) { null }   // DeadObjectException: the service died mid-decode
+                finally { runCatching { inRead.close() }; runCatching { outWrite.close() } }   // our copies: the reader sees EOF
             }
+            writer.await(); call.await()
+            reader.await()
         }
         if (result == null) {
             // Hung: abandon it. Unbinding lets the system end that process; the next image gets a fresh one.
