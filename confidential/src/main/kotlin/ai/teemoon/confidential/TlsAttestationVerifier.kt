@@ -1,8 +1,17 @@
 // ports: teemoon/Confidential/TLSAttestationVerifier.swift @ a09537fe (the verifier; TlsAttestation is its own file)
 //
-// TLS attestation — proves the HTTPS connection terminates INSIDE the model
-// TEE, so nothing between the device and the enclave (network, load
-// balancers, near.ai's own infrastructure) can read the traffic.
+// TLS attestation — proves that THIS PROBE's HTTPS connection to the model
+// node's host terminates inside the model TEE: the node's certificate key is
+// bound into its attestation.
+//
+// What it does not cover: the chat itself. Completions go to near.ai's
+// gateway (Provider.chatCompletionsUrl, TeeContext.from) over ordinary
+// WebPKI TLS, a different host whose certificate nothing here checks; the
+// content on that connection is protected by E2EE to the model's key, the
+// headers (the API key among them) by TLS to the gateway only. The trust
+// screen says so (TrustPresentation TRANSPORT_SUBTITLE, "gateway domain —
+// standard WebPKI only"). Pinning this fingerprint on the chat connection
+// would refuse every send: it is the node's certificate, not the gateway's.
 //
 // near.ai's documented flow (docs.near.ai/cloud/verification/tls):
 //  1. Request `…/attestation/report?include_tls_fingerprint=true` from the
