@@ -855,6 +855,8 @@ class ChatViewModel(
 
     /** Set by the host to take this view model out of its registry (AppState.openChats). */
     var onCleared: (() -> Unit)? = null
+    /** A turn is still running here: its chat must not be released when the user moves on (ChatStores). */
+    val isTurnRunning: Boolean get() = job?.isActive == true
     override fun onCleared() { onCleared?.invoke(); super.onCleared() }
     @Volatile private var threadGone = false
 

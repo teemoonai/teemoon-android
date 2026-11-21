@@ -309,7 +309,7 @@ class MainActivity : ComponentActivity() {
             ai.teemoon.app.imaging.ShareIn.ACTION_SEND_MULTIPLE -> androidx.core.content.IntentCompat.getParcelableArrayListExtra(intent, Intent.EXTRA_STREAM, android.net.Uri::class.java).orEmpty()
             ai.teemoon.app.imaging.ShareIn.ACTION_SEND -> listOfNotNull(androidx.core.content.IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, android.net.Uri::class.java))
             else -> emptyList()
-        }
+        }.filter { ai.teemoon.app.imaging.ShareIn.readableStream(it.scheme, it.authority, packageName) }   // never teemoon's own files
         val text = intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString().orEmpty()
         val type = intent.type ?: streams.firstOrNull()?.let { contentResolver.getType(it) }
         val kind = ai.teemoon.app.imaging.ShareIn.kind(intent.action, type, streams.size, streams.firstOrNull()?.scheme, text.isNotEmpty())
@@ -531,6 +531,13 @@ private fun Root(app: AppState, repo: ChatRepository, storeFailure: String? = nu
     // iOS: the chat is the root; the chats list, the Where sheet and settings are sheets over it. The current
     // thread is the newest one on launch (or a fresh one when there is none) and follows the user's picks.
     var currentThreadId by rememberSaveable { mutableStateOf<String?>(null) }
+    // Store work a tap starts (a delete, a hit's transcript): off the main thread, which runBlocking held for it.
+    val storeScope = rememberCoroutineScope()
+    // Each chat's view model in a store of its own (ChatStores): a chat the user has left is released, unless its turn is
+    // still running — then it goes when that turn ends (onTurn below).
+    val chatStores: ChatStores = viewModel()
+    fun releaseLeftChats() = chatStores.release(currentThreadId) { app.openChats[it]?.isTurnRunning == true }
+    LaunchedEffect(currentThreadId) { releaseLeftChats() }
     // ChatsListView's "+" posts .teemoonNewChat so ChatView's private draft clears: a new chat never inherits the
     // composer. Here the chat screen is keyed by (thread, this count) — the draft carried into the new chat before
     // (the B10 journey, 2026-10-04), and "new chat" from an empty chat keeps its thread id, so the id alone is not enough.
@@ -717,22 +724,25 @@ private fun Root(app: AppState, repo: ChatRepository, storeFailure: String? = nu
             onDelete = { id ->
                 // a chat still answering is told first: its turn stops and writes nothing to the deleted thread (A4)
                 app.openChats[id]?.threadDeleted()
-                runBlocking { repo.delete(id) }
+                storeScope.launch { repo.delete(id) }
                 app.forgetKeptConversations()   // its text must not outlive it in a kept on-device conversation (iOS fc09a91)
                 if (id == currentThreadId) { currentThreadId = null; route = Route.Chat(newChat()) }
             },
             previews = previews.associate { it.threadId to it.content },
             initialQuery = app.listSearchMemory.query, onQueryChanged = { app.listSearchMemory.query = it }, freshOpen = app.listSearchMemory.freshOpens,
             onOpenHit = { id, hit ->
-                // The transcript lands where the match is: the fraction is computed against the message's content.
-                val content = runBlocking { repo.messages(id).first() }.firstOrNull { it.id == hit.messageID }?.content ?: ""
-                app.deepLink.deposit(id, hit.messageID, TranscriptDeepLink.matchFraction(hit.snippet, content))
-                currentThreadId = id; route = Route.Chat(id)
+                // The transcript lands where the match is: the fraction is computed against the message's content. That
+                // read is the thread's whole transcript, so it runs off the main thread and the chat opens when it is in.
+                storeScope.launch {
+                    val content = repo.messages(id).first().firstOrNull { it.id == hit.messageID }?.content ?: ""
+                    app.deepLink.deposit(id, hit.messageID, TranscriptDeepLink.matchFraction(hit.snippet, content))
+                    currentThreadId = id; route = Route.Chat(id)
+                }
             },
         )
 
         is Route.Chat -> androidx.compose.runtime.key(r.threadId, newChatCount) {
-            val vm: ChatViewModel = viewModel(key = r.threadId) {
+            val vm: ChatViewModel = viewModel(viewModelStoreOwner = chatStores.owner(r.threadId), key = r.threadId) {
                 // The place is read at SEND time from the store, never captured: this lambda outlives the composition that
                 // created the view model, and a captured `place` sent a turn to the previous provider after a switch.
                 ChatViewModel(repo = repo, threadId = r.threadId, provider = { app.providers.value.firstOrNull { it.id == app.selectedId.value } }, credential = app::credentialFor, groundingKey = app::groundingKey, searchKeyTurnedOff = app::searchKeyTurnedOff, localContextTokens = app::localContextTokens, session = app.session, onFirstToken = app::recordUse,
@@ -762,8 +772,11 @@ private fun Root(app: AppState, repo: ChatRepository, storeFailure: String? = nu
                     }
                     TurnService.start(appContext)
                 }
-                else TurnService.finish(appContext,
-                    TurnNotificationPolicy.notification(false, foreground, outcome), r.threadId)
+                else {
+                    TurnService.finish(appContext, TurnNotificationPolicy.notification(false, foreground, outcome), r.threadId)
+                    // a chat left while it answered can go now; queued, so the turn's job has finished when it runs
+                    storeScope.launch { releaseLeftChats() }
+                }
             }
             // null until Room answers: an `emptyList()` initial restored an empty thread first, so every thread opened on the
             // moon for a beat and the cold-open landing had nothing to land on
@@ -999,7 +1012,11 @@ private fun Root(app: AppState, repo: ChatRepository, storeFailure: String? = nu
         Route.Appearance -> AppearanceSettingsScreen(app.settings, onBack = { route = Route.Settings })
         // ChatsSettingsView.deleteAll: `currentThread = nil` — the chat under the sheet starts fresh, never left showing a
         // transcript the store no longer has (the delete-all journey caught it still drawn behind "no chats yet", 2026-10-04).
-        Route.ChatsSettings -> ChatsSettingsScreen(app.settings, onDeleteAllChats = { app.openChats.values.forEach { it.threadDeleted() }; runBlocking { repo.deleteAll() }; app.forgetKeptConversations(); currentThreadId = null; newChat() }, onBack = { route = Route.Settings },
+        Route.ChatsSettings -> ChatsSettingsScreen(app.settings, onDeleteAllChats = {
+                app.openChats.values.forEach { it.threadDeleted() }; app.forgetKeptConversations(); currentThreadId = null
+                // in this order, in one coroutine: the new empty chat must come after the delete, or the delete takes it
+                storeScope.launch { repo.deleteAll(); newChat() }
+            }, onBack = { route = Route.Settings },
             onImport = { app.chatImport.opened(ChatImportRunner.Opener.SETTINGS); route = Route.NearImport }, onOpenSystemPrompt = { route = Route.SystemPrompt })
         Route.NearImport -> {
             val context = LocalContext.current
