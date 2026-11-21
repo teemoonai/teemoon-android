@@ -103,4 +103,11 @@ class AngleBracketToolCallsTest {
     @Test fun preservesContentWithoutToolCalls() {
         assertEquals("No tool calls here", AngleBracketToolCalls.strip("No tool calls here"))
     }
+
+    // android-only: a stray close before an open. The close was searched from the start, so it looped forever on the
+    // first input and threw on the second (removeRange with its end before its start).
+    @Test(timeout = 5_000) fun aStrayCloseBeforeAnOpenNeitherLoopsNorThrows() {
+        assertEquals("an open with no close after it is left alone", "</tool_call><tool_call>", AngleBracketToolCalls.strip("</tool_call><tool_call>"))
+        assertEquals("a</tool_call>b  d", AngleBracketToolCalls.strip("a</tool_call>b <tool_call>c</tool_call> d"))
+    }
 }

@@ -186,7 +186,9 @@ object AngleBracketToolCalls {
         while (true) {
             val open = result.indexOf(OPEN)
             if (open < 0) break
-            val close = result.indexOf(CLOSE)
+            // The close AFTER this open: searched from the start, a stray `</tool_call>` before it gave close < open —
+            // removeRange(open, open) changed nothing and looped forever, or threw when the range ran backwards.
+            val close = result.indexOf(CLOSE, open + OPEN.length)
             if (close < 0) break
             result = result.removeRange(open, close + CLOSE.length)
         }
