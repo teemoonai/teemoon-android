@@ -83,10 +83,16 @@ object NearChatImport : ChatImportSource {
         var broken = false
         var capped = false
         var depth = 1
-        for (e in elements(overCap, first, rest)) when (e) {
-            is ScannedElement.Value -> { if (!capped) { items += e.json; e.spills.forEach { spills[it.index] = it } }; depth = maxOf(depth, 1 + e.depth) }
-            is ScannedElement.TooBig, is ScannedElement.TooDeep -> { capped = true; items.clear() }
-            ScannedElement.Broken -> broken = true
+        for (e in elements(overCap, first, rest)) {
+            when (e) {
+                is ScannedElement.Value -> { if (!capped) { items += e.json; e.spills.forEach { spills[it.index] = it } }; depth = maxOf(depth, 1 + e.depth) }
+                is ScannedElement.TooBig, is ScannedElement.TooDeep -> { capped = true; items.clear() }
+                ScannedElement.Broken -> broken = true
+            }
+            // The whole-file cap, checked as the file is read: checked only after the loop, a file of many small items
+            // held every one of them in memory first (each under the element cap, together far over it). bytesRead, not
+            // fileBytes(), which reads to the end — the check after the loop still does that.
+            if (!capped && rest.bytesRead > rest.maxElementBytes) { capped = true; items.clear() }
         }
         val elementCount = rest.elementsRead
         if (capped || depth > rest.maxDepth || rest.fileBytes() > rest.maxElementBytes) { yield(ImportEvent.Skipped(1)); return@sequence }

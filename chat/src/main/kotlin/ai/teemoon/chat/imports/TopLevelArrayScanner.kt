@@ -116,6 +116,9 @@ class TopLevelArrayScanner(
         return element(b).also { if (it === ScannedElement.Broken) finished = true }
     }
 
+    /** The bytes read so far, reading nothing more (unlike [fileBytes]): for a cap checked as the file is read. */
+    val bytesRead: Long get() = consumed
+
     /** Every byte of the file: the per-chat file's 64 MiB cap is on the whole file (§4). Reads to the end. */
     fun fileBytes(): Long {
         do { val b = read() } while (b != -1)
