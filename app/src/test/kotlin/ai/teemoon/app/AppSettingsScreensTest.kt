@@ -42,6 +42,7 @@ class AppSettingsScreensTest {
         // The repository seam: a fake DAO records the sweep; the search service is told after.
         var swept = 0
         val dao = object : ChatDao {
+            override suspend fun hasMessages(threadId: String): Boolean = messages(threadId).isNotEmpty()
             override fun observeThreads() = flowOf(emptyList<ThreadEntity>())
             override fun observeThreadsWithMessages() = observeThreads()
             override fun observeMessages(threadId: String) = flowOf(emptyList<MessageEntity>())

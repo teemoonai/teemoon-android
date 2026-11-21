@@ -94,6 +94,10 @@ interface ChatDao {
     @Query("SELECT EXISTS(SELECT 1 FROM threads WHERE id = :id)")
     suspend fun threadExists(id: String): Boolean
 
+    /** Whether the thread has any message — without loading them (ChatRepository.newOrCurrentThread). */
+    @Query("SELECT EXISTS(SELECT 1 FROM messages WHERE threadId = :threadId)")
+    suspend fun hasMessages(threadId: String): Boolean
+
     @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertMessages(messages: List<MessageEntity>)
 

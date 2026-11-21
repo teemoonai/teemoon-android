@@ -4,6 +4,7 @@ import kotlinx.coroutines.flow.flowOf
 
 /** The store, as lists: enough of Room's behaviour for repository tests that run without a device. */
 class ListChatDao : ChatDao {
+    override suspend fun hasMessages(threadId: String): Boolean = messages(threadId).isNotEmpty()
     val threads = mutableListOf<ThreadEntity>(); val messages = mutableListOf<MessageEntity>()
     override fun observeThreads() = flowOf(threads.toList())
     override fun observeThreadsWithMessages() = flowOf(threads.filter { t -> messages.any { it.threadId == t.id } })

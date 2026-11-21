@@ -34,7 +34,8 @@ class ChatRepository(
      * empty one instead of minting another, so a launch or a tap never piles up invisible rows.
      */
     suspend fun newOrCurrentThread(currentId: String?, now: Long, newId: () -> String): String {
-        if (currentId != null && dao.messages(currentId).isEmpty()) return currentId
+        // hasMessages, not messages().isEmpty(): this runs on the main thread (newChat), and that loaded the whole transcript
+        if (currentId != null && !dao.hasMessages(currentId)) return currentId
         return createThread(newId(), now).id
     }
     fun messages(threadId: String): Flow<List<MessageEntity>> = dao.observeMessages(threadId)
