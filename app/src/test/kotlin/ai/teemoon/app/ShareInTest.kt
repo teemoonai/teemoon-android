@@ -18,6 +18,18 @@ class ShareInTest {
     private val multiple = "android.intent.action.SEND_MULTIPLE"
     private val view = "android.intent.action.VIEW"
 
+    // android-only: a share is read with teemoon's own access, so only another app's content URI is opened.
+    @Test fun onlyAnotherAppsContentIsRead() {
+        val own = "ai.teemoon"
+        assertTrue(ShareIn.readableStream("content", "com.google.android.apps.photos.contentprovider", own))
+        assertTrue(ShareIn.readableStream("content", "media", own))
+        assertFalse("a path into teemoon's own files", ShareIn.readableStream("file", null, own))
+        assertFalse("teemoon's attachments and camera shots", ShareIn.readableStream("content", "ai.teemoon.files", own))
+        assertFalse(ShareIn.readableStream("content", "ai.teemoon", own))
+        assertFalse(ShareIn.readableStream("content", "", own))
+        assertFalse(ShareIn.readableStream("http", "example.com", own))
+    }
+
     @Test fun anExportStillGoesToTheImportFirst() {
         assertEquals(ShareIn.Kind.IMPORT, ShareIn.kind(send, "application/json", streams = 1, scheme = "content", hasText = false))
         assertEquals(ShareIn.Kind.IMPORT, ShareIn.kind(view, "application/json", streams = 1, scheme = "content", hasText = false))

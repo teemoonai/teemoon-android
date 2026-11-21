@@ -37,6 +37,14 @@ object ShareIn {
      * What an intent is: the import first (one content URI of application/json, VIEW or SEND — IncomingExport.accepts),
      * then a draft for SEND / SEND_MULTIPLE of images or text, else nothing (movies, PDFs, a launch).
      */
+    /**
+     * A shared stream teemoon will open: another app's content URI only. teemoon reads a share with its OWN access, so a
+     * `file://` path (its private files, by path) or a URI of its own provider (`<package>.files`: attachments, camera
+     * shots) would hand the sender teemoon's files as a draft. [IncomingExport.accepts] already takes `content` only.
+     */
+    fun readableStream(scheme: String?, authority: String?, ownPackage: String): Boolean =
+        scheme == "content" && !authority.isNullOrEmpty() && authority != ownPackage && !authority.startsWith("$ownPackage.")
+
     fun kind(action: String?, type: String?, streams: Int, scheme: String?, hasText: Boolean): Kind {
         if (streams <= 1 && action != ACTION_SEND_MULTIPLE && ai.teemoon.app.IncomingExport.accepts(action, type, scheme)) return Kind.IMPORT
         if (action != ACTION_SEND && action != ACTION_SEND_MULTIPLE) return Kind.NONE
