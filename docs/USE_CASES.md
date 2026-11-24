@@ -89,7 +89,7 @@ provider's wire changes.
 
 | ID | Use case | Runs | Android | iOS |
 |---|---|---|---|---|
-| E1 | Degraded: the first send asks and says nothing was sent; "don't send" keeps the draft; send unencrypted (red) sends | sim | UserJourneysTest#theSendGateAsksWhenAttestationIsDegraded, UserJourneysTest#theDegradedGatesSendAnywaySends | UseCaseJourneysTests#testTheDegradedGateDontSendKeepsTheDraftAndTheBypassSends |
+| E1 | Degraded: the first send asks and says nothing was sent; "don't send" keeps the draft; send without encryption (red) sends | sim | UserJourneysTest#theSendGateAsksWhenAttestationIsDegraded, UserJourneysTest#theDegradedGatesSendAnywaySends | UseCaseJourneysTests#testTheDegradedGateDontSendKeepsTheDraftAndTheBypassSends |
 | E2 | Hard failure: the send is blocked, no bypass; "retry verification" and "don't send" are offered | sim | UserJourneysTest#aHardFailureBlocksTheSend | ProductE2ETests#testHardFailureBlocksSend, ProductE2ETests#testHardFailureBlocksSendWithDebugPanelOn |
 | E3 | E2EE unavailable: the refusal shows as an error with retry, nothing leaves the phone | sim | UserJourneysTest#anUnavailableE2EEKeyRefusesTheSendAndSaysNothingWasSent | ProductE2ETests#testE2EEUnavailableRefusalShowsRetryAffordance |
 | E4 | Mismatch: the caption says a reply didn't check out, sending still works, the sheet explains | sim | UserJourneysTest#aMismatchIsSaidAndSendingStillWorks, UserJourneysTest#theMismatchCaptionOpensTheSheetThatExplainsIt | ProductE2ETests#testMismatchCaptionDoesNotBlockSend, ProductE2ETests#testReplyDidntCheckOutOpensEverydaySheet |

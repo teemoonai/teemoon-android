@@ -47,7 +47,7 @@ class NrasServiceTest {
     /** The service as it ran at capture time, against the captured key set. */
     private fun service(response: String?, jwks: String? = NrasKit.jwks, at: Double = NrasKit.verifiedAt, http: NrasHttpClient = stub(response)) =
         NrasService(http, staticKeys(jwks), now = { at })
-    private fun kind(v: NrasVerification) = when (v) { NrasVerification.Verified -> "verified"; is NrasVerification.Failed -> "failed"; is NrasVerification.Inconclusive -> "inconclusive" }
+    private fun kind(v: NrasVerification) = when (v) { NrasVerification.Verified -> "verified"; is NrasVerification.Failed, is NrasVerification.ListedFailed -> "failed"; is NrasVerification.Inconclusive, is NrasVerification.ListedInconclusive -> "inconclusive" }
     private fun reason(v: NrasVerification) = when (v) { is NrasVerification.Failed -> v.reason; is NrasVerification.Inconclusive -> v.reason; else -> null }
 
     /** overallVerdict_parsesRealResponse: NVIDIA's actual response reads PASS. */

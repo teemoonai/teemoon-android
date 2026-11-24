@@ -96,7 +96,7 @@ class ConformanceImportCorpusTest {
 
     // 1
     @Test fun theManifestAndEveryFileAreTheSpecsBytes() {
-        assertEquals("3ccff1db629d1aaa8961119c8d7f08a553a51a2b18c5fb79cd7a2e6f2583ed62", sha256(manifestBytes))
+        assertEquals("38022da54369439bac3a393de4b3deb3ffb80ebbde9bb39f74d47430dab8ddd7", sha256(manifestBytes))
         assertEquals("near", Json.parseToJsonElement(manifestBytes.decodeToString()).jsonObject.str("source"))
         assertEquals("6b20405d85fb80d3d9106614b9a9146ebd0b2a10d03c445f508cc9c0fbe63e6f", sha256(ImportTestSupport.full))
         assertEquals("6d2f62d1185eaae15f089a63a5331e47d43816aadff2df9f8573407344d03a03", sha256(ImportTestSupport.single))

@@ -22,6 +22,7 @@ dependencies {
     api(libs.okhttp)
     api(libs.kotlinx.coroutines.core)
     testImplementation(libs.junit)
+    testImplementation(testFixtures(project(":confidential")))
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(project(":conformance"))
 }

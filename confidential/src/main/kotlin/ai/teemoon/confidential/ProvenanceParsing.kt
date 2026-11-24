@@ -2,6 +2,7 @@
 //        tagPinnedImageRefs, fullImageRef, dockerfileBaseImage, hasInEnclaveEngineBuild, githubRepo,
 //        isNearAIImage. The GitHub-attestation fetch, verifyManifests and the caches are NOT here.)
 // ports: teemoon/Confidential/ProvenanceService.swift @ v1.0.4 (fallbackRepos, githubRepos(forImage:))
+//        + a5a3f6d3 (1.1.1 audit C5: repoAliases gains compose-manager-otelcol; internal so the alias tests pin it)
 package ai.teemoon.confidential
 
 /**
@@ -182,7 +183,7 @@ object ProvenanceParsing {
      * affects where we LOOK — the certificate's SAN identity still determines
      * the trusted source.
      */
-    private val repoAliases = mapOf("compose-manager-launcher" to "compose-manager", "vllm-proxy-rs" to "inference-proxy")
+    internal val repoAliases = mapOf("compose-manager-launcher" to "compose-manager", "compose-manager-otelcol" to "compose-manager", "vllm-proxy-rs" to "inference-proxy")
 
     /**
      * Maps a Docker image name to the GitHub repo that publishes its attestations.

@@ -38,13 +38,13 @@ object WhereProviderPresentation {
      *
      * Deliberately not `presetDescription`. That one is the add-form's footer
      * and runs to a sentence and a half ("open models running inside attested
-     * enclaves encrypted to the llm model, so the operator can't read your
-     * chats. teemoon checks the proof on the device."). In a row with a
+     * secure enclaves. your chats are sealed to the model's enclave key, and
+     * teemoon checks the proof on the device."). In a row with a
      * two-line cap it truncates mid-clause, and the half that survives is the
      * mechanism rather than the reason to pick it. These say the reason.
      */
     fun presetCaption(forPreset: Provider): String? = when (forPreset.id) {
-        Provider.nearAI.id -> "open models in enclaves the host can't read"
+        Provider.nearAI.id -> "open models in secure enclaves, checked on your phone"
         Provider.grok.id -> "xai's models, 2m context, live web and x"
         Provider.fireworks.id -> "fast, low-cost open models — large catalog"
         Provider.openRouter.id -> "most comprehensive collection of models"

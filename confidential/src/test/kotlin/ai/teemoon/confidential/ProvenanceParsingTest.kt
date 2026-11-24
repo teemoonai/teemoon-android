@@ -122,6 +122,7 @@ services:
 
     @Test fun launcherImage_queriesComposeManagerRepo() {
         assertEquals("nearai/compose-manager", ProvenanceParsing.githubRepo("nearaidev/compose-manager-launcher"))
+        assertEquals("nearai/compose-manager", ProvenanceParsing.githubRepo("nearaidev/compose-manager-otelcol"))
         assertEquals("nearai/cloud-api", ProvenanceParsing.githubRepo("nearaidev/cloud-api"))
     }
 

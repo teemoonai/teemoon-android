@@ -1,3 +1,4 @@
+// ports: teemoonTests/TrustVerdictTests.swift @ 86be40f6 (theQuantFollowsTheModelsEnclaveKey)
 // ports: teemoonTests/TrustVerdictTests.swift @ v1.0.4, @ 8bfe33cb (trust-leaks-wording: leaksReviewQualifiesTheHero,
 //        theReadingClaimNeedsAReviewedBuild, aReviewedLeakOutranksAnUnpublishedImage)
 //        teemoonTests/AuditIndexTests.swift @ v1.0.4 (everydayRollupWorstClassWins only)
@@ -32,7 +33,7 @@ class TrustVerdictTest {
 
     @Test fun verifiedHeroIsTheSealClaim() {
         val v = TrustVerdict.make(input())
-        assertEquals("encrypted to glm-5.2 — only it can read this", v.heroTitle)
+        assertEquals("encrypted to glm-5.2's enclave key", v.heroTitle)
         assertEquals(TrustSendPolicy.ALLOW, v.sendPolicy)
         assertEquals("end-to-end encrypted", v.chipCaption)
     }
@@ -53,7 +54,7 @@ class TrustVerdictTest {
         assertEquals("audits never gate", TrustSendPolicy.ALLOW, bare.sendPolicy)
     }
 
-    /** Rows 1 and 2: "only it can read this" only when reviewed; otherwise the tail drops and line A shows. */
+    /** Rows 1 and 2: the enclave-key tail only when reviewed; otherwise the tail drops and line A shows. */
     @Test fun theReadingClaimNeedsAReviewedBuild() {
         for (state in listOf(null, EverydayAuditState.INCOMPLETE, EverydayAuditState.REVIEWED_WITH_CAVEAT)) {
             val v = TrustVerdict.make(input { copy(auditState = state) })
@@ -61,7 +62,7 @@ class TrustVerdictTest {
             assertEquals(AuditedSealText.NOT_REVIEWED, v.heroSubtitle)
             assertEquals("row 5: the chip is unchanged", "end-to-end encrypted", v.chipCaption)
         }
-        assertEquals("only you and glm-5.2's sealed hardware can read this chat.", TrustVerdict.make(input()).heroSubtitle)
+        assertEquals("sealed to glm-5.2's enclave key. near.ai's key service decides which secure enclaves hold it.", TrustVerdict.make(input()).heroSubtitle)
         val unchecked = TrustVerdict.make(input { copy(provenanceUnchecked = true) })
         assertEquals("encrypted to glm-5.2", unchecked.heroTitle)
         assertEquals(PROVENANCE_UNCHECKED_HEADER, unchecked.heroSubtitle)
@@ -191,7 +192,23 @@ class TrustVerdictTest {
         assertEquals("3 replies didn't check out", v.heroTitle)
         assertTrue(v.heroSubtitle.contains("but 3 replies couldn't be verified"))
         val q = TrustVerdict.make(input { copy(quant = "fp8") })
-        assertEquals("encrypted to glm-5.2 · fp8 — only it can read this", q.heroTitle)
+        assertEquals("encrypted to glm-5.2's enclave key · fp8", q.heroTitle)
+    }
+
+    /** iOS 86be40f6 (the maintainer 2026-11-20): the quant follows the model's enclave key ("GLM-5.1 · AWQ's enclave key" read as the quant's key). */
+    @Test fun theQuantFollowsTheModelsEnclaveKey() {
+        fun make(mutate: TrustVerdict.Input.() -> TrustVerdict.Input) = TrustVerdict.make(input { copy(modelName = "GLM-5.1").mutate() })
+        assertEquals("encrypted to GLM-5.1's enclave key · AWQ", make { copy(quant = "AWQ") }.heroTitle)
+        assertEquals("encrypted to GLM-5.1's enclave key", make { this }.heroTitle)
+        // Subtitle and sealed row name the model only, with or without a quant.
+        for (quant in listOf(null, "AWQ")) {
+            val v = make { copy(quant = quant) }
+            assertEquals("sealed to GLM-5.1's enclave key. near.ai's key service decides which secure enclaves hold it.", v.heroSubtitle)
+            assertEquals("sealed to GLM-5.1's enclave key", v.everydayClaims.first { it.id == "sealed" }.title)
+        }
+        // No enclave-key tail: the quant stays beside the model.
+        assertEquals("encrypted to GLM-5.1 · AWQ", make { copy(quant = "AWQ", auditState = null) }.heroTitle)
+        assertEquals("encrypted to GLM-5.1 · AWQ — one image unpublished", make { copy(quant = "AWQ", unpublishedButSealed = true) }.heroTitle)
     }
 
     @Test fun failedClaimsCarryTheirDetail() {

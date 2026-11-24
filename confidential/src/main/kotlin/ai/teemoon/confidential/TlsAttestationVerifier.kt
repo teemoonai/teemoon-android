@@ -79,8 +79,12 @@ class OkHttpTlsProbe : TlsProbe {
             override fun getAcceptedIssuers(): Array<X509Certificate> = emptyArray()
         }
         val ctx = SSLContext.getInstance("TLS").apply { init(null, arrayOf(trustAll), SecureRandom()) }
+        // Its own dispatcher too, not only its own pool: get() shuts the executor down after the probe, and the builder's
+        // default is the ONE dispatcher every client in the app shares. Shutting that one down made every later enqueued
+        // call fail "executor rejected" (re-verify after the first probe, 1.1.1 frame-5 capture, 2026-11-22).
         return TeemoonHttp.builder().sslSocketFactory(ctx.socketFactory, trustAll).hostnameVerifier { _, _ -> true }
             .followRedirects(false).followSslRedirects(false).callTimeout(20, TimeUnit.SECONDS)
+            .dispatcher(okhttp3.Dispatcher())
             .connectionPool(okhttp3.ConnectionPool(0, 1, TimeUnit.NANOSECONDS)).build()
     }
 

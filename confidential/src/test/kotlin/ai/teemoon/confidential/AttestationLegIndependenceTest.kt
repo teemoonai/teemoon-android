@@ -1,4 +1,6 @@
-// ports: teemoonTests/AttestationLegIndependenceTests.swift @ v1.0.4 (both suites, whole: "Attestation legs are independent"
+// ports: teemoonTests/AttestationLegIndependenceTests.swift @ 39ba0919 (A7 read: anEmptyModelYieldsNoKeyAndAsksNoList (AttestationLegRetryTaxonomyTest))
+// ports: teemoonTests/AttestationLegIndependenceTests.swift @ bf762777 (1.1.1 audit A15: gateway401DoesNotDiscardTheModelKey's list-failed asserts);
+//        teemoonTests/AttestationLegIndependenceTests.swift @ v1.0.4 (both suites, whole: "Attestation legs are independent"
 //        and "Attestation leg retry taxonomy"). Until 2026-09-23 only the key-orphan vector was ported and the rest waived as
 //        "covered by the existing retry tests" — three of them were not: an undecodable gateway 200 threw away the model key,
 //        a GPU-only record was refused, and a GPU 401 body decoded into empty "evidence".
@@ -98,6 +100,9 @@ class AttestationLegIndependenceTest {
         assertNull(record.composeManifest); assertNull(record.gpuSigningAddress)
 
         assertEquals("a 401 cannot succeed on retry", 1, r.count(Leg.GATEWAY))
+        // Audit 1.1.1 A15 (iOS bf762777): a key with no list of the enclaves holding it is a couldn't-check, never nothing to check.
+        assertNull(record.modelCandidates)
+        assertTrue(record.modelCandidatesListFailed)
     }
 
     @Test fun undecodableGatewayBodyLeavesGatewayFieldsEmpty() = runTest {
@@ -204,6 +209,20 @@ class AttestationLegRetryTaxonomyTest {
         assertEquals(1, r.count(Leg.GATEWAY))
         assertEquals("direct host(s) + gateway, once each", sources, r.count(Leg.MODEL))
         assertTrue(testScheduler.currentTime - started < 5_000)
+    }
+
+    /**
+     * iOS 39ba0919 (anEmptyModelYieldsNoKeyAndAsksNoList), audit 1.1.1 A7 read: the list is asked only for a non-empty model, so a
+     * key with an empty model would leave the listed state "checking" forever. It cannot happen: an empty model asks no model
+     * leg, so there is no key (and with no key, no list).
+     */
+    @Test fun anEmptyModelYieldsNoKeyAndAsksNoList() = runTest {
+        val r = Routed { leg, _ -> if (leg == Leg.GATEWAY) 200 to Fixture.GATEWAY_REPORT else 200 to Fixture.ED25519_REPORT }
+        val record = fetch(r, model = "")
+        assertNull("no model, no key: nothing for the listed enclaves to hold", record.modelEd25519PubKey)
+        assertNull(record.modelCandidates)
+        assertTrue(!record.modelCandidatesListFailed)
+        assertEquals("no model leg, no list request", 0, r.count(Leg.MODEL))
     }
 
     /** A 401 body is not GPU evidence: nothing from that leg lands, and it is not retried. */

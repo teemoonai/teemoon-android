@@ -19,7 +19,7 @@ object ProviderPresets {
         Provider.nvidia.id to "https://build.nvidia.com/settings/api-keys",
     )
     private val descriptions = mapOf(
-        Provider.nearAI.id to "open models running inside attested enclaves encrypted to the llm model, so the operator can't read your chats. teemoon checks the proof on the device.",
+        Provider.nearAI.id to "open models running inside attested secure enclaves. for its attested models, your chats are sealed to the model's enclave key, and teemoon checks the proof on the device.",
         Provider.braveAnswers.id to "single answers grounded in live web search, with citations. has a different key than brave llm grounding api.",
         Provider.grok.id to "xai's models, with a 2m token context window, reasoning modes, and live web and x knowledge.",
         Provider.fireworks.id to "fast, low-cost inference for open models. large catalog — kimi, deepseek, qwen, glm, and more.",

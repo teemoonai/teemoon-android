@@ -102,6 +102,21 @@ import kotlinx.coroutines.delay
  */
 internal fun shownChipLevel(whereLevel: String?, thinkHarderLevel: String?): String? = whereLevel?.let { thinkHarderLevel ?: it }
 
+/** The title block's and the composer inset's heights in px, as a screenshot test pins them: see [LocalTranscriptChrome]. */
+data class TranscriptChromePx(val title: Int, val inset: Int)
+
+/**
+ * The transcript's chrome heights for the FIRST composition. The app leaves it null: both start at 0 and are measured
+ * (onGloballyPositioned), and the recomposition after that measure is what pads the transcript between them. A
+ * screenshot test pins it, because Paparazzi does not always run that recomposition: in a full verify the frame was
+ * drawn from the first composition — transcript padded by 8 dp under a 44 px title block, everything 44 px high — and
+ * alone it was drawn from the second (DesignSnapshotTest.chat_transcript_dark, red in every full verify on CI and green
+ * alone; traced 2026-11-19: the measure wrote 44 and 108 in both, only the alone run composed again). Pinned, the first
+ * composition is already the settled one. A pin that no longer matches what is measured fails loudly rather than
+ * drawing a frame no one sees.
+ */
+val LocalTranscriptChrome = androidx.compose.runtime.staticCompositionLocalOf<TranscriptChromePx?> { null }
+
 @Composable
 fun ChatScreen(
     vm: ChatViewModel = viewModel(),
@@ -391,10 +406,10 @@ fun ChatScreen(
         if (prep == SendPrep.READY) { gatedRetry = false; gatedSend = null; vm.send(prompt, images = picked); prompt = ""; picked = emptyList(); imageNote = null; focus.clearFocus(); if (hapticsEnabled) haptic.performHapticFeedback(HapticFeedbackType.Confirm) } else if (prep != SendPrep.BLOCKED_EMPTY_PROMPT) { gatedRetry = false; gatedSend = GatedSend(prompt, picked); gate = prep; reverifyGate.raised() }
     }
     /** "send anyway" on a composer send: the gated message (GatedSend), with its images; a draft typed since stays. */
-    fun sendGated() {
+    fun sendGated(downgradeAskShown: Boolean = false) {
         val m = GatedSend.orComposer(gatedSend, prompt, picked) ?: return
         gatedSend = null
-        vm.send(m.prompt, acceptedDegrade = true, images = m.images)
+        vm.send(m.prompt, acceptedDegrade = true, downgradeAskShown = downgradeAskShown, images = m.images)
         prompt = m.promptAfter(prompt); picked = m.imagesAfter(picked); if (picked.isEmpty()) imageNote = null; focus.clearFocus()
     }
 
@@ -613,8 +628,9 @@ fun ChatScreen(
     LaunchedEffect(listState.isScrollInProgress) { if (listState.isScrollInProgress) focus.clearFocus() }
     // The title block's height and the composer inset's, measured, never assumed — one-line titles and the two-line
     // e2ee header are different heights.
-    var titleHeightPx by remember { mutableStateOf(0) }
-    var insetPx by remember { mutableStateOf(0) }
+    val chromePin = LocalTranscriptChrome.current
+    var titleHeightPx by remember { mutableStateOf(chromePin?.title ?: 0) }
+    var insetPx by remember { mutableStateOf(chromePin?.inset ?: 0) }
     var titleBottomRootPx by remember { mutableStateOf(0) }
     var panelTopRootPx by remember { mutableStateOf(0) }
     // the title bar's divider: only while the transcript has content scrolled up under it
@@ -742,7 +758,7 @@ fun ChatScreen(
         // cleanly instead of running into them.
         Column(Modifier.align(Alignment.TopCenter).fillMaxWidth().testTag("chat.titleBar").background(MaterialTheme.colorScheme.background)
             .padding(bottom = TITLE_GROUND_BELOW_BUTTONS)
-            .onGloballyPositioned { titleHeightPx = it.size.height; titleBottomRootPx = (it.positionInRoot().y + it.size.height).toInt(); onEdges?.invoke(titleBottomRootPx, panelTopRootPx) }) {
+            .onGloballyPositioned { check(chromePin == null || chromePin.title == it.size.height) { "LocalTranscriptChrome pins the title block at ${chromePin?.title} px; it measures ${it.size.height}" }; titleHeightPx = it.size.height; titleBottomRootPx = (it.positionInRoot().y + it.size.height).toInt(); onEdges?.invoke(titleBottomRootPx, panelTopRootPx) }) {
         NavBar(
             title = title,
             // AttestationState.captionColor: secondary unless degraded (orange); a hard block or mismatch reads red.
@@ -836,6 +852,10 @@ fun ChatScreen(
                     // read live: a hard verdict that lands while the question is up turns it into the hard choices (iOS)
                     val blockedNow = trust.composerPolicy == TrustSendPolicy.BLOCK
                     val asking = asksStillChecking(pendingAsk, trust.composerPolicy)
+                    // WHICH ask is drawn now (1.1.1 audit cut review item 1): the tier can flip while another ask is open, and the
+                    // alert redraws live, so the flag comes from the ask this composition draws, never from when the alert was raised.
+                    // Only the tier-downgrade ask's "send anyway" is the downgrade consent (SealedModels.accept).
+                    val downgradeAskShown = downgradeAskOnScreen(askingStillChecking = asking, askIsTierDowngrade = trust.askIsTierDowngrade)
                     // the settle timeout's question names what was still pending (S30): provenance alone asks its own
                     val ask = if (asking) E2EEAsk.make(hardFailure = false, pendingAsk = state.pendingAskKind, provenanceUnchecked = false,
                         softButSealed = true, provenanceBlocked = false, cause = null) else E2EEAsk(trust.alertTitle, trust.alertMessage, trust.sendChoices)
@@ -879,7 +899,7 @@ fun ChatScreen(
                                 gate = null
                                 // the still-checking question is answered on the turn that is waiting for it (the kit's confirm)
                                 if (pendingAsk) vm.answerStillChecking(sendIt = true)
-                                else if (gatedRetry) vm.retryLastTurn(acceptedDegrade = true, effort = if (gatedThinkHarder) ReasoningEffort.THINK_HARDER else ReasoningEffort.CHAT_DEFAULT) else sendGated()
+                                else if (gatedRetry) vm.retryLastTurn(acceptedDegrade = true, downgradeAskShown = downgradeAskShown, effort = if (gatedThinkHarder) ReasoningEffort.THINK_HARDER else ReasoningEffort.CHAT_DEFAULT) else sendGated(downgradeAskShown)
                             } else null
                             // "don't send" to the still-checking question is the kit's decline: the waiting reply ends stopped
                             E2EESendChoice.DontSend -> choice.label to { gate = null; gatedSend = null; if (pendingAsk) vm.answerStillChecking(sendIt = false) }
@@ -890,7 +910,7 @@ fun ChatScreen(
                                 else {
                                     // a re-shown or composer still-checking alert: this answer covers the pending ask too
                                     vm.confirmStillChecking()
-                                    if (gatedRetry) vm.retryLastTurn(acceptedDegrade = true, effort = if (gatedThinkHarder) ReasoningEffort.THINK_HARDER else ReasoningEffort.CHAT_DEFAULT) else sendGated()
+                                    if (gatedRetry) vm.retryLastTurn(acceptedDegrade = true, downgradeAskShown = downgradeAskShown, effort = if (gatedThinkHarder) ReasoningEffort.THINK_HARDER else ReasoningEffort.CHAT_DEFAULT) else sendGated(downgradeAskShown)
                                 }
                             } else null
                             E2EESendChoice.Wait -> choice.label to { gate = null; gatedSend = null; if (pendingAsk) vm.answerStillChecking(sendIt = false) else vm.hardwareConfirmShown() }
@@ -907,7 +927,7 @@ fun ChatScreen(
         // The composer block: one panel (ChatInputBar).
         val composerTraceId = remember { java.util.UUID.randomUUID().hashCode() }
         Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()
-            .onGloballyPositioned { insetPx = it.size.height; ComposerTrace.geometry(composerTraceId, it.positionInRoot().y, it.size.height, picked.size) }
+            .onGloballyPositioned { check(chromePin == null || chromePin.inset == it.size.height) { "LocalTranscriptChrome pins the composer inset at ${chromePin?.inset} px; it measures ${it.size.height}" }; insetPx = it.size.height; ComposerTrace.geometry(composerTraceId, it.positionInRoot().y, it.size.height, picked.size) }
             .padding(start = 16.dp, end = 16.dp, top = ComposerEdge.BLOCK_TOP, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             // One panel (COMPOSER_PANEL.md @ 85c544c6): the where chip and the web chip are its bottom row's, beside "+"
             // and send; no first-run line above it (the maintainer 2026-11-08, "remove it"): "choose where" is the prompt.

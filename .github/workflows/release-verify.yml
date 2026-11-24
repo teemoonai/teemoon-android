@@ -31,10 +31,6 @@ jobs:
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.tag || github.event.release.tag_name }}
-      - name: check_store.py from the commit this workflow runs from (main), since the v1.1.0-3918 tag's tree has none; the APK is still built from the tag alone
-        run: |
-          git fetch --no-tags --depth=1 origin "${{ github.sha }}"
-          git show FETCH_HEAD:tools/check_store.py > "$RUNNER_TEMP/check_store.py"
       - uses: actions/setup-java@v5
         with:
           distribution: temurin
@@ -51,12 +47,12 @@ jobs:
           java -jar bundletool.jar build-apks --bundle=app/build/outputs/bundle/release/app-release.aab --output=out.apks --mode=universal
           unzip -p out.apks universal.apk > rebuilt.apk
       - name: no Google Play libraries in the rebuilt APK (the maintainer 2026-11-01)
-        run: python3 "$RUNNER_TEMP/check_store.py" github rebuilt.apk
+        run: python3 tools/check_store.py github rebuilt.apk
       - name: download the released APK
         run: |
           mkdir release && gh release download "$TAG" --pattern 'teemoon-*.apk' --dir release
           ls -la release
-          python3 "$RUNNER_TEMP/check_store.py" github release/teemoon-*.apk
+          python3 tools/check_store.py github release/teemoon-*.apk
       - name: compare
         id: cmp
         run: |

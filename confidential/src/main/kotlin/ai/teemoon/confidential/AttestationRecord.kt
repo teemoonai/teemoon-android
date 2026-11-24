@@ -1,5 +1,8 @@
+// ports: teemoon/Confidential/ModelCandidates.swift @ 976543da (1.1.1 audit A10/A12/A13, card trust-copy-sweep-111 v4: candidatesReason reads ListedEnclaveReason)
 // ports: teemoon/Confidential/AttestationRecord.swift @ v1.0.6 (the data model, its bindings, and the
 //        two preview records; the fetcher is AttestationService.kt)
+//        teemoon/Confidential/ModelCandidates.swift @ bf762777 (candidatesReason's copy-card marker)
+//        teemoon/Confidential/AttestationRecord.swift @ 7814a0fd (1.1.1 C3a: modelCandidates, modelCandidatesListFailed, candidatesBroken, candidatesReason)
 package ai.teemoon.confidential
 
 import java.security.MessageDigest
@@ -65,6 +68,10 @@ data class AttestationRecord(
     val gatewayAdvertisedReportData: String? = null,
     val modelAdvertisedReportData: String? = null,
     val gpuAdvertisedReportData: String? = null,
+    /** Every enclave near.ai listed for the model and each one's result (C3a); null when no list was read. */
+    val modelCandidates: ModelCandidates.Listed? = null,
+    /** The list was asked for and never came: a couldn't-check, never "verified". */
+    val modelCandidatesListFailed: Boolean = false,
     /** The model leg's measured compose (its info.tcb_info.app_compose), read from the attestation its quote came from (S37 B3). */
     val modelComposeManifest: String? = null,
     /** Raw docker-compose.yaml manifest the GPU node measured at boot — the model enclave's own container set. */
@@ -122,6 +129,21 @@ data class AttestationRecord(
             val addrBytes = addr.removePrefix("0x").hexToBytesOrNull()
             if (addrBytes == null || addrBytes.size != 20 || reportData.size < 20) return false
             return reportData.copyOfRange(0, 20).contentEquals(addrBytes)
+        }
+
+    /** C3a: a listed enclave failed a check. Evidence wherever it is read. (The listed enclaves only: see [ModelCandidates].) */
+    val candidatesBroken: Boolean get() = modelCandidates?.enclaves?.any { it.result != ModelCandidates.Result.Clean } == true
+
+    /** The worst listed enclave's reason. Never the read enclave's lines: the reader must learn it was another enclave (1.1.1 audit A10/A12/A13, iOS 976543da). */
+    val candidatesReason: String?
+        get() {
+            val bad = modelCandidates?.enclaves?.firstOrNull { it.result != ModelCandidates.Result.Clean }?.result as? ModelCandidates.Result.Mismatch ?: return null
+            return when (bad.why) {
+                ModelCandidates.Why.KEY_DIFFERS -> ListedEnclaveReason.OTHER_KEY
+                ModelCandidates.Why.KEY_PROVIDER_DIFFERS -> ListedEnclaveReason.OTHER_KEY_SERVICE
+                ModelCandidates.Why.BOOT_LOG -> ListedEnclaveReason.BOOT_LOG
+                else -> ListedEnclaveReason.ENCLAVE_FAILED
+            }
         }
 
     /**

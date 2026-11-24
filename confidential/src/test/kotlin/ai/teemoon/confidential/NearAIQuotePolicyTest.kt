@@ -179,7 +179,7 @@ class NearAIQuotePolicyTest {
         val record = r.fetch()
         assertTrue(record.nvidiaPayload == null && record.modelIntelQuote?.isNotEmpty() == true)
         val s = ConfidentialSession(CoroutineScope(Dispatchers.Unconfined), { Provider.nearAI }, services = ConfidentialSession.Services(skipLiveAttestation = true,
-            verifyNras = { _, _ -> error("no evidence goes to NVIDIA") }))
+            verifyNras = { _, _ -> error("no evidence goes to NVIDIA") }), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         s.verifyGpu(record)
         assertEquals("nothing pending, couldn't-check", NrasVerification.Inconclusive(NrasVerification.EVIDENCE_ABSENT), s.gpuAttestation)
         assertFalse(s.gpuAttestation!!.isHardFailure)

@@ -88,7 +88,7 @@ class PendingReplyPhaseTest {
         val record = AttestationRecord.preview.copy(model = model)
         val near = Provider.nearAI.copy(id = record.providerID, model = model)
         val session = ConfidentialSession(this, { near }, credentialFor = { "" }, services = ConfidentialSession.Services(skipLiveAttestation = true,
-            directBase = { "https://model.example" }, verifyTls = { tls.await() }, now = { record.fetchedAt }))
+            directBase = { "https://model.example" }, verifyTls = { tls.await() }, now = { record.fetchedAt }), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         session.attestation = record; session.lastRequestUsedE2EE = true
         session.imageProvenance = ManifestProvenance.AllVerified(emptyList(), emptyList())
         session.dcapVerification = RecordDcapVerification(gateway = upToDate, model = upToDate)

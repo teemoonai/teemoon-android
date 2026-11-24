@@ -38,4 +38,10 @@ class NearAIPresetDefaultTest {
         assertEquals("z-ai/glm-5.3-flash", Provider.nearAI.model)
         assertTrue(Provider.nearAI.supportsModelBrowsing)
     }
+
+    /** The maintainer's approved near.ai preset description (2026-11-21), character for character: the Where line is separate and unchanged. */
+    @Test fun thePresetDescriptionIsTheApprovedCopy() {
+        assertEquals("open models running inside attested secure enclaves. for its attested models, your chats are sealed to the model's enclave key, and teemoon checks the proof on the device.",
+            ProviderPresets.description(Provider.nearAI.id))
+    }
 }

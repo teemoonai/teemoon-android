@@ -85,4 +85,10 @@ class GlossaryPrimerTest {
         assertFalse(primer.definition.contains("booted"))
         assertTrue(primer.definition.contains("launch config"))
     }
+
+    /** Card tee-glossary-111, the maintainer 2026-11-21, character for character: the first beat's new wording (curly apostrophes as approved). */
+    @Test fun theFirstBeatIsTheApprovedCopy() {
+        assertEquals("your messages are processed inside a **sealed region of the chip** (a TEE) whose memory the machine’s operator can’t read from outside. " +
+            "what the software inside does with your messages is what the published reviews check.", primer.beats[0])
+    }
 }

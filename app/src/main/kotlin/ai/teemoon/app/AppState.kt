@@ -174,7 +174,16 @@ class AppState(context: Context, dao: ChatDao? = null) {
      * Re-attests whenever the active provider changes, as teemoonApp wires
      * `onActiveProviderChanged`.
      */
-    val session = ConfidentialSession(scope, { selected }, credentialFor = ::credentialFor,
+    /**
+     * Item 1 (iOS d2d70d45, the maintainer approved 2026-11-18): the near.ai model ids a request went out sealed to, in the same
+     * preferences file as the settings (iOS UserDefaults `nearai.sealedModels`) — ids only, and no Room change.
+     */
+    private val sealedModelStore = object : ai.teemoon.confidential.SealedModelStore {
+        private val sp = context.getSharedPreferences("teemoon-settings", Context.MODE_PRIVATE)
+        override fun read(): Set<String>? = sp.getStringSet(ai.teemoon.confidential.SealedModels.KEY, null)?.toSet()
+        override fun write(ids: Set<String>?) { sp.edit().apply { if (ids == null) remove(ai.teemoon.confidential.SealedModels.KEY) else putStringSet(ai.teemoon.confidential.SealedModels.KEY, ids) }.apply() }
+    }
+    val session = ConfidentialSession(scope, { selected }, credentialFor = ::credentialFor, sealedModels = ai.teemoon.confidential.SealedModels(sealedModelStore),
         // The fetcher logs through the app log (iOS: its os.Logger lines) — silent, a gateway leg that answered nothing
         // usable left no trace on a device where the same fetch worked from the JVM (2026-09-24).
         services = ConfidentialSession.Services(fetchRecord = AttestationService.recordFetcher(log = log),
@@ -940,6 +949,8 @@ class AppState(context: Context, dao: ChatDao? = null) {
     fun remove(id: String) {
         val removed = _providers.value.firstOrNull { it.id == id }
         removed?.let { credentials.removeSecrets(it) }
+        // "delete provider" for near.ai clears the sealed-model ids (iOS ProviderStore.removeProvider, d2d70d45)
+        if (removed?.isNearAI == true) session.sealedModels.clear()
         _providers.value = _providers.value.filterNot { it.id == id }
         // ...and the server's saved lists, unless another setup still talks to it (LiveCatalogStore.forget had no caller,
         // so a list scoped by the key outlived both; the local audit, 2026-10-13)

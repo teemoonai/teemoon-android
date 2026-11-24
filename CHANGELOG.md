@@ -1,6 +1,46 @@
 # Changelog
 
-Every public release of teemoon for Android, newest first. Each GitHub release is the source of the Google Play build with the same number, rebuilt from its tag on a clean GitHub Actions runner; the reproducibility line says whether that rebuild matched the published APK. Full detail for 1.1.0 is in [docs/releases/1.1.0.md](docs/releases/1.1.0.md).
+Every public release of teemoon for Android, newest first. Each GitHub release is the source of the Google Play build with the same number, rebuilt from its tag on a clean GitHub Actions runner; the reproducibility line says whether that rebuild matched the published APK. Full detail for 1.1.1 is in [docs/releases/1.1.1.md](docs/releases/1.1.1.md), and for 1.1.0 in [docs/releases/1.1.0.md](docs/releases/1.1.0.md).
+
+## 1.1.1 (3919) — 2026-11-21
+
+### Changed
+
+- The trust screens say who holds the key: "near.ai's key service decides which secure enclaves get that key". They also say what teemoon found for the enclaves near.ai listed: checked, couldn't load the list, checking, couldn't finish, or one failed.
+- Lines that claimed more than the app checks are gone: no trust string says only the model can read the chat, or that near.ai's gateway can't decrypt it.
+- "send unencrypted" is now "send without encryption".
+- A sent question glides to the top of the chat over 0.4 s (was 0.25 s).
+- List prices for your own OpenAI, Google, DeepSeek and Mistral keys are refreshed (snapshot 2026-11-19).
+- The release workflows run `tools/check_store.py` from the tag's own tree again, not from `main`.
+
+### Security
+
+- Every model enclave near.ai lists for a model holds the key a sealed message goes to, and each is now checked before a message is sealed to it: its quote with Intel (DCAP: the quote's chain, collateral and TCB status), its GPU evidence with NVIDIA, its compose manager's action log and its boot log. A listed enclave that fails blocks the send; one that couldn't be checked asks first. The trust screen's "reviewed" row now covers what every listed enclave runs. This fixes the 1.1.0 MEDIUM for the enclaves near.ai lists.
+- A quote's attestation key must be Intel's TD Quoting Enclave's: the QE report is signed by the PCK leaf, its report_data is sha256 of the key and its auth data, and the TD QE identity matches, MISCSELECT included.
+- The "reviewed" row is the worst across every listed enclave, each scoped by everything its host runs.
+- A held send names its reason: a listed enclave that failed its check, one that holds a different key, or listed enclaves that name different key services.
+- near.ai's list of enclaves is capped at 4 MB and 8 entries, and its request is cancelled at its time limit.
+- A near.ai model you've sent to sealed asks once before its first plain send (the 1.1.0 audit's accepted LOW).
+- A model key with no readable quote blocks the send; it used to read "still checking" and offer to send anyway.
+- Each listed-enclave check is pinned by a test that fails when the check is broken (mutation-tested).
+
+### Moved to 1.1.2
+
+- The 1.1.0 audit's remaining INFO items: the share and paste URI gate, a size cap on the import staging copy, bounds on the isolated decoder's reply, an allow-list for unsealed request fields, validation of action-log strings before they go into a URL, log hygiene, the credits list, and screenshot seams.
+- Explicit backup excludes for the list of models sent to sealed (backup is already off for the whole app).
+- A fail-safe for that list when the app can't read it: in 1.1.1 an unreadable list counts as empty, so the ask above doesn't come.
+- A TLS pin for near.ai's gateway.
+
+### Known issues
+
+- near.ai's key service decides which enclaves get a model's key. teemoon checks the enclaves near.ai lists, not an enclave the key service admits that near.ai doesn't list; near.ai has to fix that (audit MEDIUM, narrowed).
+- near.ai's quotes are not bound to the caller.
+- The TLS connection to near.ai's gateway is not bound to an attested enclave.
+- Re-verifying `v1.1.0-3918` needs the release workflows as they were on `main` at `35766b6`, because that tag's tree has no `tools/check_store.py`; its verified verdict stands.
+- xAI retired `grok-build-0.1`. A Grok place still set to it fails every send with "Grok endpoint not found (http 404). check the server address in settings → places & keys."; pick another Grok model. A clearer message is planned for 1.1.2.
+- R8 shrinking is still off, which draws Play's obfuscation notice; to be fixed before February 2027.
+
+[`v1.1.1-3919`](https://github.com/teemoonai/teemoon-android/tree/v1.1.1-3919) · [GitHub release](https://github.com/teemoonai/teemoon-android/releases/tag/v1.1.1-3919) · [audit](https://github.com/teemoonai/audits/tree/main/client/teemoon-android) · [full notes](docs/releases/1.1.1.md) · reproducible: the verdict is on the [GitHub release](https://github.com/teemoonai/teemoon-android/releases/tag/v1.1.1-3919).
 
 ## 1.1.0 (3918) — 2026-11-18
 
@@ -26,8 +66,8 @@ Every public release of teemoon for Android, newest first. Each GitHub release i
 
 ### Known issues
 
-- Found after release (audit MEDIUM): only the first listed near.ai enclave is verified, but every enclave near.ai's key service admits under the app id holds the same key; a fix for listed enclaves is planned for 1.1.1.
-- Accepted for this release: a near.ai model used sealed can turn proxied on a changed model list with no alert; a fix is planned for 1.1.1.
+- Found after release (audit MEDIUM): only the first listed near.ai enclave is verified, but every enclave near.ai's key service admits under the app id holds the same key. Fixed in 1.1.1 for the enclaves near.ai lists; an enclave the key service admits that near.ai doesn't list is still not checked.
+- Accepted for this release: a near.ai model used sealed can turn proxied on a changed model list with no alert. Fixed in 1.1.1: it asks once before the first plain send.
 - R8 shrinking is off, which draws Play's obfuscation notice; to be fixed before February 2027.
 
 [`v1.1.0-3918`](https://github.com/teemoonai/teemoon-android/tree/v1.1.0-3918) · [GitHub release](https://github.com/teemoonai/teemoon-android/releases/tag/v1.1.0-3918) · [audit](https://github.com/teemoonai/audits/blob/main/client/teemoon-android/v1.1.0-3918-ee2c8b3.md) (QUALIFIED-PASS) · [full notes](docs/releases/1.1.0.md) · reproducible: **verified**, 198 entries matched, signature set aside ([run](https://github.com/teemoonai/teemoon-android/actions/runs/44283096289)).

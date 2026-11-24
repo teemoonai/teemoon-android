@@ -1,4 +1,4 @@
-// ports: teemoon/Confidential/TrustVerdict.swift @ b3d90fac (ModelNodeAudit.onPath)
+// ports: teemoon/Confidential/TrustVerdict.swift @ c5e329f2 (ModelNodeAudit.onPath's wholeHost, 1.1.1 audit A5); @ b3d90fac (ModelNodeAudit.onPath)
 package ai.teemoon.confidential
 
 /** The model node's audit pages, narrowed to the services this chat's requests pass through (audit 2026-11-06). */
@@ -8,8 +8,10 @@ object ModelNodeAuditPath {
      * recipe LEAKS page whose services the path never touches. Ambiguous: every running revision's page counts, so a leak
      * anywhere on the CVM counts. A page without `services` always counts.
      */
-    fun onPath(urls: List<String>, chatPath: ChatPath.Result?, runningSources: List<DeployLog.Source>, audit: AuditIndex): List<String> {
+    fun onPath(urls: List<String>, chatPath: ChatPath.Result?, runningSources: List<DeployLog.Source>, audit: AuditIndex, wholeHost: Boolean = false): List<String> {
         var out = urls.toMutableList()
+        // [wholeHost] (a listed enclave, 1.1.1 audit A5): every running revision's page counts too, before the off-path filter below.
+        if (wholeHost) for (source in runningSources) audit.manifestAuditURL(source.file, source.fileSha256)?.let { out += it }
         when (chatPath) {
             is ChatPath.Result.Path -> {
                 for (source in chatPath.hops.map { it.source }.toSet()) audit.manifestAuditURL(source.file, source.fileSha256)?.let { out += it }

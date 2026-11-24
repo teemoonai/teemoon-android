@@ -31,7 +31,7 @@ internal object SendGateFixtures {
     fun snapshot(change: (ConfidentialSession) -> Unit): TrustSnapshot {
         val record = AttestationRecord.preview.copy(fetchedAt = java.time.Instant.now()).copy(nvidiaPayload = "{}")
         val p = Provider.nearAI.copy(id = record.providerID, model = record.model ?: Provider.nearAI.model)
-        val s = ConfidentialSession(CoroutineScope(Dispatchers.Unconfined), { p }, services = ConfidentialSession.Services(skipLiveAttestation = true))
+        val s = ConfidentialSession(CoroutineScope(Dispatchers.Unconfined), { p }, services = ConfidentialSession.Services(skipLiveAttestation = true), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         s.attestation = record; s.lastRequestUsedE2EE = true
         s.imageProvenance = ai.teemoon.confidential.ManifestProvenance.AllVerified(listOf(ai.teemoon.confidential.ImageRef("nearaidev/cloud-api", "a".repeat(64))), emptyList())
         s.dcapVerification = RecordDcapVerification(gateway = upToDate, model = upToDate)

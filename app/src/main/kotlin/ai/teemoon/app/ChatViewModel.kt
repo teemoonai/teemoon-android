@@ -1,4 +1,5 @@
-// ports: teemoon/Inference/ChatGeneration.swift @ v1.0.4 (generate() — the drive; state lives in ChatGeneration),
+// ports: teemoon/Chat/ChatViewModel.swift @ 6c364e33 (the reply-end arming of d2d70d45 removed: the transport arms, see OpenAiTransport.kt)
+//        teemoon/Inference/ChatGeneration.swift @ v1.0.4 (generate() — the drive; state lives in ChatGeneration),
 //        teemoon/Views/Chat/ChatView.swift @ v1.0.4 (runPendingSearchRetryIfReady, retry(from:) — the search-offer re-ask only)
 //        teemoon/Chat/ChatViewModel.swift @ v1.0.4 (postPrepareRefusal, acceptedDegrade; a refusal before the wire is abandoned, not booked;
 //        searchTurnedOff passed to the grounding tools @ 8494cdb9)
@@ -422,7 +423,7 @@ class ChatViewModel(
      * question, or Think Harder asking again. [reasking]: Think Harder's question, already in the transcript and the
      * store, asked again in place of [superseded] — the replies that stay, dimmed, until the new one lands.
      */
-    fun send(prompt: String, acceptedDegrade: Boolean = false, effort: ReasoningEffort? = ReasoningEffort.CHAT_DEFAULT, askedAtMs: Long? = null,
+    fun send(prompt: String, acceptedDegrade: Boolean = false, downgradeAskShown: Boolean = false, effort: ReasoningEffort? = ReasoningEffort.CHAT_DEFAULT, askedAtMs: Long? = null,
              reasking: ChatMessage? = null, superseded: Set<String> = emptySet(), retried: Boolean = false,
              /** Picked images, already decoded and re-encoded in the isolated process (IMAGES.md §4). */
              images: List<ai.teemoon.app.imaging.ImageDecodeFrame.Decoded> = emptyList(),
@@ -435,7 +436,7 @@ class ChatViewModel(
         // until its read returns, and the engine takes one turn at a time. A send here passed the check above, the
         // composer cleared, and the turn refused to begin — the message was lost. It waits for the stopped turn.
         job?.takeIf { it.isCancelled && !it.isCompleted }?.let { stopping ->
-            viewModelScope.launch { stopping.join(); send(prompt, acceptedDegrade, effort, askedAtMs, reasking, superseded, retried, images, clearStoredFromMs, replacing) }
+            viewModelScope.launch { stopping.join(); send(prompt, acceptedDegrade, downgradeAskShown, effort, askedAtMs, reasking, superseded, retried, images, clearStoredFromMs, replacing) }
             return
         }
         // No place, no turn. This is the last gate, not the first — the composer's SendPrep stops a send with no place
@@ -445,7 +446,7 @@ class ChatViewModel(
         // Whether this turn started attestable (an attested or unknown near.ai tier): such a turn never leaves unsealed.
         val startedAttestable = ProviderCapability.ATTESTATION in place.capabilities
         // "send anyway" to a soft state: remembered for this record and reason, so it isn't asked again (near-send-gate-rule)
-        if (acceptedDegrade) { session?.let { it.rememberConfirmation(pending = _state.value.hardwareConfirmRequested || it.sendPending) }; _state.update { it.copy(hardwareConfirmRequested = false) } }
+        if (acceptedDegrade) { session?.let { it.rememberConfirmation(pending = _state.value.hardwareConfirmRequested || it.sendPending, downgradeAskShown = downgradeAskShown) }; _state.update { it.copy(hardwareConfirmRequested = false) } }
         // IMAGES.md §4: images go only to a model whose catalogue says it takes them. A refused send sends nothing.
         val vision = canSeeImages(place)
         if (images.isNotEmpty() && !vision) { _state.update { it.copy(imageRefusal = ai.teemoon.app.imaging.CantSeeRoute.REFUSED) }; return }
@@ -868,9 +869,9 @@ class ChatViewModel(
     }
 
     /** Asks the last question again (the error card's retry, and the search-off retry above). [effort]: Think Harder's gated path. */
-    fun retryLastTurn(acceptedDegrade: Boolean = false, effort: ReasoningEffort = ReasoningEffort.CHAT_DEFAULT) {
+    fun retryLastTurn(acceptedDegrade: Boolean = false, downgradeAskShown: Boolean = false, effort: ReasoningEffort = ReasoningEffort.CHAT_DEFAULT) {
         val last = _state.value.messages.lastOrNull { it.role == "user" } ?: return
-        retry(from = last, acceptedDegrade = acceptedDegrade, effort = effort)
+        retry(from = last, acceptedDegrade = acceptedDegrade, downgradeAskShown = downgradeAskShown, effort = effort)
     }
 
     /**
@@ -980,7 +981,7 @@ class ChatViewModel(
     fun confirmStillChecking() { session?.takeIf { it.sendPending }?.rememberConfirmation(pending = true) }
 
     /** iOS ChatView.retry(from:): drop the question and everything after it, then ask it again. */
-    private fun retry(from: ChatMessage, acceptedDegrade: Boolean = false, effort: ReasoningEffort = ReasoningEffort.CHAT_DEFAULT) {
+    private fun retry(from: ChatMessage, acceptedDegrade: Boolean = false, downgradeAskShown: Boolean = false, effort: ReasoningEffort = ReasoningEffort.CHAT_DEFAULT) {
         if (_state.value.isStreaming) return
         // No place: keep the question and say why. Dropping it first and letting send() find no place deleted it from
         // the transcript and the store with nothing sent and nothing shown (the local audit's re-run, 2026-10-13).
@@ -992,7 +993,7 @@ class ChatViewModel(
             // now, restamped only when the new reply is saved. Build 50 deleted both first, so a failure or a stop
             // left the question with no answer.
             _state.update { it.copy(error = null, lastError = null) }
-            send(from.text, acceptedDegrade, effort = effort, reasking = from, superseded = _state.value.messages.drop(index + 1).map { it.id }.toSet())
+            send(from.text, acceptedDegrade, downgradeAskShown, effort = effort, reasking = from, superseded = _state.value.messages.drop(index + 1).map { it.id }.toSet())
             return
         }
         // Delete all messages from the question on, and ask it again.
@@ -1006,7 +1007,7 @@ class ChatViewModel(
         // deletes the old turns before saving the question again. Deleting first in a coroutine of its own let a send
         // that then refused to begin leave the question gone.
         // A plain retry keeps the time the question was first sent; Think Harder asks again now (restampIfReasked).
-        send(from.text, acceptedDegrade, effort = effort, askedAtMs = if (effort == ReasoningEffort.THINK_HARDER) null else from.createdAtMs, retried = true,
+        send(from.text, acceptedDegrade, downgradeAskShown, effort = effort, askedAtMs = if (effort == ReasoningEffort.THINK_HARDER) null else from.createdAtMs, retried = true,
             clearStoredFromMs = from.createdAtMs, replacing = replacing)
     }
 
@@ -1128,6 +1129,14 @@ fun postPrepare(policy: TrustSendPolicy, acceptedDegrade: Boolean, verdictsPendi
  * while it is up turns it into the hard choices (iOS's alert), read live, not from the gate the screen captured.
  */
 fun asksStillChecking(pendingAsk: Boolean, policy: TrustSendPolicy): Boolean = pendingAsk && policy != TrustSendPolicy.BLOCK
+
+/**
+ * Whether the ask drawn NOW is the tier-downgrade ask (1.1.1 audit cut review item 1, reverse case): the alert redraws live
+ * when a verdict lands, so this is computed in the composition that draws the ask, never remembered from when it was
+ * raised. Still-checking is drawn in its place while [askingStillChecking]; any other ask reads false. False while the
+ * downgrade ask shows costs one extra tap; true on another ask would let its "send anyway" accept the downgrade.
+ */
+fun downgradeAskOnScreen(askingStillChecking: Boolean, askIsTierDowngrade: Boolean): Boolean = !askingStillChecking && askIsTierDowngrade
 
 fun postPrepareRefusal(policy: TrustSendPolicy, acceptedDegrade: Boolean, verdictsPending: Boolean): String? = when {
     policy == TrustSendPolicy.BLOCK -> "verification failed while preparing this message, so nothing was sent. re-verify from the lock icon."

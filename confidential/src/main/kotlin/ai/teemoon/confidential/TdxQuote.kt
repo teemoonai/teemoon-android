@@ -1,6 +1,10 @@
 // ports: Packages/TDXQuoteVerifier/Sources/TDXQuoteVerifier/TDXQuote.swift @ v1.0.1 (QuoteParser, TDXQuote)
 //        Packages/TDXQuoteVerifier/Sources/TDXQuoteVerifier/TDXQuoteVerifier.swift @ v1.0.1 (the on-device verifier)
 //        Packages/TDXQuoteVerifier/Sources/TDXQuoteVerifier/IntelRootCA.swift @ v1.0.1 (the pinned root)
+//        Packages/TDXQuoteVerifier/Sources/TDXQuoteVerifier/TDXQuoteVerifier.swift @ ba82440f (1.1.1 audit A2: the QE report must be Intel's TD
+//        Quoting Enclave's — MRSIGNER, ISVPRODID, MISCSELECT and attributes pinned from the kit's qe_identity; 21f04a5e + ba82440f)
+//        Packages/TDXQuoteVerifier/Sources/TDXQuoteVerifier/TDXQuote.swift + TDXQuoteVerifier.swift @ ba0842d1 (1.1.1 audit A2: the QE report
+//        binding — qeReport / qeReportSignature / qeAuthData, attestationKeyIsBoundToChain)
 //
 // Intel TDX Quote v4 binary structure, and the minimal on-device verifier:
 // the ECDSA P-256 signature over (header || body) and the PCK certificate
@@ -53,6 +57,13 @@ class TdxQuote(val header: Header, val body: TdReportBody, val signature: Signat
         /** PEM-encoded certificate chain: typically [PCK cert, Platform CA cert, Root CA cert]. */
         val certificateChainPem: List<String>,
         val rawCertificationData: ByteArray,
+        /**
+         * The Quoting Enclave's report (384 bytes), its signature under the PCK leaf (r || s) and its auth data: what binds
+         * [attestationPublicKey] to the chain. null when the quote carries no type-6 certification data.
+         */
+        val qeReport: ByteArray? = null,
+        val qeReportSignature: ByteArray? = null,
+        val qeAuthData: ByteArray? = null,
     )
 }
 
@@ -90,6 +101,7 @@ object QuoteParser {
         // QE Certification Data: uint16 type, uint32 size, data. Type 6 wraps a QE report + signature + auth data + nested cert data (type 5 = PEM chain).
         val remaining = data.copyOfRange(sigStart + 128, sigStart + sigDataSize)
         var certData = remaining; var pemCerts = emptyList<String>()
+        var qeReport: ByteArray? = null; var qeReportSig: ByteArray? = null; var qeAuth: ByteArray? = null
         if (remaining.size >= 6) {
             val outerType = u16(remaining, 0); val outerSize = u32(remaining, 2).toInt(); val start = 6
             if (outerType == 5 && start + outerSize <= remaining.size) {
@@ -98,7 +110,11 @@ object QuoteParser {
                 val inner = remaining.copyOfRange(start, start + outerSize)
                 var p = 384 + 64
                 if (p + 2 <= inner.size) {
-                    p += 2 + u16(inner, p)
+                    val authSize = u16(inner, p)
+                    if (p + 2 + authSize <= inner.size) {
+                        qeReport = inner.copyOfRange(0, 384); qeReportSig = inner.copyOfRange(384, p); qeAuth = inner.copyOfRange(p + 2, p + 2 + authSize)
+                    }
+                    p += 2 + authSize
                     if (p + 6 <= inner.size) {
                         p += 2; val nestedSize = u32(inner, p).toInt(); p += 4
                         if (p + nestedSize <= inner.size) { val nested = inner.copyOfRange(p, p + nestedSize); pemCerts = extractPemCertificates(nested); certData = nested }
@@ -107,7 +123,7 @@ object QuoteParser {
             }
         }
         if (pemCerts.isEmpty()) pemCerts = extractPemCertificates(remaining)   // fallback: scan everything
-        return TdxQuote.SignatureData(ecdsaSig, attestKey, pemCerts, certData)
+        return TdxQuote.SignatureData(ecdsaSig, attestKey, pemCerts, certData, qeReport, qeReportSig, qeAuth)
     }
 
     /** Scans raw bytes for PEM certificate blocks. */
@@ -138,13 +154,65 @@ object TdxQuoteVerifier {
     fun verify(quoteData: ByteArray): TdxVerificationResult {
         val quote = try { QuoteParser.parse(quoteData) } catch (e: QuoteParseException) { throw TdxVerificationException.ParseError(e) }
         val signed = quoteData.copyOfRange(0, QuoteParser.HEADER_SIZE + QuoteParser.TD_REPORT_BODY_SIZE)
-        val sigValid = verifyEcdsa(quote.signature.ecdsaSignature, quote.signature.attestationPublicKey, signed)
+        val bodySigned = verifyEcdsa(quote.signature.ecdsaSignature, quote.signature.attestationPublicKey, signed)
+        // 1b. The attestation key is the Quoting Enclave's: never drop this. Without it a body signed by any key the quote carries,
+        // beside a genuine chain, reads as verified (audit 1.1.1, ForgedQuoteTest / ForgedSiblingQuoteTest).
+        val sigValid = bodySigned && attestationKeyIsBoundToChain(quote.signature)
         val (certValid, certError) = verifyCertificateChain(quote.signature.certificateChainPem)
         return TdxVerificationResult(quote.body.measurements, sigValid, certValid, certError, quote)
     }
 
     fun verify(quoteHex: String): TdxVerificationResult =
         verify(quoteHex.removePrefix("0x").hexToBytesOrNull() ?: throw TdxVerificationException.ParseError(QuoteParseException.DataTooShort(636, 0)))
+
+    // MARK: - QE report binding
+
+    /**
+     * The QE report is signed by the PCK leaf, and its report_data is sha256(attestation key || QE auth data) followed by 32
+     * zero bytes (Intel DCAP quote format, ECDSA quote signature data).
+     */
+    internal fun attestationKeyIsBoundToChain(sig: TdxQuote.SignatureData, isTdQe: (ByteArray) -> Boolean = ::reportIsIntelsTdQuotingEnclave): Boolean {
+        val report = sig.qeReport?.takeIf { it.size == 384 } ?: return false
+        val reportSig = sig.qeReportSignature ?: return false
+        val auth = sig.qeAuthData ?: return false
+        val leafKey = sig.certificateChainPem.firstOrNull()?.let(::publicKeyXy) ?: return false
+        if (!verifyEcdsa(reportSig, leafKey, report)) return false
+        if (!isTdQe(report)) return false
+        val reportData = report.copyOfRange(320, 384)
+        val bound = MessageDigest.getInstance("SHA-256").digest(sig.attestationPublicKey + auth)
+        return reportData.copyOfRange(0, 32).contentEquals(bound) && reportData.copyOfRange(32, 64).all { it == 0.toByte() }
+    }
+
+    /**
+     * Intel's TD Quoting Enclave identity, from Intel's signed qe_identity (id TD_QE; conformance/collateral.json
+     * assembledCollateralFields.qe_identity). Any enclave on a genuine platform can get a PCK-signed report; only this one may
+     * vouch for the attestation key. ISVSVN, TCB status and revocation stay DCAP's (Intel unreachable = the gate asks). The pin
+     * fails closed if Intel rotates the TD QE signing key, until it moves with a new qe_identity (QeReportBindingTest says where it comes from).
+     */
+    internal val TD_QE_MRSIGNER: ByteArray = "dc9e2a7c6f948f17474e34a7fc43ed030f7c1563f1babddf6340c82e0e54a8c5".hexToBytes()
+    internal const val TD_QE_PRODID = 2
+    internal val TD_QE_MISCSELECT = ByteArray(4)
+    internal val TD_QE_MISCSELECT_MASK = ByteArray(4) { 0xFF.toByte() }
+    internal val TD_QE_ATTRIBUTES = ByteArray(16).also { it[0] = 0x11 }
+    internal val TD_QE_ATTRIBUTES_MASK = ByteArray(16).also { it[0] = 0xFB.toByte(); for (i in 1..7) it[i] = 0xFF.toByte() }
+
+    /** SGX report body: MISCSELECT 16..<20, attributes 48..<64, MRSIGNER 128..<160, ISVPRODID 256..<258 (little-endian). */
+    internal fun reportIsIntelsTdQuotingEnclave(report: ByteArray): Boolean {
+        if (report.size != 384) return false
+        if (!report.copyOfRange(128, 160).contentEquals(TD_QE_MRSIGNER)) return false
+        if ((report[256].toInt() and 0xff) or ((report[257].toInt() and 0xff) shl 8) != TD_QE_PRODID) return false
+        if (!(0 until 4).all { (report[16 + it].toInt() and TD_QE_MISCSELECT_MASK[it].toInt()) == TD_QE_MISCSELECT[it].toInt() }) return false
+        return (0 until 16).all { (report[48 + it].toInt() and TD_QE_ATTRIBUTES_MASK[it].toInt()) == TD_QE_ATTRIBUTES[it].toInt() }
+    }
+
+    /** x || y of a P-256 certificate's public key; null for any other key or an unreadable certificate. */
+    private fun publicKeyXy(pem: String): ByteArray? = try {
+        val key = CertificateFactory.getInstance("X.509").generateCertificate(ByteArrayInputStream(pemToDer(pem))).publicKey as? java.security.interfaces.ECPublicKey
+        key?.takeIf { it.params.order == p256.n }?.w?.let { w ->
+            fun fixed(v: BigInteger): ByteArray { val a = v.toByteArray(); val o = ByteArray(32); val n = minOf(32, a.size); System.arraycopy(a, a.size - n, o, 32 - n, n); return o }
+            fixed(w.affineX) + fixed(w.affineY)
+        }
+    } catch (_: Exception) { null }
 
     /** Raw r||s (64 bytes) over SHA-256(message), with a raw x||y (64 bytes) public key. */
     private fun verifyEcdsa(signature: ByteArray, publicKey: ByteArray, message: ByteArray): Boolean {

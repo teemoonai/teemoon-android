@@ -4,7 +4,7 @@
 // action sheet, not an alert; Android draws them as bottom sheets). Same order on both platforms, the way out last; a
 // hard break never offers send. 2026-10-30 (the maintainer, via pm): on iOS 26.5 the E2EE sheet is a popover and iOS hid its
 // role-.cancel button, leaving an unlabelled tap outside as the only safe exit. It now ends in a plain "don't send"
-// that keeps the draft, "send unencrypted" is red, and the soft-degrade body is the maintainer's text, exact.
+// that keeps the draft, "send without encryption" is red, and the soft-degrade body is the maintainer's text, exact.
 package ai.teemoon.app
 
 import org.junit.Assert.assertEquals
@@ -13,7 +13,7 @@ import org.junit.Test
 
 class SendChoicesTest {
     @Test fun theE2EEQuestionKeepsItsOrderAndNeverOffersSendOnAHardBreak() {
-        assertEquals(listOf("retry verification", "send unencrypted", "don't send"),
+        assertEquals(listOf("retry verification", "send without encryption", "don't send"),
             E2EESendChoice.choices(hardFailure = false, provenanceOnly = false).map { it.label })
         assertEquals(listOf("retry verification", "send anyway (still encrypted)", "don't send"),
             E2EESendChoice.choices(hardFailure = false, provenanceOnly = true).map { it.label })
@@ -28,7 +28,7 @@ class SendChoicesTest {
     }
 
     @Test fun theE2EEQuestionSaysNothingWasSent() {
-        assertEquals("teemoon couldn't seal this message so only the model can read it. nothing has been sent.",
+        assertEquals("teemoon couldn't seal this message to the model's enclave key. nothing has been sent.",
             E2EESendChoice.message(hardFailure = false, provenanceOnly = false, cause = "couldn't reach the attestation server."))
         assertTrue(E2EESendChoice.message(hardFailure = true, provenanceOnly = false, cause = "the hardware quote failed intel dcap verification.")
             .startsWith("the hardware quote failed intel dcap verification. sending is blocked"))
@@ -78,6 +78,32 @@ class TierGaveUpAskTest {
         org.junit.Assert.assertEquals(listOf("send anyway", "don't send"), ask.choices.map { it.label })
     }
 
+    /**
+     * 1.1.1 audit integ read, item 6 (iOS SendChoices.swift @ 01a337a4 E2EEAsk.make): the gate test that pins which ask wins when several
+     * conditions hold at once. iOS's order: provenancePending, THEN tier-unchecked (needs softButSealed), THEN provenance-unchecked, THEN the
+     * failed list, THEN still-checking, else the hard/unavailable sheet. tierGaveUp is Android's deadlinePassed.
+     */
+    @Test fun theAskChosenWhenSeveralConditionsHoldAtOnce() {
+        fun ask(provenanceUnchecked: Boolean = false, softButSealed: Boolean = false, tier: Boolean = false, listFailed: Boolean = false,
+                pending: ai.teemoon.confidential.ConfidentialSession.PendingKind? = null) =
+            E2EEAsk.make(hardFailure = false, pendingAsk = pending, provenanceUnchecked = provenanceUnchecked, softButSealed = softButSealed,
+                provenanceBlocked = false, cause = null, tierGaveUp = tier, enclaveListFailed = listFailed).title
+        val tierTitle = E2EEAsk.TIER_GAVE_UP_TITLE
+        // the tier ask comes before the provenance-unchecked one, and before the failed list
+        org.junit.Assert.assertEquals(tierTitle, ask(provenanceUnchecked = true, softButSealed = true, tier = true))
+        org.junit.Assert.assertEquals(tierTitle, ask(softButSealed = true, tier = true, listFailed = true))
+        org.junit.Assert.assertEquals(tierTitle, ask(provenanceUnchecked = true, softButSealed = true, tier = true, listFailed = true))
+        // it needs softButSealed: without it the next ask in iOS's order answers
+        org.junit.Assert.assertEquals(E2EEAsk.PROVENANCE_UNCHECKED_TITLE, ask(provenanceUnchecked = true, tier = true))
+        org.junit.Assert.assertEquals(E2EESendChoice.LIST_FAILED_TITLE, ask(tier = true, listFailed = true))
+        org.junit.Assert.assertEquals("end-to-end encryption unavailable", ask(tier = true))
+        // provenance still pending outranks all of them; a pending hardware check outranks the tier ask
+        org.junit.Assert.assertEquals(E2EEAsk.PROVENANCE_PENDING_TITLE, ask(provenanceUnchecked = true, softButSealed = true, tier = true,
+            pending = ai.teemoon.confidential.ConfidentialSession.PendingKind.PROVENANCE))
+        org.junit.Assert.assertEquals(E2EESendChoice.STILL_CHECKING_TITLE, ask(softButSealed = true, tier = true,
+            pending = ai.teemoon.confidential.ConfidentialSession.PendingKind.HARDWARE))
+    }
+
     @Test fun aGenuinelyPendingCheckStillAsksStillChecking() {
         val ask = E2EEAsk.make(hardFailure = false, pendingAsk = ai.teemoon.confidential.ConfidentialSession.PendingKind.HARDWARE, provenanceUnchecked = false,
             softButSealed = true, provenanceBlocked = false, cause = null, tierGaveUp = true)
@@ -88,5 +114,14 @@ class TierGaveUpAskTest {
         val ask = E2EEAsk.make(hardFailure = true, pendingAsk = null, provenanceUnchecked = false, softButSealed = false,
             provenanceBlocked = false, cause = "the model's hardware attestation failed verification.", tierGaveUp = true)
         org.junit.Assert.assertEquals("verification failed — sending blocked", ask.title)
+    }
+
+    /** Item 1 (iOS TierDowngradeTests @ d2d70d45): the downgrade sheet is [send without encryption (red) | don't send], in the approved words. */
+    @Test fun theTierDowngradeSheetIsSendWithoutEncryptionThenDontSend() {
+        val ask = E2EEAsk.tierDowngrade(ai.teemoon.confidential.TierDowngradeAsk(
+            ai.teemoon.confidential.TierDowngrade.title("glm 5.3"), ai.teemoon.confidential.TierDowngrade.MESSAGE))
+        assertEquals("glm 5.3 isn't end-to-end encrypted anymore", ask.title)
+        assertEquals(listOf("send without encryption", "don't send"), ask.choices.map { it.label })
+        assertEquals(listOf(true, false), ask.choices.map { it.isDestructive })
     }
 }

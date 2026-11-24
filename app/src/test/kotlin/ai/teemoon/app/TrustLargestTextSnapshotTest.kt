@@ -36,7 +36,7 @@ class TrustLargestTextSnapshotTest {
             directBase = { "https://x.completions.near.ai/v1" }, verifyDcap = { kotlinx.coroutines.awaitCancellation() },
             verifyNras = { _, _ -> kotlinx.coroutines.awaitCancellation() }, verifyTls = { kotlinx.coroutines.awaitCancellation() },
             // provenance answered offline, one image (a pass over none is not a pass): only the three hard verdicts are pending, and nothing reaches the network
-            verifyManifests = { ai.teemoon.confidential.ManifestProvenance.AllVerified(listOf(ai.teemoon.confidential.ImageRef("nearaidev/cloud-api", "a".repeat(64))), emptyList()) }, fetchModelLayerManifest = null))
+            verifyManifests = { ai.teemoon.confidential.ManifestProvenance.AllVerified(listOf(ai.teemoon.confidential.ImageRef("nearaidev/cloud-api", "a".repeat(64))), emptyList()) }, fetchModelLayerManifest = null), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         s.adopt(preview, p)
         return s to p
     }
@@ -73,7 +73,7 @@ class TrustLargestTextSnapshotTest {
         val mqv = base.modelQuoteVerification!!
         val record = base.copy(modelQuoteVerification = ai.teemoon.confidential.TdxVerificationResult(mqv.measurements, signatureValid = false, certChainValid = mqv.certChainValid, certChainError = null))
         val p = Provider.nearAI.copy(id = record.providerID, model = record.model ?: Provider.nearAI.model)
-        val s = ConfidentialSession(CoroutineScope(Dispatchers.Unconfined), { p }, services = ConfidentialSession.Services(skipLiveAttestation = true))
+        val s = ConfidentialSession(CoroutineScope(Dispatchers.Unconfined), { p }, services = ConfidentialSession.Services(skipLiveAttestation = true), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         s.attestation = record; s.lastRequestUsedE2EE = true
         s.dcapVerification = ai.teemoon.confidential.RecordDcapVerification(gateway = ai.teemoon.confidential.DcapVerification.Verified(ai.teemoon.confidential.DcapTcbStatus.UP_TO_DATE, "01", ""))
         s.gpuAttestation = NrasVerification.Verified; s.tlsAttestation = TlsAttestation.Verified
@@ -83,7 +83,7 @@ class TrustLargestTextSnapshotTest {
     @Test fun seamAndScriptCard_largestText() {
         val preview = AttestationRecord.preview.copy(fetchedAt = java.time.Instant.now())
         val p = Provider.nearAI.copy(id = preview.providerID, model = preview.model ?: Provider.nearAI.model)
-        val s = ConfidentialSession(CoroutineScope(Dispatchers.Unconfined), { p }, services = ConfidentialSession.Services(skipLiveAttestation = true))
+        val s = ConfidentialSession(CoroutineScope(Dispatchers.Unconfined), { p }, services = ConfidentialSession.Services(skipLiveAttestation = true), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         s.attestation = preview; s.gpuAttestation = NrasVerification.Verified; s.tlsAttestation = TlsAttestation.NotPerformed
         val snap = trustSnapshot(s, p)
         paparazzi.snapshot { TeemoonTheme { Surface { Column(Modifier.padding(20.dp), verticalArrangement = Arrangement.spacedBy(26.dp)) {

@@ -2679,7 +2679,7 @@
    "file": "sample/near-export-sample.json",
    "sha256": "d1cd77c4c2c8c31a80a46b0755fb94712db0a329d78bea830bdbb53953b8a1f1",
    "bytes": 89370,
-   "covers": "test 10: pm's readable sample on the real export's structure (invented text, example.* links; the maintainer OK'd committing it 2026-10-25)",
+   "covers": "test 10: a readable sample on the real export's structure (invented text, example.* links; the maintainer OK'd committing it 2026-10-25)",
    "expected": {
     "first": {
      "chatsImported": 5,

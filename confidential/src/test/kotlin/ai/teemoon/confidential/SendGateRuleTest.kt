@@ -1,10 +1,14 @@
-// ports: teemoonTests/SendGateRuleTests.swift @ 1cef8d95 (everyVectorGivesItsPolicyAndAlert, aSealHoldingSoftStateNeverOffersSendUnencrypted,
+// ports: teemoonTests/SendGateRuleTests.swift @ 878ab019 (1.1.1 audit A13: candidates keyProviderDiffers, kit 0.6.7); @ 1fe69e3d (1.1.1 audit A4: the listedScope changes, kit 0.6.6); @ ba0842d1 (1.1.1 audit A2/A1: aForgedListedEnclaveBlocks, aListedEnclavesDCAPGatesLikeTheModelLegs, kit 0.6.5
+//        evidence/listed-enclave-dcap-rejected + outage/listed-enclave-intel-pcs; aForgedFirstEnclaveBlocksWhileIntelCannotBeReached is
+//        aForgedFirstEnclaveWithIntelUnreachableBlocksWithNoAsk here, same scenario, Android's name)
+//        teemoonTests/SendGateRuleTests.swift @ e2f62bcc (1.1.1: aModelKeyWithNoQuoteBlocks, keyWithNoQuote, kit 0.6.3 evidence/model-key-no-quote)
+//        teemoonTests/SendGateRuleTests.swift @ 1cef8d95 (everyVectorGivesItsPolicyAndAlert, aSealHoldingSoftStateNeverOffersSendUnencrypted,
 //        aConfirmIsAskedOncePerRecordAndReason; the settle-timeout table and the audits tripwire are the app's, SendGateTimeoutTest)
 //        + everyNVIDIAAndTLSCaseHasItsClass and the nras/tls malformed|teemoon vectors @ a09537fe (kit 0.5.10)
 //
 // near-send-gate-rule (the maintainer 2026-11-06), run from conformance/sendgate.json so both platforms hold the same table:
 // outages (Intel PCS, NVIDIA, the TLS probe, GitHub, near.ai) ask or pass, never block; every evidence case blocks; a
-// seal-holding soft state never reaches "send unencrypted".
+// seal-holding soft state never reaches "send without encryption".
 package ai.teemoon.confidential
 
 import ai.teemoon.providers.EndpointDirectory
@@ -25,19 +29,23 @@ import org.junit.Test
 import java.io.IOException
 
 class SendGateRuleTest {
-    @Before fun offline() { NearAIModelCatalog.resetTierCache(); NearAIModelCatalog.endpointDirectory = EndpointDirectory(fetch = { null }) }
+    @Before internal fun offline() { NearAIModelCatalog.resetTierCache(); NearAIModelCatalog.endpointDirectory = EndpointDirectory(fetch = { null }) }
 
     private val kit = Json.parseToJsonElement(javaClass.getResourceAsStream("/sendgate.json")!!.reader().readText()).jsonObject
     private val upToDate = DcapVerification.Verified(DcapTcbStatus.UP_TO_DATE, "", "")
     private val baselineScope = NearTrustScope(DeployLogBinding.Bound, BootLogReplay.Matches, null, emptyList(), LauncherIndex.NotChecked)
 
     /** The kit's baseline — a fully verified near.ai record — then the vector's one change. */
-    private fun session(change: Map<String, String>): ConfidentialSession {
-        val record = AttestationRecord.preview
+    private fun session(change: Map<String, String>): ConfidentialSession = session(change, AttestationRecord.preview)
+
+    /** ModelCandidatesGateTest's baseline (iOS builds it from SendGateRuleTests.upToDate): the kit's record, [record] in place of the preview. */
+    internal fun baselineSession(record: AttestationRecord): ConfidentialSession = session(emptyMap(), record)
+
+    private fun session(change: Map<String, String>, record: AttestationRecord): ConfidentialSession {
         val stale = change["refetch"] == "failedStale"
         val now = if (stale) record.fetchedAt.plusSeconds(ConfidentialSession.ATTESTATION_MAX_AGE_SECONDS + 1) else record.fetchedAt
         val p = Provider.nearAI.copy(id = record.providerID, model = record.model ?: Provider.nearAI.model)
-        val s = ConfidentialSession(CoroutineScope(Dispatchers.Unconfined), { p }, services = ConfidentialSession.Services(skipLiveAttestation = true, now = { now }))
+        val s = ConfidentialSession(CoroutineScope(Dispatchers.Unconfined), { p }, services = ConfidentialSession.Services(skipLiveAttestation = true, now = { now }), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         s.attestation = record; s.lastRequestUsedE2EE = true
         s.imageProvenance = ManifestProvenance.AllVerified(listOf(ImageRef("nearaidev/cloud-api", "a".repeat(64))), emptyList())
         var dcap = RecordDcapVerification(gateway = upToDate, model = upToDate)
@@ -77,6 +85,29 @@ class SendGateRuleTest {
                 dcap = dcap.copy(gateway = DcapVerification.Failed(QuoteChecks.failure(r.s(r.gateway, "gateway_attestation", "intel_quote"),
                     LiveGlm53Reports.flipped(r.s(r.gateway, "gateway_attestation", "report_data")))!!)) }
             "modelMrConfig" to "mismatch" -> s.attestation = record.copy(modelComposeManifest = "services: {}")
+            // kit 0.6.4 (C3a, iOS release/1.1.1-patch 7814a0fd, a pick of fe3fa623): the listed enclaves (ModelCandidatesTest runs the checks themselves on the live list)
+            "candidates" to "listFailed" -> s.attestation = record.copy(modelCandidatesListFailed = true)
+            "candidates" to "mismatch", "candidates" to "keyDiffers", "candidates" to "keyProviderDiffers" -> {
+                val bad = when (value) { "keyDiffers" -> ModelCandidates.Why.KEY_DIFFERS; "keyProviderDiffers" -> ModelCandidates.Why.KEY_PROVIDER_DIFFERS; else -> ModelCandidates.Why.MR_CONFIG }
+                s.attestation = record.copy(modelCandidates = ModelCandidatesTest.listedFor(listOf(ModelCandidates.Result.Clean, ModelCandidates.Result.Mismatch(bad), ModelCandidates.Result.Clean)))
+            }
+            // kit 0.6.3 (1.1.1, iOS release/1.1.1-patch e2f62bcc, a pick of 05a4d9a0): the model key kept, the model quote gone — what a report with a key and no readable quote parses to
+            // kit 0.6.5 (iOS ba0842d1, 1.1.1 audit A1): a listed enclave's own DCAP verdict, beside an up-to-date one
+            "listedDcap" to "failed" -> dcap = dcap.copy(listed = listOf(upToDate, DcapVerification.Failed("signature invalid")))
+            "listedDcap" to "unchecked" -> dcap = dcap.copy(listed = listOf(upToDate, DcapVerification.Unchecked("collateral: pcs unreachable")))
+            // kit 0.6.6 (iOS 1fe69e3d, 1.1.1 audit A4): a listed enclave's trust scope, beside a clean one. The list is the live one with its second
+            // entry edited to the vector's outcome, and the session builds the scopes itself (1.1.1 audit: no listed-scopes override in the gate).
+            "listedScope" to "bindingMismatch", "listedScope" to "bootMismatch", "listedScope" to "bindingUnchecked", "listedScope" to "bootAbsent" -> {
+                val bad = when (value) {
+                    "bindingMismatch" -> ListedNearScopeTest.Companion.Entry.BINDING_MISMATCH
+                    "bootMismatch" -> ListedNearScopeTest.Companion.Entry.BOOT_MISMATCH
+                    "bindingUnchecked" -> ListedNearScopeTest.Companion.Entry.BINDING_UNCHECKED
+                    else -> ListedNearScopeTest.Companion.Entry.BOOT_ABSENT
+                }
+                val (l, d) = ListedNearScopeTest.liveList(listOf(ListedNearScopeTest.Companion.Entry.CLEAN, bad), dcap)
+                s.attestation = record.copy(modelCandidates = l); dcap = d
+            }
+            "modelQuote" to "absent" -> s.attestation = keyWithNoQuote()
             "nras" to "absent" -> { val r = record.copy(modelIntelQuote = "aa", nvidiaPayload = null); s.attestation = r; s.verifyGpu(r) }
             // kit 0.6.0 (S30): the provenance lookup ended without an answer (T2b, GitHub or Docker Hub unreachable)
             "image" to "inconclusive" -> { s.imageProvenance = null; s.provenanceUnchecked = true }
@@ -88,6 +119,57 @@ class SendGateRuleTest {
         s.dcapVerification = dcap
         s.nearScopeOverride = scope
         return s
+    }
+
+    /** The preview record with its model key kept and no model quote (iOS SendGateRuleTests.keyWithNoQuote). */
+    private fun keyWithNoQuote() = AttestationRecord.preview.copy(modelQuoteVerification = null, modelIntelQuote = null)
+
+    /** Audit v1.1.0-6c5f7a2 LOW: a key no quote proves blocks, and is never the "still checking" ask with send anyway. */
+    @Test fun aModelKeyWithNoQuoteBlocks() {
+        val s = session(mapOf("modelQuote" to "absent"))
+        assertEquals(32, s.attestation?.modelEd25519PubKey?.size)
+        assertTrue(s.degradeIsHardFailure)
+        assertEquals(TrustSendPolicy.BLOCK, s.sendPolicy)
+        assertEquals("the encryption key isn't bound to verified hardware.", s.e2eeDegradedReason)
+    }
+
+    /** 1.1.1 audit A2/A1 (iOS ba0842d1 aForgedListedEnclaveBlocks): a listed enclave whose quote is signed by a key it carries itself blocks the send, through the gate. */
+    @Test fun aForgedListedEnclaveBlocks() {
+        val f = ForgedSibling.load()
+        val s = session(emptyMap())
+        assertEquals(TrustSendPolicy.ALLOW, s.sendPolicy)
+        s.attestation = s.attestation!!.copy(modelCandidates = ModelCandidates.enclaves(f.listBody, f.nonce, f.sealedKey))
+        assertEquals(TrustSendPolicy.BLOCK, s.sendPolicy)
+        assertTrue(s.degradeIsHardFailure)
+    }
+
+    /** 1.1.1 audit A1 (iOS ba0842d1): a listed enclave's DCAP verdict gates like the model leg's: failure blocks, couldn't-check asks. */
+    @Test fun aListedEnclavesDcapGatesLikeTheModelLegs() {
+        val failed = session(mapOf("listedDcap" to "failed"))
+        assertEquals(TrustSendPolicy.BLOCK, failed.sendPolicy)
+        assertTrue(failed.degradeIsHardFailure)
+        val unchecked = session(mapOf("listedDcap" to "unchecked"))
+        assertEquals(session(mapOf("dcap" to "unchecked")).sendPolicy, unchecked.sendPolicy)
+        assertTrue(!unchecked.degradeIsHardFailure)
+    }
+
+    /**
+     * The 1.1.1 audit's case (b): the FIRST enclave's quote forged (report_data = the record's own model key, re-signed by
+     * a key the forger holds, Intel's chain copied) while Intel is unreachable (DCAP Unchecked: the soft outage that asks
+     * "still checking" and lets a tap seal). It must block with no ask: the local verifier sees the attestation key is not
+     * the one the PCK-signed QE report binds, so the key is not bound to verified hardware.
+     */
+    @Test fun aForgedFirstEnclaveWithIntelUnreachableBlocksWithNoAsk() {
+        val record = AttestationRecord.preview
+        val genuine = LiveCandidates.load().list[0].getValue("intel_quote").jsonPrimitive.content.removePrefix("0x").hexToBytes()
+        val forged = ForgedQuote.forge(genuine, record.modelEd25519PubKey!!, ByteArray(32))
+        val s = baselineSession(record.copy(modelQuoteVerification = TdxQuoteVerifier.verify(forged),
+            modelIntelQuote = forged.joinToString("") { "%02x".format(it) }))
+        s.dcapVerification = RecordDcapVerification(gateway = upToDate, model = DcapVerification.Unchecked("collateral: pcs unreachable"))
+        assertEquals("precondition: the forged quote carries the record's key", true, s.attestation?.e2eeKeyInModelReportData)
+        assertTrue(s.degradeIsHardFailure)
+        assertEquals(TrustSendPolicy.BLOCK, s.sendPolicy)
+        assertEquals("blocked", alert(s))
     }
 
     /** The kit's endpoints, as the URLs the snapshot answers name them. */
@@ -179,7 +261,7 @@ class SendGateRuleTest {
             }
             "nonce-not-recorded" -> nras(NrasKit.nrasResponse).verify(NrasKit.nvidiaPayload, null)
             // kit 0.6.1 (S37 B4): a model node that sent no GPU evidence, through the session's own verifyGpu
-            "payload-absent" -> ConfidentialSession(CoroutineScope(Dispatchers.Unconfined), { Provider.nearAI }, services = ConfidentialSession.Services(skipLiveAttestation = true))
+            "payload-absent" -> ConfidentialSession(CoroutineScope(Dispatchers.Unconfined), { Provider.nearAI }, services = ConfidentialSession.Services(skipLiveAttestation = true), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
                 .also { it.verifyGpu(AttestationRecord.preview.copy(modelIntelQuote = "aa", nvidiaPayload = null)) }.gpuAttestation
             else -> null
         }
@@ -215,7 +297,7 @@ class SendGateRuleTest {
             val name = v.getValue("name").jsonPrimitive.content
             val s = session(change(v))
             assertNotNull("$name: precondition, the send would be sealed", s.currentTeeContext()?.e2eePeer)
-            assertNotEquals("$name reached 'end-to-end encryption unavailable · send unencrypted'", "unavailable", alert(s))
+            assertNotEquals("$name reached 'end-to-end encryption unavailable · send without encryption'", "unavailable", alert(s))
         }
     }
 

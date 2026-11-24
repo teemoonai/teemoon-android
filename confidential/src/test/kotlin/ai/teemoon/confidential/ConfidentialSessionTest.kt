@@ -72,7 +72,7 @@ class ConfidentialSessionTest {
     private val offlineServices = ConfidentialSession.Services(skipLiveAttestation = true)
 
     private fun session(scope: CoroutineScope, store: Store, services: ConfidentialSession.Services = offlineServices, warn: (String) -> Unit = {}) =
-        ConfidentialSession(scope, store.source, credentialFor = { "" }, services = services, warn = warn)
+        ConfidentialSession(scope, store.source, credentialFor = { "" }, services = services, warn = warn, sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
 
     /**
      * A store whose active provider is the one AttestationRecord.preview was
@@ -483,6 +483,22 @@ class ConfidentialSessionTest {
     }
 
     /**
+     * 1.1.1 audit integ read, item 5 (iOS ConfidentialSession+Verifiers.swift @ 01a337a4: DCAPService.verify never throws, each quote that
+     * can't be checked is unchecked): a verifier that throws leaves every listed quote unchecked at once, so the listed state reads
+     * "couldn't finish" and not "checking" until the verdict deadline.
+     */
+    @Test fun aVerifierThatThrowsMakesTheListedStateCouldntFinishAtOnce() = runTest {
+        val store = storeMatchingPreviewRecord()
+        val s = session(this, store, ConfidentialSession.Services(skipLiveAttestation = true, directBase = { "https://x/v1" }, verifyDcap = { error("parser bug") }))
+        val record = AttestationRecord.preview.copy(modelCandidates = ModelCandidatesTest.listedFor(listOf(ModelCandidates.Result.Clean, ModelCandidates.Result.Clean)))
+        s.adopt(record, store.active!!)
+        advanceUntilIdle()
+        assertEquals(2, s.dcapVerification?.listed?.size)
+        assertTrue(s.dcapVerification?.listed?.all { it.isUnchecked } == true)
+        assertEquals(KeyCustodyCopy.Listed.UNFINISHED, KeyCustodyCopy.listed(record, s.dcapVerification, NrasVerification.Verified, s.listedNearScopes))
+    }
+
+    /**
      * trust-stale-record (the maintainer 2026-11-06): a record past ATTESTATION_MAX_AGE_SECONDS whose refetch failed is no longer
      * vouched for — SOFT degraded with the existing "couldn't reach the attestation server.", never green forever.
      * Younger, or with the refetch still to come, it stands.
@@ -501,6 +517,24 @@ class ConfidentialSessionTest {
         assertEquals("couldn't reach the attestation server.", s.e2eeDegradedReason)
         s.attestation = AttestationRecord.preview.copy(fetchedAt = now.minusSeconds(ConfidentialSession.ATTESTATION_MAX_AGE_SECONDS - 1))
         assertEquals("young enough: a failed refetch is not news yet", AttestationState.OK, s.attestationState)
+    }
+
+    /**
+     * 1.1.1 audit integ read item 8 (iOS ConfidentialSession+Verdict.swift @ 01a337a4 e2eeDegradedReason): a stale record whose refetch failed is
+     * named right after the missing-attestation guard, before every other cause, so a key fault beside it still reads "couldn't reach the attestation
+     * server." (iOS recordIsStaleAndUnrefreshable). The confirmation key's reason half is that text; attestationState and sendPolicy do not move.
+     */
+    @Test fun aStaleUnrefreshableRecordIsNamedBeforeAKeyFault() = runTest {
+        val now = Instant.parse("2026-11-06T12:00:00Z")
+        val store = storeMatchingPreviewRecord()
+        val s = session(this, store, ConfidentialSession.Services(skipLiveAttestation = true, now = { now }))
+        s.lastRequestUsedE2EE = true
+        s.attestation = AttestationRecord.preview.copy(modelEd25519PubKey = null, fetchedAt = now.minusSeconds(ConfidentialSession.ATTESTATION_MAX_AGE_SECONDS + 1))
+        s.attestationFetchFailed = true
+        assertEquals(AttestationState.DEGRADED, s.attestationState)
+        assertEquals(TrustSendPolicy.CONFIRM, s.sendPolicy)
+        assertEquals("couldn't reach the attestation server.", s.e2eeDegradedReason)
+        assertTrue(s.confirmationKey(pending = false)!!.endsWith("|couldn't reach the attestation server."))
     }
 
     /** Every mutation bumps `changes`, so a collector re-reads the snapshot exactly when the state moved — no polling. */
@@ -1277,5 +1311,102 @@ class ConfidentialSessionTest {
             ConfidentialSession.outcomeWhenNoDirectHost("anthropic/claude-sonnet-5"))
         assertEquals(ConfidentialSession.MissingHostOutcome.ORDINARY,
             ConfidentialSession.outcomeWhenNoDirectHost("moonshotai/kimi-k3"))
+    }
+
+    // --- 1.1.1 audit cut review item 3 (iOS RunningPairBudgetTests, 9d21baba) ---
+
+    private fun sha256Hex(b: ByteArray) = java.security.MessageDigest.getInstance("SHA-256").digest(b).joinToString("") { "%02x".format(it) }
+    private fun composeBodyAt(path: String) = "# $path\nservices:\n  svc:\n    image: nearaidev/x@sha256:abc\n".toByteArray()
+
+    /** Every (commit, file) the log names served, its pinned hash rewritten to match: the healthy cold run (iOS `served`). */
+    private fun served(actions: List<kotlinx.serialization.json.JsonObject>): List<kotlinx.serialization.json.JsonObject> = actions.map { a ->
+        val commit = a["commit"]?.jsonPrimitive?.content; val file = a["file"]?.jsonPrimitive?.content
+        if (commit == null || file == null || a["file_sha256"] == null) a
+        else kotlinx.serialization.json.JsonObject(a + ("file_sha256" to kotlinx.serialization.json.JsonPrimitive(sha256Hex(composeBodyAt(ComposeFiles.url(commit, file).substringAfter("githubusercontent.com"))))))
+    }
+
+    /**
+     * The live list's entry [i] with its compose manager's action log replaced by [actions], the manager quote's report data re-signed over
+     * them (bytes 0..32 = SHA-256 of the canonical actions; 32..64 still the list's nonce): (a) binds it as it binds a live log, so the
+     * session builds this listed enclave's scope itself (ModelCandidates.trustScopes). DCAP is stubbed, so the quote's signature is never read.
+     */
+    private fun entryWithLog(c: LiveCandidates.Capture, i: Int, actions: List<kotlinx.serialization.json.JsonObject>): kotlinx.serialization.json.JsonObject {
+        val entry = c.list[i]
+        val cm = entry.getValue("compose_manager_attestation").jsonObject
+        val arr = kotlinx.serialization.json.JsonArray(actions)
+        val quoteHex = cm.getValue("quote").jsonPrimitive.content
+        val quote = quoteHex.removePrefix("0x").hexToBytes()
+        val reportDataAt = QuoteParser.HEADER_SIZE + 520   // TD report body: 520 bytes of measurements before its 64-byte report data
+        java.security.MessageDigest.getInstance("SHA-256").digest(CanonicalJson.encode(arr).toByteArray(Charsets.UTF_8)).copyInto(quote, reportDataAt)
+        val resigned = (if (quoteHex.startsWith("0x")) "0x" else "") + quote.toHex()
+        val edited = kotlinx.serialization.json.JsonObject(cm + mapOf("actions" to arr, "quote" to kotlinx.serialization.json.JsonPrimitive(resigned)) - "actions_hash")
+        return kotlinx.serialization.json.JsonObject(entry + ("compose_manager_attestation" to edited))
+    }
+
+    private fun runUp(i: Int) = kotlinx.serialization.json.buildJsonObject {
+        put("action", kotlinx.serialization.json.JsonPrimitive("compose_up")); put("commit", kotlinx.serialization.json.JsonPrimitive("c$i"))
+        put("file", kotlinx.serialization.json.JsonPrimitive("prod/f$i.yaml")); put("file_sha256", kotlinx.serialization.json.JsonPrimitive("x"))
+        put("timestamp", kotlinx.serialization.json.JsonPrimitive("2026-11-20T%05d".format(i)))
+    }
+
+    private fun liveLogs(): List<List<kotlinx.serialization.json.JsonObject>> =
+        kotlinx.serialization.json.Json.parseToJsonElement(javaClass.getResource("/fixtures/nearai-trust/nearai_live_actionlogs_20261120.json")!!.readText())
+            .jsonObject.getValue("logs").jsonArray.map { log -> log.jsonArray.map { it.jsonObject } }
+
+    /** Runs the (c) fetch over [logs] (one listed enclave each); the URL paths asked and the scopes it ends with. */
+    private suspend fun kotlinx.coroutines.test.TestScope.fetchLogs(logs: List<List<kotlinx.serialization.json.JsonObject>>, status: Int): Pair<List<String>, List<NearTrustScope>> {
+        val asked = java.util.Collections.synchronizedList(ArrayList<String>())
+        val bodies = HashMap<String, ByteArray>()
+        logs.flatten().forEach { a ->
+            val c = a["commit"]?.jsonPrimitive?.content; val f = a["file"]?.jsonPrimitive?.content
+            if (c != null && f != null) ComposeFiles.url(c, f).substringAfter("githubusercontent.com").let { bodies[it] = composeBodyAt(it) }
+        }
+        ProvenanceService.default = ProvenanceService(http = { url, _ ->
+            val path = java.net.URI(url).path; asked += path
+            if (status == 200) ProvenanceResponse(if (path in bodies) 200 else 404, emptyMap(), bodies[path] ?: ByteArray(0)) else ProvenanceResponse(status, emptyMap(), ByteArray(0))
+        }, cache = InMemoryProvenanceCacheStore(), upgradeAttempted = HashSet(), sleepMs = {}, io = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler))
+        // The listed scopes come from a real record: one live list entry per log, each entry's manager log replaced by it (no test seam in the gate).
+        val c = LiveCandidates.load()
+        require(logs.size <= c.list.size) { "the live list has ${c.list.size} entries" }
+        val listed = ListedNearScopeTest.listed(logs.mapIndexed { i, log -> entryWithLog(c, i, log) }, c.nonce, c.key)
+        val ok = DcapVerification.Verified(DcapTcbStatus.UP_TO_DATE, "", "")
+        val verdict = RecordDcapVerification(manager = ok, listed = List(logs.size) { ok }, listedManagers = List(logs.size) { ok })
+        val s = session(this, storeMatchingPreviewRecord(), services = ConfidentialSession.Services(skipLiveAttestation = true, verifyDcap = { verdict }))
+        val record = AttestationRecord.preview.copy(modelCandidates = listed)
+        s.attestation = record
+        s.verifyDcap(record)
+        advanceUntilIdle()
+        val scopes = s.listedNearScopes.orEmpty()
+        assertEquals("every log is a listed enclave the session bound", List(logs.size) { DeployLogBinding.Bound }, scopes.map { it.deployLogBinding })
+        return asked.toList() to scopes
+    }
+
+    /** A log naming far more files than the budget: it stops at the budget, and nothing past it reads as checked. */
+    @Test fun aRunawayLogStopsAtTheBudgetAsCouldntCheck() = runTest {
+        val (asked, scopes) = fetchLogs(listOf(served((0 until ComposeFiles.FETCH_BUDGET * 5).map(::runUp))), 200)
+        assertEquals("one log made ${asked.size} GitHub fetches", ComposeFiles.FETCH_BUDGET, asked.size)
+        val unread = scopes.single().composeFiles.filter { ComposeFiles.url(it.commit, it.file).substringAfter("githubusercontent.com") !in asked }
+        assertTrue(unread.isNotEmpty())
+        for (p in unread) assertTrue("an unread file read as ${p.check}", p.check == ComposeFileCheck.Inconclusive || p.check == ComposeFileCheck.NotFetched)
+    }
+
+    /** Each listed enclave's log has its own budget: two runaway logs make two budgets' worth, not one shared and not unbounded. */
+    @Test fun eachLogHasItsOwnBudget() = runTest {
+        val log = { tag: String -> served((0 until ComposeFiles.FETCH_BUDGET * 2).map { i -> kotlinx.serialization.json.JsonObject(runUp(i) + ("commit" to kotlinx.serialization.json.JsonPrimitive("$tag$i"))) }) }
+        val (asked, _) = fetchLogs(listOf(log("a"), log("b")), 200)
+        assertEquals(2 * ComposeFiles.FETCH_BUDGET, asked.size)
+    }
+
+    /** The 2026-11-20 capture's three logs, cold, every file served and matching: each fits with room to spare. Also all 404 and all 429: the worst a real log costs. */
+    @Test fun theLiveCaptureLogsFit() = runTest {
+        for (status in listOf(200, 404, 429)) for ((i, log) in liveLogs().withIndex()) {
+            val (asked, scopes) = fetchLogs(listOf(served(log)), status)
+            println("budget-measure status=$status log=$i actions=${log.size} fetches=${asked.size} distinct=${asked.toSet().size}")
+            assertTrue("log $i made ${asked.size} fetches at $status", asked.size < ComposeFiles.FETCH_BUDGET)
+            if (status == 200) {
+                assertTrue("the budget is about twice a healthy cold run", asked.size * 2 <= ComposeFiles.FETCH_BUDGET + 2)
+                assertFalse("a healthy live log ran out of budget", scopes.single().composeFiles.any { it.check == ComposeFileCheck.Inconclusive })
+            }
+        }
     }
 }

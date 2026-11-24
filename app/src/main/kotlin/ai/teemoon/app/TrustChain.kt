@@ -1,15 +1,20 @@
+// ports: teemoon/Views/Chat/TrustLadderView+Hero.swift @ e9e2e747 (design review: the expert bound node takes TrustVerdict.sealedStatus)
+// ports: teemoon/Views/Chat/TrustLadderView+Hero.swift @ 37de10d9 (1.1.1 audit A9: the ladder step 'sealed to <model>'s enclave key')
 // ports: teemoon/Views/Chat/TrustLadder.swift @ v1.0.4 (ChainNode, TrustRung), teemoon/Views/Chat/TrustLadderView+Hero.swift @ v1.0.4
 //        (everydayChain, expertChain, dimDownstream, metaLine) — the ladder's chain as data, pure over the session's record.
+// ports: teemoon/Views/Chat/TrustLadderView+Hero.swift @ a6f11ac7 (1.1.1 audit A7: the bound node reads summary.listedEnclaves); TrustLadder.swift, TrustLadderView+Hero.swift @ 5b56b7b4 (key-custody copy: KeyCustodyCopy.kt)
 package ai.teemoon.app
 
 import ai.teemoon.confidential.AttestationRecord
 import ai.teemoon.confidential.AttestationState
 import ai.teemoon.confidential.AttestationSummary
+import ai.teemoon.confidential.KeyCustodyCopy
 import ai.teemoon.confidential.ModelArtifact
 import ai.teemoon.confidential.RunLink
 import ai.teemoon.confidential.StepState
 import ai.teemoon.confidential.PROVENANCE_UNCHECKED_STEP
 import ai.teemoon.confidential.TrustClaim
+import ai.teemoon.confidential.TrustVerdict
 import ai.teemoon.confidential.toHex
 
 /** One node of the chain rail. Everyday copy is optional; the expert copy is the node's own. */
@@ -68,7 +73,7 @@ object TrustChain {
             nodes += ChainNode("target", if (summary.hardwareChecksPending) ChainNode.Status.PENDING else ChainNode.Status.OK, "encryption target · Ed25519 public key",
                 "your device seals this chat to $modelName's public key before it ever leaves $deviceBoundary.",
                 value = "ed25519:${hex.take(12)}…", copyValue = hex,
-                everydayTitle = "$deviceSubject locks this chat to $modelName", everydayDetail = "before anything leaves your device, it's sealed so only $modelName can open it.")
+                everydayTitle = "$deviceSubject locks this chat to $modelName", everydayDetail = "before anything leaves your device, it's sealed to $modelName's enclave key.")
         } else {
             nodes += ChainNode("target", if (verifying) ChainNode.Status.PENDING else ChainNode.Status.FAIL, "encryption target · Ed25519 public key",
                 if (verifying) "fetching the model's public key…" else "no Ed25519 key — the model's public key is unavailable, so this chat can't be sealed to it.",
@@ -76,9 +81,9 @@ object TrustChain {
                 everydayDetail = if (verifying) "getting $modelName's key…" else "$modelName's key wasn't available, so nothing was sealed to it.")
         }
         nodes += when (summary.e2eeKeyBound) {
-            true -> ChainNode("bound", if (summary.hardwareChecksPending) ChainNode.Status.PENDING else ChainNode.Status.OK, "key bound in the model's TDX quote",
-                "that public key sits in `report_data` of $modelName's hardware quote — the private half never leaves the enclave. no one else (gateway, operator, near.ai) can decrypt.",
-                everydayTitle = "only $modelName holds the key", everydayDetail = "the key to open your chat lives inside $modelName's sealed chip and never leaves it — not near.ai, not the network, nobody else can read your message.")
+            true -> ChainNode("bound", status(TrustVerdict.sealedStatus(summary.hardwareChecksPending, summary.listedEnclaves)), "key bound in the model's TDX quote",
+                KeyCustodyCopy.keyInQuoteExpert(modelName, summary.listedEnclaves),
+                everydayTitle = KeyCustodyCopy.keyHeldEverydayTitle, everydayDetail = KeyCustodyCopy.keyHeldEveryday(summary.listedEnclaves))
             // the key IS in report_data; the quote that carries it didn't verify (trust-quote-failed, the maintainer 2026-11-06)
             false -> if (summary.keyInUnverifiedQuote) ChainNode("bound", ChainNode.Status.FAIL, "key in report_data, but the quote didn't verify",
                 "the public key matches report_data, but the quote's signature or certificate chain failed, so nothing proves this key lives inside the enclave.",
@@ -118,7 +123,7 @@ object TrustChain {
                 value = "${addr.take(6)}…${addr.takeLast(4)}", copyValue = addr)
             else ChainNode("signed", if (verifying) ChainNode.Status.PENDING else ChainNode.Status.OK,
                 if (verifying) "checking each reply's signature" else "every reply comes back signed",
-                if (verifying) "recovering each reply to the enclave signing key…" else "each reply is signed by a key that never leaves the enclave — recover any message to check it yourself.",
+                if (verifying) "recovering each reply to the enclave signing key…" else KeyCustodyCopy.replySignedExpert,
                 value = "${addr.take(6)}…${addr.takeLast(4)}", copyValue = addr)
         } else if (verifying) {
             nodes += ChainNode("signed", ChainNode.Status.PENDING, "checking each reply's signature", "recovering each reply to the enclave signing key…")

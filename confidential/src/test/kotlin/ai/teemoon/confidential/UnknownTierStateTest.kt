@@ -23,7 +23,7 @@ class UnknownTierStateTest {
     private fun verifiedSession(model: String): ConfidentialSession {
         val record = AttestationRecord.preview.copy(model = model)
         val p = Provider.nearAI.copy(id = record.providerID, model = model)
-        val s = ConfidentialSession(CoroutineScope(Dispatchers.Unconfined), { p }, services = ConfidentialSession.Services(skipLiveAttestation = true, now = { record.fetchedAt }))
+        val s = ConfidentialSession(CoroutineScope(Dispatchers.Unconfined), { p }, services = ConfidentialSession.Services(skipLiveAttestation = true, now = { record.fetchedAt }), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         s.attestation = record; s.lastRequestUsedE2EE = true
         s.imageProvenance = ManifestProvenance.AllVerified(listOf(ImageRef("nearaidev/cloud-api", "a".repeat(64))), emptyList())
         val ok = DcapVerification.Verified(DcapTcbStatus.UP_TO_DATE, "", "")

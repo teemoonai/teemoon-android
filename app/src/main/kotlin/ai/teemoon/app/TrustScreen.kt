@@ -1,3 +1,4 @@
+// ports: teemoon/Views/Chat/TrustLadderView+Hero.swift @ 37de10d9 (1.1.1 audit A9: the ladder intro)
 // Renders a TrustSnapshot: the hero verdict, then the everyday chain and
 // pillars or the expert evidence — what you still trust, and the self-verify
 // script. (The documented verification run itself is VerificationRun.kt's
@@ -113,7 +114,7 @@ fun TrustScreen(
             RungPicker(rung) { rung = it }
             // chainSection: the headline, then the rail
             Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                Text("how your words reach ${snapshot.modelName} and come back — with no one else able to read them", style = MaterialTheme.typography.titleSmall)
+                Text("how your words reach ${snapshot.modelName}, sealed to its enclave key", style = MaterialTheme.typography.titleSmall)
                 val nodes = if (rung == TrustRung.EVERYDAY) TrustChain.everyday(snapshot.verdict.everydayClaims, halted = snapshot.chainHalted) else snapshot.expertNodes
                 ChainRail(nodes, rung, onJump = { rung = TrustRung.EXPERT })
             }

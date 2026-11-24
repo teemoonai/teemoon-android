@@ -1,3 +1,6 @@
+// ports: teemoon/Confidential/TrustScope.swift @ 01a337a4 (1.1.1 audit integ read item 2: run(): info.tcb_info as an object or a string holding the JSON)
+// ports: teemoon/Confidential/TrustScope.swift @ 976543da (1.1.1 audit A10 (listedHardBreakReason): a listed scope's break reads the listed-enclave lines, the read scope's own are unchanged)
+// ports: teemoon/Confidential/RunningPairCheck.swift @ 9d21baba (1.1.1 audit cut review item 3: FetchBudget = RunningPairCheck.Budget, ComposeFiles.FETCH_BUDGET = fetchBudget)
 // ports: teemoon/Confidential/TrustScope.swift @ 71f83846 (activeRunning: the sheet's running list is active infrastructure only;
 //        runningSection)
 package ai.teemoon.confidential
@@ -90,6 +93,9 @@ data class NearTrustScope(
         return runningServices.filter { r -> !r.undecidable || hops.any { it.service == r.service && it.source == ChatPath.sourceOf(r) } }
     }
 
+    /** A listed enclave's log teemoon couldn't check: no compose-manager quote, or no boot log. Soft, never clean (1.1.1 audit A4). */
+    val listedEvidenceAbsent: Boolean get() = deployLogBinding is DeployLogBinding.NotBound || bootLogReplay is BootLogReplay.Absent
+
     enum class Severity { NONE, SOFT, HARD }
 
     /** The session's degrade line when this scope is a hard break: (a) first, as iOS orders them. */
@@ -97,6 +103,14 @@ data class NearTrustScope(
         deployLogBinding is DeployLogBinding.Mismatch -> ACTION_LOG_BROKEN
         bootLogReplay is BootLogReplay.Mismatch -> BOOT_LOG_BROKEN
         composeFiles.any { it.check is ComposeFileCheck.Mismatch } -> RECIPE_UNVERIFIED
+        else -> null
+    }
+
+    /** The same break read as a LISTED enclave's: never the read enclave's action-log, boot-log or recipe line (1.1.1 audit A10). */
+    val listedHardBreakReason: String? get() = when {
+        deployLogBinding is DeployLogBinding.Mismatch -> ListedEnclaveReason.ENCLAVE_FAILED
+        bootLogReplay is BootLogReplay.Mismatch -> ListedEnclaveReason.BOOT_LOG
+        composeFiles.any { it.check is ComposeFileCheck.Mismatch } -> ListedEnclaveReason.ENCLAVE_FAILED
         else -> null
     }
 
@@ -130,6 +144,22 @@ data class NearTrustScope(
         const val RECIPE_UNVERIFIED_UNBOUND = "the running recipe doesn't match the action log, so the launched configuration is unverified."
 
         /**
+         * [from] over a node quote's and a compose-manager quote's DCAP verdicts: either side of the TCB comparison unchecked is
+         * not a disagreement, and an unchecked manager quote is not a failure. The read enclave's scope and each listed enclave's
+         * (1.1.1 audit A4) are built through here, so the listed ones are judged exactly as the read one is.
+         */
+        fun fromDcap(report: JsonObject, sentNonceHex: String, nodeQuoteHex: String?, node: DcapVerification?, manager: DcapVerification?,
+                     fetched: Map<Pair<String, String>, ComposeFileFetch>, bodies: Map<DeployLog.Source, String> = emptyMap(), host: String? = null): NearTrustScope {
+            val managerTcb = (manager as? DcapVerification.Verified)?.tcbStatus
+            val nodeTcb = (node as? DcapVerification.Verified)?.tcbStatus
+            val osImageHash = ((report["info"] as? JsonObject)?.get("os_image_hash") as? JsonPrimitive)?.content
+            val unchecked = manager is DcapVerification.Unchecked || (manager != null && node is DcapVerification.Unchecked)
+            return from(report, sentNonceHex, nodeQuoteHex, osImageHash, managerDcap = manager?.takeUnless { it.isUnchecked }?.let { !it.isHardFailure },
+                tcbDiffers = managerTcb != null && nodeTcb != null && managerTcb != nodeTcb, launcherIndex = LauncherIndex.NotChecked,
+                fetched = fetched, hardwareUnchecked = unchecked, bodies = bodies, host = host)
+        }
+
+        /**
          * From the model's attestation report: [report] is one model attestation (it carries
          * compose_manager_attestation and info.tcb_info), [sentNonceHex] the nonce this session sent, [nodeQuoteHex]
          * the model node's quote. [managerDcap]: the manager quote's DCAP verdict, null while it runs; [tcbDiffers]: its
@@ -141,7 +171,12 @@ data class NearTrustScope(
                  fetched: Map<Pair<String, String>, ComposeFileFetch> = emptyMap(), hardwareUnchecked: Boolean = false,
                  bodies: Map<DeployLog.Source, String> = emptyMap(), host: String? = null): NearTrustScope {
             val cm = report["compose_manager_attestation"] as? JsonObject
-            val tcbInfo = (report["info"] as? JsonObject)?.get("tcb_info") as? JsonObject
+            // 1.1.1 audit integ read, item 2 (iOS TrustScope.swift @ 01a337a4 run()): tcb_info is an object, or a string
+            // holding that object's JSON (a node that serialises it twice); read the string as the object, never as absent.
+            val tcbElement = (report["info"] as? JsonObject)?.get("tcb_info")
+            val tcbInfo = tcbElement as? JsonObject
+                ?: (tcbElement as? JsonPrimitive)?.takeIf { it.isString }?.content
+                    ?.let { runCatching { kotlinx.serialization.json.Json.parseToJsonElement(it) as? JsonObject }.getOrNull() }
             val binding = deployLogBinding(cm, sentNonceHex, nodeQuoteHex, managerDcap, tcbDiffers, hardwareUnchecked)
             val actions = cm?.get("actions") as? JsonArray
             val bound = binding == DeployLogBinding.Bound && actions != null
@@ -246,7 +281,27 @@ sealed interface ComposeFileFetch {
     data object Failed : ComposeFileFetch
 }
 
+/**
+ * Fetches left for ONE action log (iOS RunningPairCheck.Budget, 9d21baba, 1.1.1 audit cut review item 3): the whole-file names, the pairs
+ * and the chat path's bodies of one log draw on it together, concurrently or not. Each listed enclave's log is its own, so N listed
+ * enclaves no longer multiply the keyless fetches from raw.githubusercontent.com. Only a request that would go to the network takes
+ * from it: a digest or body already held is free, as iOS's cached outcome and body are. Spent, a file is couldn't-check
+ * ([ComposeFileFetch.Failed], never kept on disk), never a pass.
+ */
+class FetchBudget(fetches: Int = ComposeFiles.FETCH_BUDGET) {
+    private var left = fetches
+    /** One fetch, or false once spent. */
+    @Synchronized fun take(): Boolean { if (left <= 0) return false; left -= 1; return true }
+    @Synchronized fun spent(): Boolean = left <= 0
+}
+
 object ComposeFiles {
+    /**
+     * GitHub fetches one action log may make: about twice the 99 compose files the largest live log named (2026-11-20 capture,
+     * nearai_live_actionlogs_20261120.json; cold runs measured 99/8/21 served, at most 120 under 429). Over it a file is
+     * couldn't-check, never a pass (iOS RunningPairCheck.fetchBudget, 9d21baba).
+     */
+    const val FETCH_BUDGET = 200
     /** At most this many pairs per report are fetched; the rest read "not fetched". */
     const val CAP = 10
 

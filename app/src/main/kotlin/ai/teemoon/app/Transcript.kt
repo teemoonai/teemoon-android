@@ -1,7 +1,7 @@
 // ports: teemoon/Views/Chat/TranscriptViewport.swift @ v1.0.1 (TranscriptAnchorGeometry, TranscriptViewport.resolve),
 //        teemoon/Views/Chat/TranscriptHandoffSizing.swift @ v1.0.1, teemoon/Views/Chat/TranscriptRowHeightCache.swift @ v1.0.1,
 //        teemoon/Views/Chat/TranscriptApplyPolicy.swift @ v1.0.1, teemoon/Views/Chat/FreshStartRule.swift @ v1.0.1 (FreshStart),
-//        teemoon/Views/Chat/FollowGlide.swift @ 5d37f9c2 (the jump rule)
+//        teemoon/Views/Chat/FollowGlide.swift @ 6e45224d (the jump rule; jumpGlideDuration, TranscriptCollectionView.swift)
 //
 // The transcript CONTRACT (docs/UIKIT_TRANSCRIPT.md): the formulas the
 // UIKit transcript obeys, as pure values. The Compose transcript is a human
@@ -112,8 +112,12 @@ data class FollowGlide(val from: Double, val to: Double, val start: Double, val 
          * (motion-pass item 2).
          */
         const val JUMP_THRESHOLD = 80.0
-        /** TranscriptCollectionView.jumpGlideDuration: a reserve-sized move takes the keyboard's 0.25 s, smoothstep. */
-        const val JUMP_GLIDE_DURATION = 0.25
+        /**
+         * TranscriptCollectionView.jumpGlideDuration: a reserve-sized move takes 0.40 s, smoothstep (curve unchanged). At 0.25 s a
+         * typical ~670 pt send moved up to 67 pt a frame at 60 Hz and read as a few big jumps; 0.40 s caps it at ~42 / ~21 pt
+         * (60 / 120 Hz), the time UIKit's own animated scroll takes. The maintainer's choice, 2026-11-19 (iOS 6e45224d).
+         */
+        const val JUMP_GLIDE_DURATION = 0.40
         fun isJump(delta: Double) = delta > JUMP_THRESHOLD
     }
 }

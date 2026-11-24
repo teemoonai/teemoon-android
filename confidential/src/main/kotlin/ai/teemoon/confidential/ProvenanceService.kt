@@ -2,6 +2,7 @@
 //        fetchModelLayerManifest and the verified-digest cache; the parsers are ProvenanceParsing.kt and
 //        the value types ProvenanceTypes.kt)
 //        teemoon/Confidential/ProvenanceService.swift @ v1.0.4 (recentMisses: a clean miss is not asked again within the hour)
+// ports: teemoon/Confidential/RunningPairCheck.swift @ 9d21baba (1.1.1 audit cut review item 3: fetchComposeFile and fetchComposeBody draw on one FetchBudget per action log)
 // ports: teemoon/Confidential/ProvenanceService.swift @ v1.0.4 (fetchAndVerify asks the guessed repo, then the compose repo)
 //        teemoon/Confidential/LauncherIndex.swift + ProvenanceService.swift @ 8cbd15c3 (the launcher's child → index: prod,
 //        latest, the newest 200 of one list; the index signed by its builder; a registry that doesn't answer is T2b);
@@ -195,10 +196,12 @@ class ProvenanceService(
      * first (audit). A 404 or a failed fetch is asked again next time — a network blip must never stand as a verdict,
      * and a file may yet be published.
      */
-    suspend fun fetchComposeFile(commit: String, file: String): ComposeFileFetch = withContext(io) {
+    suspend fun fetchComposeFile(commit: String, file: String, budget: FetchBudget = FetchBudget()): ComposeFileFetch = withContext(io) {
         val key = "$COMPOSE_FILE_KEY$commit/$file"
         // kept as [digest, service names…]: a whole-file entry's walk reads the names (audit's rule A, 2026-11-06)
         cache.load()[key]?.takeIf { it.isNotEmpty() }?.let { return@withContext ComposeFileFetch.Digest(it[0], it.drop(1)) }
+        // One budget per action log (iOS 9d21baba): a fetch past it is couldn't-check, nothing is asked and nothing is kept.
+        if (!budget.take()) return@withContext ComposeFileFetch.Failed
         try {
             val r = http.get(ComposeFiles.url(commit, file), emptyMap())
             when (r.status) {
@@ -222,9 +225,10 @@ class ProvenanceService(
      * A running revision's file, as text, for the chat path and the answering proxy: the same commit-addressed URL as
      * [fetchComposeFile], and only a body that hashes to what the log pins for it. null: not fetched, or not that file.
      */
-    suspend fun fetchComposeBody(source: DeployLog.Source): String? = withContext(io) {
+    suspend fun fetchComposeBody(source: DeployLog.Source, budget: FetchBudget = FetchBudget()): String? = withContext(io) {
         val key = "${source.commit}/${source.file}"
         val bytes = composeBodies[key] ?: try {
+            if (!budget.take()) return@withContext null   // the log's budget is spent (iOS 9d21baba): no body, couldn't-check
             val r = http.get(ComposeFiles.url(source.commit, source.file), emptyMap())
             if (r.status != 200) return@withContext null
             r.body.also { composeBodies[key] = it }

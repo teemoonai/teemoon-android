@@ -44,6 +44,13 @@ class AttestationSummaryTest {
         assertEquals("confirming this conversation runs inside sealed hardware.", none.headerSubtitle)
     }
 
+    /** The maintainer's approved copy (2026-11-21), character for character: no model key, so the privacy pillar names the gateway's ordinary TLS. */
+    @Test fun noModelKeyPrivacyLineIsTheApprovedCopy() {
+        val pillar = makeSummary(clone(AttestationRecord.preview).copy(modelEd25519PubKey = null)).pillars.single { it.id == "private" }
+        assertEquals(PillarState.ATTENTION, pillar.state)
+        assertEquals("Encryption to the model is unavailable right now — messages go to near.ai's gateway over ordinary TLS, not sealed to the model.", pillar.summaryLine)
+    }
+
     // MARK: - All checks pass
 
     @Test fun allChecksPass_previewRecord() {

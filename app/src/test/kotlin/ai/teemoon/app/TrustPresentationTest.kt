@@ -80,7 +80,7 @@ class TrustPresentationTest {
     // MARK: - Snapshots
 
     private val scope = CoroutineScope(Dispatchers.Unconfined)
-    private fun session(provider: Provider?) = ConfidentialSession(scope, { provider }, services = ConfidentialSession.Services(skipLiveAttestation = true))
+    private fun session(provider: Provider?) = ConfidentialSession(scope, { provider }, services = ConfidentialSession.Services(skipLiveAttestation = true), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
 
     @Test fun snapshot_plainCloudProvider_isNotAttestable() {
         val p = Provider(id = "x", name = "acme", endpoint = "https://api.acme.example/v1", model = "acme/big-model")
@@ -89,6 +89,13 @@ class TrustPresentationTest {
         assertNotNull(s.none); assertEquals("not end-to-end encrypted", s.none!!.heroTitle)
         assertTrue(s.none.heroLead.startsWith("acme doesn't offer hardware attestation")); assertEquals("big-model", s.modelName)
         assertEquals(TrustChipMode.NONE, s.chip.mode)
+    }
+
+    /** 1.1.1 audit A9 (iOS 37de10d9): the no-encryption row says what is not sealed, not what "only the model" could open. */
+    @Test fun snapshot_plainCloudProvider_noEncryptionRowCopy() {
+        val p = Provider(id = "x", name = "acme", endpoint = "https://api.acme.example/v1", model = "acme/big-model")
+        val row = trustSnapshot(session(p), p).none!!.rows.first { it.title == "not end-to-end to a sealed model" }
+        assertEquals("acme can read your messages — nothing seals them to the model's hardware.", row.detail)
     }
 
     /**
@@ -196,15 +203,18 @@ class TrustPresentationTest {
         val sess = session(p); sess.attestation = preview
         val pending = trustSnapshot(sess, p)
         assertEquals(ai.teemoon.confidential.TrustClaim.Status.PENDING, pending.verdict.everydayClaims.first { it.id == "sealed" }.status)
-        assertEquals("sealed so only ${pending.modelName} can open it", pending.verdict.everydayClaims.first { it.id == "sealed" }.title)
+        assertEquals("sealed to ${pending.modelName}'s enclave key", pending.verdict.everydayClaims.first { it.id == "sealed" }.title)
         assertEquals(ChainNode.Status.PENDING, pending.expertNodes.first { it.id == "target" }.status)
+        assertEquals("before anything leaves your device, it's sealed to ${pending.modelName}'s enclave key.", pending.expertNodes.first { it.id == "target" }.everydayDetail)
         assertEquals(ChainNode.Status.PENDING, pending.expertNodes.first { it.id == "bound" }.status)
         sess.dcapVerification = ai.teemoon.confidential.RecordDcapVerification(gateway = ai.teemoon.confidential.DcapVerification.Verified(ai.teemoon.confidential.DcapTcbStatus.UP_TO_DATE, "01", ""))
         sess.gpuAttestation = ai.teemoon.confidential.NrasVerification.Verified
         val answered = trustSnapshot(sess, p)
-        assertEquals(ai.teemoon.confidential.TrustClaim.Status.OK, answered.verdict.everydayClaims.first { it.id == "sealed" }.status)
         assertEquals(ChainNode.Status.OK, answered.expertNodes.first { it.id == "target" }.status)
-        assertEquals(ChainNode.Status.OK, answered.expertNodes.first { it.id == "bound" }.status)
+        // iOS e9e2e747 (design review): the sealed row and the "bound" node also follow the listed enclaves; this record carries no
+        // list, so they stay pending beside "teemoon is checking the enclaves near.ai listed…" (the mapping: KeyCustodyListedStatesTest)
+        assertEquals(ai.teemoon.confidential.TrustClaim.Status.PENDING, answered.verdict.everydayClaims.first { it.id == "sealed" }.status)
+        assertEquals(ChainNode.Status.PENDING, answered.expertNodes.first { it.id == "bound" }.status)
     }
 
     /** trust-pending-state Q2 (the maintainer 2026-11-06): the transport row shows while TLS is being checked, not only once it answered. */
@@ -212,7 +222,7 @@ class TrustPresentationTest {
         val preview = AttestationRecord.preview
         val p = Provider.nearAI.copy(id = preview.providerID, model = preview.model ?: Provider.nearAI.model)
         val sess = ConfidentialSession(scope, { p }, services = ConfidentialSession.Services(skipLiveAttestation = true,
-            directBase = { "https://x.completions.near.ai/v1" }, verifyTls = { kotlinx.coroutines.awaitCancellation() }))
+            directBase = { "https://x.completions.near.ai/v1" }, verifyTls = { kotlinx.coroutines.awaitCancellation() }), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         sess.attestation = preview
         sess.verifyTls(p)
         val row = trustSnapshot(sess, p).expert.transport
@@ -229,7 +239,7 @@ class TrustPresentationTest {
     @Test fun anEnclaveSealWaitsForIntel() {
         val preview = AttestationRecord.preview
         val p = Provider.nearAI.copy(id = preview.providerID, model = preview.model ?: Provider.nearAI.model)
-        val sess = ConfidentialSession(scope, { p }, services = ConfidentialSession.Services(skipLiveAttestation = true, verifyDcap = { kotlinx.coroutines.awaitCancellation() }))
+        val sess = ConfidentialSession(scope, { p }, services = ConfidentialSession.Services(skipLiveAttestation = true, verifyDcap = { kotlinx.coroutines.awaitCancellation() }), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         sess.attestation = preview
         sess.imageProvenance = ai.teemoon.confidential.ManifestProvenance.AllVerified(listOf(ai.teemoon.confidential.ImageRef("nearaidev/cloud-api", "a".repeat(64))), emptyList())
         sess.verifyDcap(preview)
@@ -244,7 +254,7 @@ class TrustPresentationTest {
     @Test fun anUnreachableTlsCheckIsCouldntCheckAndAMismatchIsRed() {
         val preview = AttestationRecord.preview
         val p = Provider.nearAI.copy(id = preview.providerID, model = preview.model ?: Provider.nearAI.model)
-        val sess = ConfidentialSession(scope, { p }, services = ConfidentialSession.Services(skipLiveAttestation = true))
+        val sess = ConfidentialSession(scope, { p }, services = ConfidentialSession.Services(skipLiveAttestation = true), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         sess.attestation = preview
         sess.tlsAttestation = ai.teemoon.confidential.TlsAttestation.Inconclusive("no server certificate captured")
         val unreachable = trustSnapshot(sess, p).expert.transport
@@ -280,7 +290,7 @@ class TrustPresentationTest {
 
     /**
      * ios/pm 2026-11-06 (near-send-gate-rule): wherever the seal holds — the key bound in a verified quote, no hard
-     * break — a soft state's question must not say encryption is unavailable or offer "send unencrypted": the message
+     * break — a soft state's question must not say encryption is unavailable or offer "send without encryption": the message
      * would go out sealed. Today an NVIDIA outage (Inconclusive) reaches exactly that alert. Held until iOS lands its
      * "still checking near.ai's hardware" alert and Android matches it.
      */

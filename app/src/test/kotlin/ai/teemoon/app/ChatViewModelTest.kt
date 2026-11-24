@@ -280,7 +280,7 @@ class ChatViewModelTest {
         val near = Provider.nearAI.copy(id = preview.providerID, model = preview.model ?: Provider.nearAI.model)
         val session = ConfidentialSession(this, { near }, credentialFor = { "" },
             services = ConfidentialSession.Services(skipLiveAttestation = true, directBase = { "https://model.example" }, tierDeadlineMs = TIER_WAITS,
-                verifyTls = { delay(300); TlsAttestation.Failed("certificate does not match") }))
+                verifyTls = { delay(300); TlsAttestation.Failed("certificate does not match") }), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         session.attestation = preview
         session.lastRequestUsedE2EE = true
         session.verifyTls(near)
@@ -511,6 +511,26 @@ class ChatViewModelTest {
     }
 
     /**
+     * 1.1.1 audit cut review item 1: a "send anyway" tapped on another ask (soft, list-failed, still-checking) while the tier
+     * flipped to plain is not the downgrade consent. Nothing goes out plain, the model stays armed, and only the
+     * tier-downgrade ask's own answer (downgradeAskShown) accepts it.
+     */
+    @Test fun aSendAnywayOnAnotherAskNeverAcceptsTheTierDowngrade() = runTest(dispatcher) {
+        val model = "zai-org/CUT-REVIEW-1-PROBE"
+        try {
+            val (vm, _, transport) = stillChecking(model = model)
+            val sealed = stillCheckingSession!!.sealedModels
+            sealed.arm(model)
+            ai.teemoon.providers.NearAIModelCatalog.recordTiers(mapOf(model to ai.teemoon.providers.NearAIModelCatalog.Confidentiality.TEE_THIRD_PARTY))
+            vm.send("hello", acceptedDegrade = true, downgradeAskShown = false); advanceUntilIdle()
+            assertEquals("a soft ask's answer sent the message plain", 0, transport.calls)
+            assertEquals("the model was accepted by another ask's answer", setOf(model.lowercase()), sealed.ids)
+            vm.send("hello", acceptedDegrade = true, downgradeAskShown = true); advanceUntilIdle()
+            assertTrue("the downgrade ask's own answer accepts it", sealed.ids.isEmpty())
+        } finally { stillCheckingSession?.clearDerivedState(resetCounts = true); ai.teemoon.providers.NearAIModelCatalog.resetTierCache() }
+    }
+
+    /**
      * Window A (0.6.6 lifecycle/a-turn-started-attestable-never-goes-plain; iOS @ ad43bd60): the turn starts attestable
      * (unknown tier) and the tier resolves to third-party while prepareTurn waits, before the gate, with no ask. It must
      * not leave unsealed: nothing is sent, the question comes back.
@@ -604,7 +624,7 @@ class ChatViewModelTest {
         val near = Provider.nearAI.copy(id = preview.providerID, model = preview.model ?: Provider.nearAI.model)
         val session = ConfidentialSession(this, { activeOverride ?: near }, credentialFor = { "" },
             services = ConfidentialSession.Services(skipLiveAttestation = true, directBase = { "https://model.example" }, tierDeadlineMs = TIER_WAITS,
-                verifyTls = { tls?.await() ?: awaitCancellation() }))
+                verifyTls = { tls?.await() ?: awaitCancellation() }), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         session.attestation = preview
         session.lastRequestUsedE2EE = true
         session.verifyTls(near)
@@ -622,7 +642,7 @@ class ChatViewModelTest {
         var active: Provider = Provider.nearAI.copy(id = preview.providerID, model = preview.model ?: Provider.nearAI.model)
         val session = ConfidentialSession(this, { active }, credentialFor = { "" },
             services = ConfidentialSession.Services(skipLiveAttestation = true, directBase = { "https://model.example" }, tierDeadlineMs = TIER_WAITS,
-                verifyTls = { awaitCancellation() }))
+                verifyTls = { awaitCancellation() }), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         session.attestation = preview
         session.verifyTls(active)
         active = Provider.nvidia.copy(endpoint = "https://api.example.com/v1")

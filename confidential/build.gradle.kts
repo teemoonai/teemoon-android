@@ -21,6 +21,8 @@ android {
             }
         }
     }
+    // 1.1.1 audit integ read, item 7: test doubles shared with :app and :inference (InMemorySealedModelStore)
+    testFixtures { enable = true }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -44,6 +46,8 @@ dependencies {
         // 2026-10-05). 5.19.1's ends at 0x2c000, 16 KB-aligned. A floor, not a fork: dcap-qvl's own pin moves past it.
         implementation("net.java.dev.jna:jna:5.19.1") { because("16 KB-aligned RELRO in libjnidispatch.so") }
     }
+    // the root build opts every Kotlin compile into ExperimentalCoroutinesApi, which needs the artifact on the fixtures classpath (already a dependency)
+    testFixturesImplementation(libs.kotlinx.coroutines.core)
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
     testImplementation(project(":conformance"))

@@ -1,6 +1,10 @@
+// ports: teemoon/Confidential/TrustVerdict.swift @ 86be40f6 (the maintainer 2026-11-20: the reviewed hero is 'encrypted to <model>'s enclave key · <quant>')
+// ports: teemoon/Confidential/TrustVerdict.swift @ e9e2e747 (design review: sealedStatus, the sealed row's mark follows the listed enclaves)
+// ports: teemoon/Confidential/TrustVerdict.swift @ 37de10d9 (1.1.1 audit A9, card trust-copy-sweep-111 v4: heroTitle, heroSubtitle and the sealed row name the enclave key, no 'only it can read')
 // ports: teemoon/Confidential/TrustVerdict.swift @ v1.0.4 (everything but TrustSendPolicy, which is its own file)
 // ports: teemoon/Confidential/TrustVerdict.swift @ v1.0.4 (heroTitle / heroSubtitle: a reviewed leak outranks a provenance gap)
 // ports: teemoon/Confidential/TrustVerdict.swift @ v1.0.4 (chipMode: a mismatch stays on the chip through a provenance sweep)
+// ports: teemoon/Confidential/TrustVerdict.swift @ a6f11ac7 (1.1.1 audit A7: Input.listedEnclaves); before that @ 5b56b7b4 (key-custody copy: KeyCustodyCopy.kt makes the sealed / signed sentences)
 // ports: teemoon/Confidential/TrustVerdict.swift @ 8bfe33cb (trust-leaks-wording: AuditedSealText, heroTitle, heroSubtitle, auditClaim)
 package ai.teemoon.confidential
 
@@ -80,6 +84,7 @@ data class TrustVerdict(
         val provenanceUnchecked: Boolean = false,
         /** DCAP or NVIDIA still checking: the seal step reads checking, not proven (trust-pending-state Q4). */
         val hardwareChecksPending: Boolean = false,
+        val listedEnclaves: KeyCustodyCopy.Listed = KeyCustodyCopy.Listed.CHECKING,
         val provenanceState: StepState? = null,
         val provenanceDetail: String = "",
         val responseSigState: StepState? = null,
@@ -134,6 +139,17 @@ data class TrustVerdict(
                 TrustChipMode.NONE -> state.caption
             }
 
+        /**
+         * The sealed step's mark, everyday row and expert "bound" node alike (iOS e9e2e747, design review 2026-11-20).
+         * Never green beside a listed-enclaves sentence that says otherwise; ALERT is the ladder's soft couldn't-check.
+         */
+        fun sealedStatus(hardwareChecksPending: Boolean, listed: KeyCustodyCopy.Listed): TrustClaim.Status = when (listed) {
+            KeyCustodyCopy.Listed.CHECKED -> if (hardwareChecksPending) TrustClaim.Status.PENDING else TrustClaim.Status.OK
+            KeyCustodyCopy.Listed.CHECKING -> TrustClaim.Status.PENDING
+            KeyCustodyCopy.Listed.LIST_FAILED, KeyCustodyCopy.Listed.UNFINISHED -> TrustClaim.Status.ALERT
+            KeyCustodyCopy.Listed.FAILED -> TrustClaim.Status.FAIL
+        }
+
         fun make(input: Input): TrustVerdict {
             val policy = sendPolicy(
                 requiresConfirmation = input.requiresConfirmation,
@@ -161,10 +177,11 @@ data class TrustVerdict(
             // A reviewed leak outranks a provenance gap: "your words are copied"
             // is the stronger claim, and an unpublished image must not hide it.
             if (input.unpublishedButSealed && input.auditState != EverydayAuditState.LEAKS) return "encrypted to $label — one image unpublished"
-            // "only it can read this" only over a reviewed build whose code was checked (trust-leaks-wording; the
+            // The enclave-key tail only over a reviewed build whose code was checked (trust-leaks-wording; the
             // unchecked half is trust-provenance-unchecked) — otherwise the same words, the tail dropped
             if (input.auditState != EverydayAuditState.REVIEWED || input.provenanceUnchecked) return "encrypted to $label"
-            return "encrypted to $label — only it can read this"
+            // The possessive goes on the model, never the quant ("GLM-5.1 · AWQ's enclave key"; iOS 86be40f6, the maintainer 2026-11-20).
+            return "encrypted to ${input.modelName}'s enclave key" + (input.quant?.let { " · $it" } ?: "")
         }
 
         private fun heroSubtitle(input: Input, paused: Boolean): String {
@@ -189,7 +206,7 @@ data class TrustVerdict(
                 return "your message is still sealed to ${input.modelName}'s hardware key. one running image has no published attestation — see the ladder."
             }
             if (input.auditState != EverydayAuditState.REVIEWED) return AuditedSealText.NOT_REVIEWED
-            return "only you and ${input.modelName}'s sealed hardware can read this chat."
+            return "sealed to ${input.modelName}'s enclave key. near.ai's key service decides which secure enclaves hold it."
         }
 
         private fun everydayClaims(input: Input): List<TrustClaim> {
@@ -200,15 +217,15 @@ data class TrustVerdict(
             nodes.add(TrustClaim("msg", TrustClaim.Status.ORIGIN, title = "your message", detail = "readable only here"))
 
             nodes.add(when (input.e2eeKeyBound) {
-                true -> TrustClaim("sealed", if (input.hardwareChecksPending) TrustClaim.Status.PENDING else TrustClaim.Status.OK,
-                    title = "sealed so only $model can open it",
-                    detail = "before anything leaves ${input.deviceBoundary} it's locked to a key that lives inside $model's sealed chip and never comes out — not ${input.providerDisplayName}, not the network, nobody else can open it.")
+                true -> TrustClaim("sealed", sealedStatus(input.hardwareChecksPending, input.listedEnclaves),
+                    title = "sealed to $model's enclave key",
+                    detail = KeyCustodyCopy.sealedDetail(device = input.deviceBoundary, model = model, listed = input.listedEnclaves))
                 false -> TrustClaim("sealed", TrustClaim.Status.FAIL,
                     title = "couldn't seal this chat",
                     detail = "${input.deviceSubject} couldn't confirm $model holds the key — so nothing has been sent.")
                 null -> TrustClaim("sealed", TrustClaim.Status.PENDING,
                     title = "sealing this chat to $model",
-                    detail = "locking it to a key only $model's sealed chip holds…")
+                    detail = KeyCustodyCopy.sealingPending(model))
             })
 
             nodes.add(when (input.provenanceState) {
@@ -234,11 +251,11 @@ data class TrustVerdict(
             }
 
             if (input.hasSigningAddress || verifying) {
-                val signedDetail = "each answer carries a signature only $model's sealed chip can make, so you know it really came from the model."
+                val signedDetail = KeyCustodyCopy.replySigned(model)
                 nodes.add(when (input.responseSigState) {
                     StepState.STUCK -> TrustClaim("signed", TrustClaim.Status.FAIL,
                         title = "a reply didn't come back signed",
-                        detail = "one answer didn't carry a valid signature from $model's sealed chip.")
+                        detail = KeyCustodyCopy.replySignatureFailed(model))
                     StepState.DONE -> TrustClaim("signed", TrustClaim.Status.OK,
                         title = "every reply comes back signed by $model",
                         detail = signedDetail)

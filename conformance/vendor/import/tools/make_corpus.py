@@ -215,7 +215,7 @@ image_cases = [
     ("img_html", "data:text/html;base64," + base64.b64encode(b"<h1>hi</h1>").decode(), "data:text/html: placeholder"),
     ("img_badb64", "data:image/png;base64,!!!not base64!!!", "invalid base64: placeholder"),
     ("img_http", "http://127.0.0.1:9/never-fetched.png", "an http URL is never fetched: placeholder"),
-    # near.ai's cloud-api stores image_url as sent: a string or {"url": ...} (pm, 2026-11-06).
+    # near.ai's cloud-api stores image_url as sent: a string or {"url": ...} (2026-11-06).
     ("img_object", {"url": url("image/jpeg", valid_jpeg)}, "image_url as an object {url}: a valid JPEG"),
     ("img_avif", url("image/avif", save(quadrants(32, 32), "AVIF")), "AVIF is never decoded: placeholder"),
     ("img_https", "https://127.0.0.1:9/never-fetched.png", "an https URL is never fetched: placeholder"),
@@ -313,7 +313,7 @@ add_main("near-chat-export-v1.json", CHAT, "the per-chat Export chat (.json) fil
 SAMPLE = open(os.path.join(OUT, "sample", "near-export-sample.json"), "rb").read()
 e_s, st_s = expected(SAMPLE); e_s["threadsDetail"] = list(st_s.values())
 cases.append({"name": "near-export-sample.json", "file": "sample/near-export-sample.json", "sha256": sha(SAMPLE),
-              "bytes": len(SAMPLE), "covers": "test 10: pm's readable sample on the real export's structure (invented text, example.* links; the maintainer OK'd committing it 2026-10-25)",
+              "bytes": len(SAMPLE), "covers": "test 10: a readable sample on the real export's structure (invented text, example.* links; the maintainer OK'd committing it 2026-10-25)",
               "expected": e_s})
 add_main("near-export-v1.json", FULL, "the full export; section 7")
 chat_items = json.loads(CHAT)

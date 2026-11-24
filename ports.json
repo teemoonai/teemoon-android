@@ -187,6 +187,11 @@
           "path": "teemoon/Chat/ChatViewModel.swift",
           "sha": "8494cdb9",
           "note": "searchTurnedOff passed to the grounding tools"
+        },
+        {
+          "path": "teemoon/Chat/ChatViewModel.swift",
+          "sha": "v1.1.0",
+          "note": "1.1.1 audit B1 read: the reply-end arming (persistReply) is removed; the transport arms the model as the sealed request goes out"
         }
       ],
       "status": "complete",
@@ -263,6 +268,11 @@
     {
       "kotlin": "inference/src/main/kotlin/ai/teemoon/inference/OpenAiTransport.kt",
       "sources": [
+        {
+          "path": "teemoon/Inference/HTTPTransport.swift",
+          "sha": "6c364e33",
+          "note": "1.1.1 audit B1 read: a sealed request arms its near.ai model as it is handed to the network (TeeContext.noteSealedRequest), before any reply; no byte of the request changes (SealedArmingTest.armingChangesNoByteOfTheRequest)"
+        },
         {
           "path": "teemoon/Inference/HTTPTransport.swift",
           "sha": "v1.0.1",
@@ -394,6 +404,11 @@
           "path": "teemoon/App/teemoonApp.swift",
           "sha": "v1.0.4",
           "note": "LiteRTTransport.warmUp on selection and at launch (AppState.warmUp); @a411f18: 1.0.4 parity: needs_port 1, ported 1 (ported 2026-10-02)"
+        },
+        {
+          "path": "teemoon/Providers/ProviderStore.swift",
+          "sha": "d2d70d45",
+          "note": "removing a near.ai provider clears the sealed-model ids; the store is SharedPreferences"
         }
       ],
       "status": "complete",
@@ -568,7 +583,8 @@
           "note": "liveModelsLoader: cloud lists go through LiveCatalogStore.refresh (maxAge 1 h) — moved here from ModelBrowserLogic.kt, 2026-10-06"
         }
       ],
-      "status": "complete"
+      "status": "complete",
+      "note": "1.1.1 copy (card nearai-descriptions-111, the maintainer 2026-11-21 'wording is good'): the near.ai description and the where-sheet subtitle are the approved wording; iOS release/1.1.1-patch c2de282e still has the old literals, so the sha above is unchanged until iOS lands them."
     },
     {
       "kotlin": "providers/src/main/kotlin/ai/teemoon/providers/WhereGetPolicy.kt",
@@ -1254,10 +1270,72 @@
           "path": "teemoon/Confidential/TrustVerdict.swift",
           "sha": "v1.0.4",
           "note": "chipMode: a mismatch stays on the chip through a provenance sweep (reachable since the 1102bc8 port made a sealed session read VERIFYING); @a411f18: 1.0.4 parity: ported 2"
+        },
+        {
+          "path": "teemoon/Confidential/TrustVerdict.swift",
+          "sha": "5b56b7b4",
+          "note": "(release/1.1.1-patch 5b56b7b4, a pick of 6e92b74d) key-custody copy: the sealed / sealing / signed / signature-failed sentences read KeyCustodyCopy (iOS 1.1.1)"
+        },
+        {
+          "path": "teemoon/Confidential/TrustVerdict.swift",
+          "sha": "a6f11ac7",
+          "note": "(release/1.1.1-patch a6f11ac7) 1.1.1 audit A7 (card key-custody-listed-states v2): Input.listedEnclaves into the sealed claim's detail"
+        },
+        {
+          "path": "teemoon/Confidential/TrustVerdict.swift",
+          "sha": "37de10d9",
+          "note": "1.1.1 audit A9, card trust-copy-sweep-111 v4: heroTitle, heroSubtitle and the sealed row name the enclave key, no 'only it can read'"
+        },
+        {
+          "path": "teemoon/Confidential/TrustVerdict.swift",
+          "sha": "e9e2e747",
+          "note": "design review: sealedStatus, the sealed row's mark follows the listed enclaves"
+        },
+        {
+          "path": "teemoon/Confidential/TrustVerdict.swift",
+          "sha": "86be40f6",
+          "note": "the maintainer 2026-11-20: the reviewed hero is 'encrypted to <model>'s enclave key · <quant>'"
         }
       ],
       "status": "complete",
       "note": "EverydayAuditState + everydayAuditState, TrustClaim, TrustChipMode, TrustVerdict.Input/make/sendPolicy/chipMode/chipCaption and every hero / subtitle / claim sentence verbatim. The claims the UI may make, as data (§9.5)."
+    },
+    {
+      "kotlin": "confidential/src/main/kotlin/ai/teemoon/confidential/KeyCustodyCopy.kt",
+      "sources": [
+        {
+          "path": "teemoon/Confidential/KeyCustodyCopy.swift",
+          "sha": "3c8b7021",
+          "note": "(release/1.1.1-patch 3c8b7021, a pick of 8eb5cc07 over 6e92b74d) approved key-custody copy v2 (the maintainer 2026-11-18) + two constants approved 2026-11-19 (card key-custody-copy-2)"
+        },
+        {
+          "path": "teemoon/Confidential/KeyCustodyCopy.swift",
+          "sha": "a6f11ac7",
+          "note": "(release/1.1.1-patch a6f11ac7) 1.1.1 audit A7 (card key-custody-listed-states v2): Listed (five states), listed(record, dcap), listedSentence / listedTail, 'sealed chips' -> 'secure enclaves' in the sealed detail, everyday line and title; sealedDetail / keyInQuoteExpert / keyHeldEveryday take the state"
+        },
+        {
+          "path": "teemoon/Confidential/KeyCustodyCopy.swift",
+          "sha": "c1eb3f4b",
+          "note": "(release/1.1.1-patch c1eb3f4b) 1.1.1 audit A7 read of a6f11ac7: listed() takes the GPU verdict: rejected -> failed, unreachable or evidence missing -> unfinished, not in yet -> checking. No new copy"
+        },
+        {
+          "path": "teemoon/Confidential/KeyCustodyCopy.swift",
+          "sha": "1fe69e3d",
+          "note": "(release/1.1.1-patch 1fe69e3d) 1.1.1 audit A4: listed() reads the trust scopes"
+        },
+        {
+          "path": "teemoon/Confidential/KeyCustodyCopy.swift",
+          "sha": "37de10d9",
+          "note": "1.1.1 audit A9-6: the expert tail is \"the gateway doesn't hold the key.\""
+        },
+        {
+          "path": "teemoon/Confidential/KeyCustodyCopy.swift",
+          "sha": "39ba0919",
+          "note": "A7 read: listed(deadlinePassed): a missing input reads unfinished past the deadline"
+        }
+      ],
+      "status": "complete",
+      "note": "the key-custody sentences as data; TrustVerdict and TrustChain read them."
     },
     {
       "kotlin": "confidential/src/main/kotlin/ai/teemoon/confidential/AttestationState.kt",
@@ -1310,10 +1388,32 @@
           "path": "teemoonTests/TrustVerdictTests.swift",
           "sha": "v1.0.4",
           "note": "aReviewedLeakOutranksAnUnpublishedImage; @a411f18: 1.0.4 parity: ported 1"
+        },
+        {
+          "path": "teemoonTests/TrustVerdictTests.swift",
+          "sha": "86be40f6",
+          "note": "theQuantFollowsTheModelsEnclaveKey"
         }
       ],
       "status": "complete",
       "note": "7/7 + the rollup test ported; +7 Android-only covering the verifying / self-hosted / none / hard-failure / plural / failed-claim branches the Swift suite leaves to the views."
+    },
+    {
+      "kotlin": "app/src/test/kotlin/ai/teemoon/app/KeyCustodyCopyTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/KeyCustodyCopyTests.swift",
+          "sha": "5b56b7b4",
+          "note": "(release/1.1.1-patch 5b56b7b4, a pick of 6e92b74d) the tripwire: iOS's \"only \\(\" is Kotlin's \"only $\"; scans every module's src/main/kotlin"
+        },
+        {
+          "path": "teemoonTests/KeyCustodyCopyTests.swift",
+          "sha": "37de10d9",
+          "note": "1.1.1 audit A9: the card's banned list over every string literal; a Kotlin lexer in place of iOS's Swift lexer"
+        }
+      ],
+      "status": "complete",
+      "note": "1/1"
     },
     {
       "kotlin": "providers/src/test/kotlin/ai/teemoon/providers/EndpointModelCatalogTest.kt",
@@ -1360,10 +1460,45 @@
           "path": "teemoon/Confidential/AttestationSummary.swift",
           "sha": "v1.1.0",
           "note": "A2: the GPU row is NVIDIA's result; no-evidence line; the GPU secure enclave row deleted"
+        },
+        {
+          "path": "teemoon/Confidential/AttestationSummary.swift",
+          "sha": "a6f11ac7",
+          "note": "(release/1.1.1-patch a6f11ac7) 1.1.1 audit A7 (card key-custody-listed-states v2): listedEnclaves"
+        },
+        {
+          "path": "teemoon/Confidential/AttestationSummary.swift",
+          "sha": "c1eb3f4b",
+          "note": "(release/1.1.1-patch c1eb3f4b) 1.1.1 audit A7 read of a6f11ac7: listedEnclaves passes nrasVerification"
+        },
+        {
+          "path": "teemoon/Confidential/AttestationSummary.swift",
+          "sha": "1fe69e3d",
+          "note": "(release/1.1.1-patch 1fe69e3d) 1.1.1 audit A4: listedTrustScopes"
+        },
+        {
+          "path": "teemoon/Confidential/AttestationSummary.swift",
+          "sha": "37de10d9",
+          "note": "1.1.1 audit A9: headerSubtitle, the key rows and the private pillar line"
+        },
+        {
+          "path": "teemoon/Confidential/AttestationSummary.swift",
+          "sha": "49608f08",
+          "note": "1.1.1 audit A10: gpuRowDetail keeps NVIDIA's reason beside a listed enclave's line"
+        },
+        {
+          "path": "teemoon/Confidential/AttestationSummary.swift",
+          "sha": "36d53c97",
+          "note": "listedInconclusive: nrasState, nrasDetail, the expert row"
+        },
+        {
+          "path": "teemoon/Confidential/AttestationSummary.swift",
+          "sha": "39ba0919",
+          "note": "deadlinePassed threads into listedEnclaves (Android: session.tierGaveUp)"
         }
       ],
       "status": "complete",
-      "note": "PillarState/PillarCheck/AttestationPillar, the header (severity/title/subtitle/icon), every check and detail line, pillars, evidence strings, shareText. runResult is computed from verificationRun (VerificationRun.kt) — the hero is never greener than its worst section. Date formatting uses java.time localized styles where iOS uses Date.formatted."
+      "note": "PillarState/PillarCheck/AttestationPillar, the header (severity/title/subtitle/icon), every check and detail line, pillars, evidence strings, shareText. runResult is computed from verificationRun (VerificationRun.kt) — the hero is never greener than its worst section. Date formatting uses java.time localized styles where iOS uses Date.formatted. | 1.1.1 copy (the maintainer 2026-11-21, typed 'yes'; card tee-glossary-111 for the primer): the no-model-key privacy line is the approved wording; iOS release/1.1.1-patch c2de282e still has the old literal, so the sha above is unchanged until iOS lands it (Android ahead on copy)."
     },
     {
       "kotlin": "confidential/src/main/kotlin/ai/teemoon/confidential/AttestationRecord.kt",
@@ -1377,6 +1512,21 @@
           "path": "teemoon/Confidential/AttestationRecord.swift",
           "sha": "v1.1.0",
           "note": "S37: advertised report_data per leg, modelComposeManifest, modelNodesBootedTheirCompose in codeIdentityVerified"
+        },
+        {
+          "path": "teemoon/Confidential/AttestationRecord.swift",
+          "sha": "7814a0fd",
+          "note": "(release/1.1.1-patch 7814a0fd, a pick of fe3fa623) 1.1.1 C3a: modelCandidates, modelCandidatesListFailed, candidatesBroken, candidatesReason (the extension on AttestationRecord in ModelCandidates.swift)"
+        },
+        {
+          "path": "teemoon/Confidential/ModelCandidates.swift",
+          "sha": "bf762777",
+          "note": "(release/1.1.1-patch bf762777) 1.1.1 audit A12/A15: candidatesReason's copy-card marker (trust-copy-sweep-111): a listed enclave holding another key keeps blocking and gets its own line later; no new string"
+        },
+        {
+          "path": "teemoon/Confidential/ModelCandidates.swift",
+          "sha": "976543da",
+          "note": "1.1.1 audit A10/A12/A13, card trust-copy-sweep-111 v4: candidatesReason reads ListedEnclaveReason"
         }
       ],
       "status": "complete",
@@ -1421,6 +1571,16 @@
           "path": "teemoon/Confidential/DCAPService.swift",
           "sha": "v1.0.6",
           "note": "RecordDCAPVerification + rollups; @9722921: TCB allow-list: hasHardFailure + failureReason for a non-accepted status"
+        },
+        {
+          "path": "teemoon/Confidential/DCAPService.swift",
+          "sha": "ba0842d1",
+          "note": "(release/1.1.1-patch ba0842d1) 1.1.1 audit A1: RecordDcapVerification.listed read by hasHardFailure, hasUnchecked, worstTcbStatus, allPresentVerified, failureReason"
+        },
+        {
+          "path": "teemoon/Confidential/DCAPService.swift",
+          "sha": "1fe69e3d",
+          "note": "(release/1.1.1-patch 1fe69e3d) 1.1.1 audit A4: RecordDcapVerification.listedManagers (each listed enclave's compose-manager quote, outside present)"
         }
       ],
       "status": "complete",
@@ -1433,6 +1593,21 @@
           "path": "teemoon/Confidential/NRASService.swift",
           "sha": "ee5d1b51",
           "note": "NRASVerification value type; the service is NrasService.kt; @d382a55: d382a55 touched only the service; the value type is unchanged; @ee5d1b51: near-gate-nvidia-tls-split: teemoonFault (TEEMOON_FAULT = ConfidentialSession.VERIFIER_ERROR, one string); Failed now also malformed evidence, Inconclusive an outage or teemoon's fault"
+        },
+        {
+          "path": "teemoon/Confidential/NRASService.swift",
+          "sha": "ceb05738",
+          "note": "(release/1.1.1-patch ceb05738) 1.1.1 audit A3: NRASVerification.worst, the record's GPU verdict over the model leg and every listed enclave"
+        },
+        {
+          "path": "teemoon/Confidential/NRASService.swift",
+          "sha": "49608f08",
+          "note": "1.1.1 audit A10: listedFailed(nvidia:), hard, reason is the A10 line"
+        },
+        {
+          "path": "teemoon/Confidential/NRASService.swift",
+          "sha": "36d53c97",
+          "note": "1.1.1 audit A10: listedInconclusive(nvidia:), soft; worst-of order: hard > read inconclusive > listed inconclusive > verified"
         }
       ],
       "status": "complete",
@@ -1657,6 +1832,11 @@
         },
         {
           "path": "teemoon/Confidential/ConfidentialSession+Verdict.swift",
+          "sha": "e2f62bcc",
+          "note": "(release/1.1.1-patch e2f62bcc, a pick of 05a4d9a0) 1.1.1 audit LOW: degradeIsHardFailure counts a model key with no readable quote (modelQuoteVerification null) as a hard failure; e2eeDegradedReason's no-quote branch is the existing line 'the encryption key isn't bound to verified hardware.'; kit 0.6.3 evidence/model-key-no-quote"
+        },
+        {
+          "path": "teemoon/Confidential/ConfidentialSession+Verdict.swift",
           "sha": "v1.0.4",
           "note": "@a411f18: 1.0.4 parity: ported 2; degrade reasons' words @ e0c15c3 (approved lowercase); the rest of the file as cited"
         },
@@ -1754,6 +1934,86 @@
           "path": "teemoon/Confidential/ConfidentialSession+Verdict.swift",
           "sha": "123d0b28",
           "note": "A1: the TLS banners name the model node's certificate"
+        },
+        {
+          "path": "teemoon/Confidential/ConfidentialSession+Verdict.swift",
+          "sha": "7814a0fd",
+          "note": "(release/1.1.1-patch 7814a0fd, a pick of fe3fa623) 1.1.1 C3a: candidatesBroken in attestationState / e2eeBindingIntact / degradeIsHardFailure, candidatesReason in e2eeDegradedReason, modelCandidatesListFailed (soft: EVIDENCE_ABSENT) in attestationState / e2eeDegradedReason / unpublishedOnlyButE2EEIntact"
+        },
+        {
+          "path": "teemoon/Confidential/ConfidentialSession+Verifiers.swift",
+          "sha": "ceb05738",
+          "note": "(release/1.1.1-patch ceb05738) 1.1.1 audit A3: verifyGPU runs the model leg's payload and every listed enclave's (against the list's nonce) through the same NRAS service in parallel; gpuAttestation is the worst, in input order"
+        },
+        {
+          "path": "teemoon/Confidential/ConfidentialSession+Verdict.swift",
+          "sha": "1fe69e3d",
+          "note": "(release/1.1.1-patch 1fe69e3d) 1.1.1 audit A4: listedNearScopes (iOS listedTrustScopes) read by attestationState, degradeIsHardFailure, e2eeDegradedReason, couldntCheckHardware, unpublishedOnlyButE2EEIntact; listedScopeBroken, listedScopeEvidenceAbsent. Android derives the scopes from the record + the DCAP pass instead of a held task (verdictsPending needs no new term)"
+        },
+        {
+          "path": "teemoon/Confidential/ConfidentialSession+Verifiers.swift",
+          "sha": "1fe69e3d",
+          "note": "(release/1.1.1-patch 1fe69e3d) 1.1.1 audit A4: verifyComposeFiles fetches the running pairs of every bound listed scope with the read enclave's (iOS verifyTrustScope runs TrustScope.run per listed enclave)"
+        },
+        {
+          "path": "teemoon/Confidential/ConfidentialSession+Verifiers.swift",
+          "sha": "c5e329f2",
+          "note": "(release/1.1.1-patch c5e329f2) 1.1.1 audit A5: listed scopes get record.gpuNodeHost and the compose bodies; verifyComposeFiles fetches the bodies of every bound listed scope's running revisions beside the read enclave's"
+        },
+        {
+          "path": "teemoon/Confidential/ConfidentialSession+Verdict.swift",
+          "sha": "976543da",
+          "note": "1.1.1 audit A10: e2eeDegradedReason names a listed enclave's DCAP, NVIDIA, action-log, boot-log and list failures; the read enclave keeps its own lines"
+        },
+        {
+          "path": "teemoon/Confidential/ConfidentialSession+Verifiers.swift",
+          "sha": "976543da",
+          "note": "1.1.1 audit A10: a listed enclave's NVIDIA rejection is recorded as the A10 line"
+        },
+        {
+          "path": "teemoon/Confidential/ConfidentialSession+Verdict.swift",
+          "sha": "beb43b71",
+          "note": "1.1.1 audit A8: enclaveListFailedAsks"
+        },
+        {
+          "path": "teemoon/Confidential/ConfidentialSession+Verifiers.swift",
+          "sha": "49608f08",
+          "note": "1.1.1 audit A10: a listed NVIDIA rejection is ListedFailed(nvidia)"
+        },
+        {
+          "path": "teemoon/Confidential/ConfidentialSession+Verdict.swift",
+          "sha": "38850f79",
+          "note": "pm 2026-11-20: a listed enclave's unchecked DCAP reads the A7 unfinished line; an unchecked read leg keeps the Intel line"
+        },
+        {
+          "path": "teemoon/Confidential/ConfidentialSession+Verdict.swift",
+          "sha": "217dc4cb",
+          "note": "sendPolicy's downgrade guard first; rememberConfirmation accepts it (SealedModels.accept); 217dc4cb: hasConfirmed is false while sealedModelWentPlain"
+        },
+        {
+          "path": "teemoon/Confidential/ConfidentialSession.swift",
+          "sha": "d2d70d45",
+          "note": "sealedModels ctor seam"
+        },
+        {
+          "path": "teemoon/Confidential/ConfidentialSession+Verdict.swift",
+          "sha": "01a337a4",
+          "note": "(release/1.1.1-patch 01a337a4) 1.1.1 audit integ read item 3: e2eeDegradedReason: teemoon-fault lines (GPU, TLS), no-evidence, listed verdicts, the GPU own, the TLS own, in iOS order"
+        },
+        {
+          "path": "teemoon/Confidential/ConfidentialSession+Verifiers.swift",
+          "sha": "01a337a4",
+          "note": "(release/1.1.1-patch 01a337a4) 1.1.1 audit integ read item 5: verifyDCAP never throws: a verifier that throws leaves every quote, the listed ones too, unchecked"
+        },
+        {
+          "path": "teemoon/Confidential/ConfidentialSession+Verdict.swift",
+          "sha": "01a337a4",
+          "note": "(release/1.1.1-patch 01a337a4) 1.1.1 audit integ read item 8: e2eeDegradedReason: the stale-unrefreshable record is named right after the missing-attestation guard, before every other cause"
+        },
+        {
+          "path": "teemoon/Confidential/TrustScope.swift",
+          "sha": "9d21baba",
+          "note": "(release/1.1.1-patch 9d21baba) 1.1.1 audit cut review item 3: verifyComposeFiles gives each action log (the read enclave's and each listed one's) one FetchBudget over names + pairs + bodies; TrustScope.running(budget:) twin"
         }
       ],
       "status": "complete",
@@ -1923,6 +2183,11 @@
           "path": "teemoon/Confidential/ProvenanceService.swift",
           "sha": "v1.0.4",
           "note": "fallbackRepos, githubRepos(forImage:); @a411f18: 1.0.4 parity: no_behavior 1, ported 2"
+        },
+        {
+          "path": "teemoon/Confidential/ProvenanceService.swift",
+          "sha": "a5a3f6d3",
+          "note": "1.1.1 audit C5: repoAliases gains compose-manager-otelcol (internal)"
         }
       ],
       "status": "complete",
@@ -1964,6 +2229,11 @@
           "path": "teemoonTests/ImageProvenanceTests.swift",
           "sha": "v1.0.4",
           "note": "'ProvenanceService parsing' (9) + 'manifest parsing' (3) suites; the Sigstore, cache-upgrade and 404 suites stay with the verifier row; @a411f18: 1.0.4 parity: no_behavior 1, ported 2"
+        },
+        {
+          "path": "teemoonTests/ImageProvenanceTests.swift",
+          "sha": "a5a3f6d3",
+          "note": "launcherImage_queriesComposeManagerRepo gains the otelcol line (C5)"
         }
       ],
       "status": "complete"
@@ -2034,6 +2304,11 @@
           "path": "teemoon/Confidential/SelfVerifyScript.swift",
           "sha": "v1.1.0",
           "note": "A1: §5 heading"
+        },
+        {
+          "path": "teemoon/Confidential/SelfVerifyScript.swift",
+          "sha": "a5a3f6d3",
+          "note": "1.1.1 audit C5: REPO_ALIASES gains compose-manager-otelcol"
         }
       ],
       "status": "complete",
@@ -2051,6 +2326,11 @@
           "path": "teemoonTests/SelfVerifyScriptTests.swift",
           "sha": "v1.0.4",
           "note": "the FALLBACK_REPOS pin; @a411f18: 1.0.4 parity: ported 1"
+        },
+        {
+          "path": "teemoonTests/SelfVerifyScriptTests.swift",
+          "sha": "a5a3f6d3",
+          "note": "repoAliasesRestateTheApp (C5)"
         }
       ],
       "status": "complete"
@@ -2473,6 +2753,21 @@
           "path": "Packages/TDXQuoteVerifier/Sources/TDXQuoteVerifier/IntelRootCA.swift",
           "sha": "v1.0.1",
           "note": "the PEM pin; Intel's root exists in two encodings sharing one key — both fingerprints recorded; the iOS fingerprint comment matches neither (doc defect)"
+        },
+        {
+          "path": "Packages/TDXQuoteVerifier/Sources/TDXQuoteVerifier/TDXQuote.swift",
+          "sha": "ba0842d1",
+          "note": "(release/1.1.1-patch ba0842d1) 1.1.1 audit A2: SignatureData.qeReport / qeReportSignature / qeAuthData from the type-6 certification data"
+        },
+        {
+          "path": "Packages/TDXQuoteVerifier/Sources/TDXQuoteVerifier/TDXQuoteVerifier.swift",
+          "sha": "ba0842d1",
+          "note": "(release/1.1.1-patch ba0842d1) 1.1.1 audit A2: attestationKeyIsBoundToChain (QE report signed by the PCK leaf, report_data = sha256(attestation key || QE auth data) || 32 zeros) folded into signatureValid"
+        },
+        {
+          "path": "Packages/TDXQuoteVerifier/Sources/TDXQuoteVerifier/TDXQuoteVerifier.swift",
+          "sha": "ba82440f",
+          "note": "(release/1.1.1-patch 21f04a5e + ba82440f) 1.1.1 audit A2: the QE report must be Intel's TD Quoting Enclave's: reportIsIntelsTdQuotingEnclave, MRSIGNER / ISVPRODID 2 / MISCSELECT / attributes pinned from the kit's qe_identity (collateral.json, id TD_QE); the compare is isTdQe, injectable for the test"
         }
       ],
       "status": "complete",
@@ -2506,6 +2801,21 @@
           "path": "teemoon/Confidential/DCAPService.swift",
           "sha": "v1.1.0",
           "note": "S37: teemoon's own quote checks before Intel; advertised report_data held to the verified quote"
+        },
+        {
+          "path": "teemoon/Confidential/DCAPService.swift",
+          "sha": "ba0842d1",
+          "note": "(release/1.1.1-patch ba0842d1) 1.1.1 audit A1: every listed enclave's quote through verifyQuote into RecordDcapVerification.listed"
+        },
+        {
+          "path": "teemoon/Confidential/DCAPService.swift",
+          "sha": "1fe69e3d",
+          "note": "(release/1.1.1-patch 1fe69e3d) 1.1.1 audit A4: each listed enclave's compose-manager quote verified in the same pass as the listed node quotes (e86b13cd's one-pass rule already holds on Android: no second verification)"
+        },
+        {
+          "path": "teemoon/Confidential/DCAPService.swift",
+          "sha": "e86b13cd",
+          "note": "(release/1.1.1-patch e86b13cd) 1.1.1 audit A4 read: dcap-qvl's answer memoised by quote for one record's pass (iOS forOneRecord/DCAPMemo); Android's listed scopes already derive from the one verification, so the double pass never existed; a quote two legs carry (the read enclave is one of the listed) now goes to Intel once"
         }
       ],
       "status": "complete",
@@ -2572,6 +2882,11 @@
       "kotlin": "confidential/src/main/kotlin/ai/teemoon/confidential/AttestationService.kt",
       "sources": [
         {
+          "path": "teemoon/Inference/ConfidentialLanguageModel.swift",
+          "sha": "6c364e33",
+          "note": "TeeContext.sealedModels + noteSealedRequest (TEEContext.noteSealedRequest); currentTeeContext sets it for near.ai only"
+        },
+        {
           "path": "teemoon/Confidential/AttestationService.swift",
           "sha": "v1.0.6",
           "note": "@ebc9bdb: awaitValue's task-group race: no Android counterpart — the model leg is withTimeoutOrNull { task.await() }, which cancels the await at the cap"
@@ -2602,6 +2917,31 @@
           "path": "teemoon/Confidential/AttestationService+Reports.swift",
           "sha": "v1.1.0",
           "note": "S37: report_data per leg, the model leg's app_compose (quoteLegString)"
+        },
+        {
+          "path": "teemoon/Confidential/AttestationService.swift",
+          "sha": "7814a0fd",
+          "note": "(release/1.1.1-patch 7814a0fd, a pick of fe3fa623) 1.1.1 C3a: fetchCandidateList (gateway ?model=&signing_algo=ed25519&nonce, up to 3 attempts, same host as the attestation fetch), adoptCandidates; asked only once the model leg yields a key. iOS's awaitValue 15 s race is withTimeoutOrNull(15_000), as the model leg's"
+        },
+        {
+          "path": "teemoon/Inference/HTTPClient.swift",
+          "sha": "5e36628e",
+          "note": "(release/1.1.1-patch 5e36628e) 1.1.1 audit A11: data(for:limit:) is AttestationService.getLimited (OkHttp streams and cancels past the limit or the Content-Length); a planted-bytes seam is checked on what it returns; HttpBodyTooLarge"
+        },
+        {
+          "path": "teemoon/Confidential/ModelCandidates.swift",
+          "sha": "5e36628e",
+          "note": "(release/1.1.1-patch 5e36628e) 1.1.1 audit A11: fetchCandidateList reads the list with the 4 MB limit (86c7c6ce's maxListBytes, here MAX_LIST_BYTES); an oversize body is a list that didn't load, never retried. 86c7c6ce's 8-entry cap is NOT ported (not asked)"
+        },
+        {
+          "path": "teemoon/Confidential/ModelCandidates.swift",
+          "sha": "01a337a4",
+          "note": "(release/1.1.1-patch 01a337a4) 1.1.1 audit integ read item 1: candidateList: the list request is cancelled at its 15 s cap and with its caller (enqueue + cancel on cancellation)"
+        },
+        {
+          "path": "teemoon/Inference/HTTPClient.swift",
+          "sha": "01a337a4",
+          "note": "(release/1.1.1-patch 01a337a4) 1.1.1 audit integ read item 4: data(for:limit:) is a client capability (LimitedHttp), never an identity check"
         }
       ],
       "tests": [
@@ -2692,6 +3032,11 @@
           "path": "teemoon/Confidential/ProvenanceService.swift",
           "sha": "v1.1.0",
           "note": "the registry's inconclusive lookup is a Docker Hub outage"
+        },
+        {
+          "path": "teemoon/Confidential/RunningPairCheck.swift",
+          "sha": "9d21baba",
+          "note": "(release/1.1.1-patch 9d21baba) 1.1.1 audit cut review item 3: fetchComposeFile and fetchComposeBody take a FetchBudget (RunningPairCheck.Budget); a spent budget asks nothing and keeps nothing"
         }
       ],
       "tests": [
@@ -2728,6 +3073,26 @@
           "path": "teemoon/Presentation/SendChoices.swift",
           "sha": "38647a07",
           "note": "S30: E2EEAsk and the two provenance questions"
+        },
+        {
+          "path": "teemoon/Presentation/SendChoices.swift",
+          "sha": "37de10d9",
+          "note": "1.1.1 audit A9: the can't-seal message"
+        },
+        {
+          "path": "teemoon/Presentation/SendChoices.swift",
+          "sha": "beb43b71",
+          "note": "1.1.1 audit A8: the failed-list ask (listFailed title, message, choices) and E2EEAsk.make's enclaveListFailed"
+        },
+        {
+          "path": "teemoon/Confidential/TierDowngrade.swift",
+          "sha": "d2d70d45",
+          "note": "the sheet: send without encryption | don't send (ChatView.e2eeAsk's first line, via TrustPresentation)"
+        },
+        {
+          "path": "teemoon/Presentation/SendChoices.swift",
+          "sha": "01a337a4",
+          "note": "(release/1.1.1-patch 01a337a4) 1.1.1 audit integ read item 6: E2EEAsk.make: tier-unchecked before provenance-unchecked and only when softButSealed (tierGaveUp is deadlinePassed)"
         }
       ],
       "status": "complete"
@@ -2799,10 +3164,45 @@
           "path": "teemoon/Confidential/AttestationSummary.swift",
           "sha": "v1.1.0",
           "note": "A1: the transport card (title, subtitle, label, row words)"
+        },
+        {
+          "path": "teemoon/Views/Chat/TrustLadderView.swift",
+          "sha": "1fe69e3d",
+          "note": "(release/1.1.1-patch 1fe69e3d) 1.1.1 audit A4: the summary carries session.listedNearScopes (TrustLadderView passes listedEnclaves; VerificationRunView.swift's one line is Android's VerificationRun, unchanged here)"
+        },
+        {
+          "path": "teemoon/Confidential/TrustVerdict.swift",
+          "sha": "c5e329f2",
+          "note": "(release/1.1.1-patch c5e329f2) 1.1.1 audit A5: ModelNodeAudit.state over the listed enclaves: nodeAuditRollup (iOS rollup, extracted), listedAuditState, worstAudit; a failed list reads incomplete; a running row with no source is not covered; the send gate never reads it"
+        },
+        {
+          "path": "teemoon/Views/Chat/TrustLadderView+Hero.swift",
+          "sha": "c5e329f2",
+          "note": "(release/1.1.1-patch c5e329f2) 1.1.1 audit A5: modelNodeAudit passes the listed enclaves, listFailed and listedNearScopes (VerificationRunView's call has no Android twin)"
+        },
+        {
+          "path": "teemoon/Views/Chat/TrustLadderView+None.swift",
+          "sha": "37de10d9",
+          "note": "1.1.1 audit A9: the no-encryption row"
+        },
+        {
+          "path": "teemoon/Views/Chat/TrustLadderView+Hero.swift",
+          "sha": "37de10d9",
+          "note": "1.1.1 audit A9: the LEAKS-demotion comment shrinks"
+        },
+        {
+          "path": "teemoon/Views/Chat/ChatView.swift",
+          "sha": "beb43b71",
+          "note": "1.1.1 audit A8: the ask is built with session.enclaveListFailedAsks"
+        },
+        {
+          "path": "teemoon/Views/Chat/TrustLadderView.swift",
+          "sha": "39ba0919",
+          "note": "the summary takes deadlinePassed = session.tierGaveUp"
         }
       ],
       "status": "complete",
-      "note": "the pure state holder: no Android imports, no authored trust language. SendPrep/prepareSend were duplicated here until 2026-09-20 and are now only chat/SendPrep.kt."
+      "note": "the pure state holder: no Android imports, no authored trust language. SendPrep/prepareSend were duplicated here until 2026-09-20 and are now only chat/SendPrep.kt. | 1.1.1 copy (the maintainer 2026-11-21, typed 'yes'; card tee-glossary-111 for the primer): the glossary primer's first beat is the approved wording; iOS release/1.1.1-patch c2de282e still has the old literal, so the sha above is unchanged until iOS lands it (Android ahead on copy)."
     },
     {
       "kotlin": "app/src/main/kotlin/ai/teemoon/app/TrustScreen.kt",
@@ -2826,6 +3226,11 @@
           "path": "teemoon/Views/Chat/TrustLadderView+None.swift",
           "sha": "v1.0.4",
           "note": "encryptedModelChoices / loadEncryptedChoices: the sealed picker (ModelBrowserDoor.encryptedPicker), wired in MainActivity's Browse(encryptedOnly) route; @a411f18: 1.0.4 parity: no_behavior 2, ported 3"
+        },
+        {
+          "path": "teemoon/Views/Chat/TrustLadderView+Hero.swift",
+          "sha": "37de10d9",
+          "note": "1.1.1 audit A9: the ladder intro"
         }
       ],
       "status": "complete",
@@ -2950,7 +3355,7 @@
         }
       ],
       "status": "complete",
-      "note": "consoleRecovery takes the LLMError parts (the error type is :inference)"
+      "note": "consoleRecovery takes the LLMError parts (the error type is :inference) | 1.1.1 copy (card nearai-descriptions-111, the maintainer 2026-11-21 'wording is good'): the near.ai description and the where-sheet subtitle are the approved wording; iOS release/1.1.1-patch c2de282e still has the old literals, so the sha above is unchanged until iOS lands them. | 1.1.1 copy (the maintainer 2026-11-21, typed 'yes'; card tee-glossary-111 for the primer): the near.ai preset description ('for its attested models') is the approved wording; iOS release/1.1.1-patch c2de282e still has the old literal, so the sha above is unchanged until iOS lands it (Android ahead on copy)."
     },
     {
       "kotlin": "providers/src/main/kotlin/ai/teemoon/providers/EndpointScheme.kt",
@@ -3206,7 +3611,8 @@
         },
         {
           "path": "teemoon/Views/Chat/FollowGlide.swift",
-          "sha": "v1.1.0"
+          "sha": "v1.1.0",
+          "note": "@6e45224d: jumpGlideDuration 0.25 -> 0.40 (TranscriptCollectionView.swift; the maintainer 2026-11-19); the FollowGlide.swift rule itself is unchanged since 5d37f9c2"
         }
       ],
       "status": "complete",
@@ -3228,8 +3634,8 @@
         },
         {
           "path": "teemoonTests/FollowGlideTests.swift",
-          "sha": "5d37f9c2",
-          "note": "4/4"
+          "sha": "6e45224d",
+          "note": "5/5 (@6e45224d: theSendJumpStepsAtMost21PointsAFrameAt120Hz)"
         }
       ],
       "note": "the transcript CONTRACT as values; the Compose transcript (ChatScreen) applies FreshStart today and stays naive on follow (a rebuild; see the iOS docs/UIKIT_TRANSCRIPT.md)"
@@ -4798,8 +5204,8 @@
       "sources": [
         {
           "path": "teemoon/Providers/ListPriceSnapshot.swift",
-          "sha": "v1.1.0",
-          "note": "@4e74360: all 142 rows equal iOS build 58 (2026-10-22 snapshot): deepseek-v4-pro-0813 and deepseek-v4.1-flash repriced; @5b40a389: @5b40a389: regenerated from the Swift table (snapshot 2026-11-14, 140 rows); the same generator reproduces 4e74360's table byte for byte."
+          "sha": "ff889422",
+          "note": "@4e74360: all 142 rows equal iOS build 58 (2026-10-22 snapshot): deepseek-v4-pro-0813 and deepseek-v4.1-flash repriced; @5b40a389: regenerated from the Swift table (snapshot 2026-11-14, 140 rows); the same generator reproduces 4e74360's table byte for byte; @ff889422 (iOS release/1.1.1-patch, the 1.1.1 cut's refresh): regenerated from the Swift table (snapshot 2026-11-19, 145 rows: 5 new, 10 repriced), every row equal to the Swift's."
         }
       ],
       "status": "complete",
@@ -5006,6 +5412,17 @@
       ]
     },
     {
+      "kotlin": "confidential/src/test/kotlin/ai/teemoon/confidential/ProvenanceRepoAliasTest.kt",
+      "status": "complete",
+      "sources": [
+        {
+          "path": "teemoonTests/ImageProvenanceTests.swift",
+          "sha": "a5a3f6d3",
+          "note": "ProvenanceRepoAliasTests: one saved-fixture verify per alias row + everyAliasRowHasAFixtureRow (C5); fixtures vendored byte-identical"
+        }
+      ]
+    },
+    {
       "kotlin": "providers/src/main/kotlin/ai/teemoon/providers/LocalWarmUpPolicy.kt",
       "status": "complete",
       "sources": [
@@ -5099,6 +5516,16 @@
           "path": "teemoonTests/AttestationLegIndependenceTests.swift",
           "sha": "v1.0.4",
           "note": "both suites, whole; 8 of 13 failed against the pre-2371250 Kotlin fetch; @a411f18: 1.0.4 parity: no_behavior 1"
+        },
+        {
+          "path": "teemoonTests/AttestationLegIndependenceTests.swift",
+          "sha": "bf762777",
+          "note": "(release/1.1.1-patch bf762777) 1.1.1 audit A12/A15: gateway401DoesNotDiscardTheModelKey's list-failed asserts; theListIsCheckedAgainstTheNonceItWasAskedWith is in ModelCandidatesTest.CandidateListFetchTest"
+        },
+        {
+          "path": "teemoonTests/AttestationLegIndependenceTests.swift",
+          "sha": "39ba0919",
+          "note": "A7 read: anEmptyModelYieldsNoKeyAndAsksNoList (AttestationLegRetryTaxonomyTest)"
         }
       ],
       "status": "complete"
@@ -5137,6 +5564,31 @@
           "path": "teemoon/Views/Chat/TrustLadderView+Hero.swift",
           "sha": "v1.0.4",
           "note": "entry derived from the file's own `// ports:` header, 2026-10-06, so drift is checked here too"
+        },
+        {
+          "path": "teemoon/Views/Chat/TrustLadder.swift",
+          "sha": "5b56b7b4",
+          "note": "(release/1.1.1-patch 5b56b7b4, a pick of 6e92b74d) key-custody copy; the sample chain (ChainNode.sample, previews) has no Android counterpart"
+        },
+        {
+          "path": "teemoon/Views/Chat/TrustLadderView+Hero.swift",
+          "sha": "5b56b7b4",
+          "note": "(release/1.1.1-patch 5b56b7b4, a pick of 6e92b74d) key-custody copy: bound + signed nodes read KeyCustodyCopy, incl. the everydayTitle approved 2026-11-19 (card key-custody-copy-2)"
+        },
+        {
+          "path": "teemoon/Views/Chat/TrustLadderView+Hero.swift",
+          "sha": "a6f11ac7",
+          "note": "(release/1.1.1-patch a6f11ac7) 1.1.1 audit A7 (card key-custody-listed-states v2): the bound node's detail and everyday detail read summary.listedEnclaves (TrustLadder.swift's sample chain is Xcode-preview only; Android has none)"
+        },
+        {
+          "path": "teemoon/Views/Chat/TrustLadderView+Hero.swift",
+          "sha": "37de10d9",
+          "note": "1.1.1 audit A9: the ladder step 'sealed to <model>'s enclave key'"
+        },
+        {
+          "path": "teemoon/Views/Chat/TrustLadderView+Hero.swift",
+          "sha": "e9e2e747",
+          "note": "design review: the expert bound node takes TrustVerdict.sealedStatus"
         }
       ],
       "status": "complete",
@@ -5232,7 +5684,7 @@
         },
         {
           "path": "teemoonTests/FollowGlideTests.swift",
-          "sha": "v1.1.0",
+          "sha": "6e45224d",
           "note": "entry derived from the file's own `// ports:` header, 2026-10-06, so drift is checked here too"
         }
       ],
@@ -5324,6 +5776,11 @@
       "sources": [
         {
           "path": "teemoonTests/SendGateRuleTests.swift",
+          "sha": "e2f62bcc",
+          "note": "(release/1.1.1-patch e2f62bcc, a pick of 05a4d9a0) aModelKeyWithNoQuoteBlocks + keyWithNoQuote, and the modelQuote:absent change of everyVectorGivesItsPolicyAndAlert (kit 0.6.3)"
+        },
+        {
+          "path": "teemoonTests/SendGateRuleTests.swift",
           "sha": "1cef8d95",
           "note": "everyVectorGivesItsPolicyAndAlert, aSealHoldingSoftStateNeverOffersSendUnencrypted, aConfirmIsAskedOncePerRecordAndReason; + everyIntelStatusHasItsClass (a77279c6); + everyNVIDIAAndTLSCaseHasItsClass and the nras/tls malformed|teemoon vectors @ a09537fe (sha not bumped: 2874d012 between is not audited here)"
         },
@@ -5331,6 +5788,31 @@
           "path": "teemoonTests/SendGateRuleTests.swift",
           "sha": "6b99b42a",
           "note": "aConfirmationIsScopedToItsRecordAndReason (confirmScope, kit 0.5.14) — in the app's SendGateTimeoutTest, where postPrepare lives"
+        },
+        {
+          "path": "teemoonTests/SendGateRuleTests.swift",
+          "sha": "7814a0fd",
+          "note": "(release/1.1.1-patch 7814a0fd, a pick of fe3fa623) C3a: the candidates change (mismatch | keyDiffers | listFailed) of everyVectorGivesItsPolicyAndAlert (kit 0.6.4)"
+        },
+        {
+          "path": "teemoonTests/SendGateRuleTests.swift",
+          "sha": "ba0842d1",
+          "note": "(release/1.1.1-patch ba0842d1) 1.1.1 audit A2/A1: aForgedListedEnclaveBlocks, aListedEnclavesDCAPGatesLikeTheModelLegs, aForgedFirstEnclaveBlocksWhileIntelCannotBeReached (Android: aForgedFirstEnclaveWithIntelUnreachableBlocksWithNoAsk), listedDcap changes (kit 0.6.5)"
+        },
+        {
+          "path": "teemoonTests/SendGateRuleTests.swift",
+          "sha": "1fe69e3d",
+          "note": "(release/1.1.1-patch 1fe69e3d) 1.1.1 audit A4: the listedScope changes (bindingMismatch, bootMismatch, bindingUnchecked, bootAbsent), kit 0.6.6"
+        },
+        {
+          "path": "teemoonTests/SendGateRuleTests.swift",
+          "sha": "878ab019",
+          "note": "(release/1.1.1-patch 878ab019) 1.1.1 audit A13: candidates keyProviderDiffers, kit 0.6.7"
+        },
+        {
+          "path": "teemoonTests/SendGateRuleTests.swift",
+          "sha": "bf762777",
+          "note": "(release/1.1.1-patch bf762777) 1.1.1 audit A12/A15: the four unpublished+ exemption vectors of kit 0.6.7 (no new driver: the image and candidates/listedScope changes combine)"
         }
       ],
       "status": "complete",
@@ -6219,7 +6701,7 @@
         }
       ],
       "status": "complete",
-      "note": "all 5, plus theRunningNowSectionDrawsTheActiveRows (Android draws through TrustScopeText.runningRows); fixtures expected.json af313e2b, actions-a0e3c6f4f21a 33f48bbc, nearai_actionlog_revisions_20261108.json f25fd4a6, byte-identical"
+      "note": "all 5, plus theRunningNowSectionDrawsTheActiveRows (Android draws through TrustScopeText.runningRows); fixtures expected.json 6e8f1e1e (af313e2b before iOS ce5cada8, prose only), actions-a0e3c6f4f21a 33f48bbc, nearai_actionlog_revisions_20261108.json f25fd4a6, byte-identical"
     },
     {
       "kotlin": "confidential/src/main/kotlin/ai/teemoon/confidential/ChatPath.kt",
@@ -6240,6 +6722,26 @@
           "path": "teemoon/Confidential/TrustScope.swift",
           "sha": "v1.1.0",
           "note": "activeRunning and runningSection at this sha; the rest at its header's shas"
+        },
+        {
+          "path": "teemoon/Confidential/TrustScope.swift",
+          "sha": "1fe69e3d",
+          "note": "(release/1.1.1-patch 1fe69e3d) 1.1.1 audit A4: listedEvidenceAbsent; fromDcap builds the read and the listed scopes through one path"
+        },
+        {
+          "path": "teemoon/Confidential/TrustScope.swift",
+          "sha": "976543da",
+          "note": "1.1.1 audit A10 (listedHardBreakReason): a listed scope's break reads the listed-enclave lines, the read scope's own are unchanged"
+        },
+        {
+          "path": "teemoon/Confidential/TrustScope.swift",
+          "sha": "01a337a4",
+          "note": "(release/1.1.1-patch 01a337a4) 1.1.1 audit integ read item 2: run(): info.tcb_info as an object or a string holding the JSON"
+        },
+        {
+          "path": "teemoon/Confidential/RunningPairCheck.swift",
+          "sha": "9d21baba",
+          "note": "(release/1.1.1-patch 9d21baba) 1.1.1 audit cut review item 3: FetchBudget = RunningPairCheck.Budget, ComposeFiles.FETCH_BUDGET = RunningPairCheck.fetchBudget (200)"
         }
       ],
       "status": "complete",
@@ -6276,6 +6778,69 @@
       ],
       "status": "complete",
       "note": "NearAIQuotePolicyTest"
+    },
+    {
+      "kotlin": "confidential/src/main/kotlin/ai/teemoon/confidential/ModelCandidates.kt",
+      "sources": [
+        {
+          "path": "teemoon/Confidential/ModelCandidates.swift",
+          "sha": "7814a0fd",
+          "note": "(release/1.1.1-patch 7814a0fd, a pick of fe3fa623) list, check, enclaves; the boot log is replayed by the existing Rtmr3Replay (iOS BootLogReplay). The rationale comment (the key derives from app_id; not a closure) is carried"
+        },
+        {
+          "path": "teemoon/Confidential/ModelCandidates.swift",
+          "sha": "ba0842d1",
+          "note": "(release/1.1.1-patch ba0842d1) 1.1.1 audit A1: Enclave.quoteHex / advertisedReportData for DcapService"
+        },
+        {
+          "path": "teemoon/Confidential/ModelCandidates.swift",
+          "sha": "ceb05738",
+          "note": "(release/1.1.1-patch ceb05738) 1.1.1 audit A3: Enclave.nvidiaPayload (a string, or an object re-encoded), Listed.nonce"
+        },
+        {
+          "path": "teemoon/Confidential/ModelCandidates.swift",
+          "sha": "1fe69e3d",
+          "note": "(release/1.1.1-patch 1fe69e3d) 1.1.1 audit A4: Enclave.report (iOS reportJSON), trustScopes"
+        },
+        {
+          "path": "teemoon/Confidential/ModelCandidates.swift",
+          "sha": "878ab019",
+          "note": "(release/1.1.1-patch 878ab019) 1.1.1 audit A13: sameKeyService, Why.KEY_PROVIDER_DIFFERS (iOS Mismatch.keyProviderDiffers); the reason line is the existing one, no new string"
+        },
+        {
+          "path": "teemoon/Confidential/ModelCandidates.swift",
+          "sha": "c5e329f2",
+          "note": "(release/1.1.1-patch c5e329f2) 1.1.1 audit A5: Enclave.osImageHash; trustScopes takes the host (and the fetched bodies) the chat path resolves against"
+        },
+        {
+          "path": "teemoon/Confidential/ModelCandidates.swift",
+          "sha": "976543da",
+          "note": "1.1.1 audit A10/A12/A13: ListedEnclaveReason, the card's five lines verbatim"
+        }
+      ],
+      "status": "complete",
+      "note": "ModelCandidatesTest, ModelCandidatesGateTest, CandidateListFetchTest"
+    },
+    {
+      "kotlin": "confidential/src/test/kotlin/ai/teemoon/confidential/ModelCandidatesTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/ModelCandidatesTests.swift",
+          "sha": "7814a0fd",
+          "note": "(release/1.1.1-patch 7814a0fd, a pick of fe3fa623) both suites (ModelCandidatesTests, ModelCandidatesGateTests) over the live capture teemoonTests/Fixtures/nearai_live_glm53flash_candidates_20261119.json (822099 bytes, sha256 c0445145…35253, public data, byte-identical); CandidateListFetchTest is Android's own pin of the 'a blackout costs no extra request' rule iOS holds in AttestationLegRetryTaxonomyTests"
+        },
+        {
+          "path": "teemoonTests/ModelCandidatesTests.swift",
+          "sha": "878ab019",
+          "note": "(release/1.1.1-patch 878ab019) 1.1.1 audit A13: the seven key-service tests and anEnclaveWithAnotherKeyServiceBlocks"
+        },
+        {
+          "path": "teemoonTests/CandidateListFetchTests.swift",
+          "sha": "bf762777",
+          "note": "(release/1.1.1-patch bf762777) 1.1.1 audit A12/A15: aRefusalCarryingAListIsNotAdoptedAndATransportErrorIsRetried, plus the URL/header/nonce and 5xx/4xx/empty tests of 86c7c6ce's suite (its caps and cancellation are not part of this commit)"
+        }
+      ],
+      "status": "complete"
     },
     {
       "kotlin": "confidential/src/test/kotlin/ai/teemoon/confidential/NearAIQuotePolicyTest.kt",
@@ -6321,6 +6886,202 @@
       ],
       "status": "complete",
       "note": "conformance/disclosure.json held by DisclosurePolicyKitTest"
+    },
+    {
+      "kotlin": "confidential/src/test/kotlin/ai/teemoon/confidential/ForgedSiblingQuoteTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/ForgedSiblingQuoteTests.swift",
+          "sha": "ba0842d1",
+          "note": "(release/1.1.1-patch ba0842d1) 1.1.1 audit A2/A1; fixture audit_forged_sibling_entry_20261120.json byte-identical, sha256 61d22619...dbc5; everyGenuineListedQuoteStillVerifiesLocally is ForgedQuoteTest.everyGenuineListedQuoteStillVerifies"
+        }
+      ],
+      "status": "complete"
+    },
+    {
+      "kotlin": "confidential/src/test/kotlin/ai/teemoon/confidential/QeReportBindingTest.kt",
+      "sources": [
+        {
+          "path": "Packages/TDXQuoteVerifier/Tests/TDXQuoteVerifierTests/QEReportBindingTests.swift",
+          "sha": "ba0842d1",
+          "note": "(release/1.1.1-patch ba0842d1) 1.1.1 audit A2: the three binding tests"
+        },
+        {
+          "path": "Packages/TDXQuoteVerifier/Tests/TDXQuoteVerifierTests/QEReportBindingTests.swift",
+          "sha": "ba82440f",
+          "note": "21f04a5e + ba82440f: liveReportIsTheTDQE, otherEnclavesAreNot (+ miscselect), pinnedIdentityMatchesTheKit, bindingAsksWhichEnclave, everyFixtureQuoteStillVerifies (over ../conformance/vendor and the test resources)"
+        }
+      ],
+      "status": "complete"
+    },
+    {
+      "kotlin": "confidential/src/test/kotlin/ai/teemoon/confidential/ListedGpuEvidenceTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/ListedGPUEvidenceTests.swift",
+          "sha": "ceb05738",
+          "note": "(release/1.1.1-patch ceb05738) 1.1.1 audit A3: all five tests; iOS replays NVIDIA's recorded answer through NRASService, here the verifyNras seam holds the nonce each payload is judged against"
+        },
+        {
+          "path": "teemoonTests/ListedGPUEvidenceTests.swift",
+          "sha": "49608f08",
+          "note": "1.1.1 audit A10: the expert row keeps NVIDIA's reason; every other line is the A10 line"
+        },
+        {
+          "path": "teemoonTests/ListedGPUEvidenceTests.swift",
+          "sha": "36d53c97",
+          "note": "listed unreachable NVIDIA; worst-of ordering"
+        }
+      ],
+      "status": "complete"
+    },
+    {
+      "kotlin": "confidential/src/test/kotlin/ai/teemoon/confidential/KeyCustodyListedStatesTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/KeyCustodyListedStatesTests.swift",
+          "sha": "a6f11ac7",
+          "note": "(release/1.1.1-patch a6f11ac7) 1.1.1 audit A7 (card key-custody-listed-states v2): all four tests"
+        },
+        {
+          "path": "teemoonTests/KeyCustodyListedStatesTests.swift",
+          "sha": "c1eb3f4b",
+          "note": "(release/1.1.1-patch c1eb3f4b) 1.1.1 audit A7 read of a6f11ac7: theGPUVerdictIsAListedCheck; every listed() call carries gpu"
+        },
+        {
+          "path": "teemoonTests/KeyCustodyListedStatesTests.swift",
+          "sha": "1fe69e3d",
+          "note": "(release/1.1.1-patch 1fe69e3d) 1.1.1 audit A4: the scopes argument"
+        },
+        {
+          "path": "teemoonTests/KeyCustodyListedStatesTests.swift",
+          "sha": "e9e2e747",
+          "note": "design review: theSealedMarkFollowsTheListedEnclaves"
+        },
+        {
+          "path": "teemoonTests/KeyCustodyListedStatesTests.swift",
+          "sha": "39ba0919",
+          "note": "aListedCheckStillMissingAtTheDeadlineReadsUnfinished"
+        }
+      ],
+      "status": "complete"
+    },
+    {
+      "kotlin": "confidential/src/test/kotlin/ai/teemoon/confidential/CandidateListCapTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/CandidateListFetchTests.swift",
+          "sha": "86c7c6ce",
+          "note": "(86c7c6ce, 1.1.1 audit A11 entry cap: moreThanTheEntryCapIsAListThatDidNotLoad; before it 5e36628e) 1.1.1 audit A11: theCapStopsTheDownload (a loopback socket in place of the URLProtocol), plus a Content-Length past the cap, a body within it, and the planted seam's limit"
+        },
+        {
+          "path": "teemoonTests/CandidateListFetchTests.swift",
+          "sha": "01a337a4",
+          "note": "(release/1.1.1-patch 01a337a4) 1.1.1 audit integ read item 1: theRequestIsCancelledAtTheCap, theRequestIsCancelledWithItsCaller, the request bytes (loopback socket in place of the stub)"
+        }
+      ],
+      "status": "complete"
+    },
+    {
+      "kotlin": "confidential/src/test/kotlin/ai/teemoon/confidential/ListedNearScopeTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/ListedTrustScopeTests.swift",
+          "sha": "1fe69e3d",
+          "note": "(release/1.1.1-patch 1fe69e3d) 1.1.1 audit A4: the suite, adapted to Android's derived scopes (see the file header)"
+        },
+        {
+          "path": "teemoonTests/ListedTrustScopeTests.swift",
+          "sha": "c5e329f2",
+          "note": "(release/1.1.1-patch c5e329f2) 1.1.1 audit A5: aListedScopeResolvesItsChatPathAgainstTheHostTheAppConnectsTo (the host argument)"
+        }
+      ],
+      "status": "complete"
+    },
+    {
+      "kotlin": "confidential/src/test/kotlin/ai/teemoon/confidential/DcapOnePassTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/ListedTrustScopeTests.swift",
+          "sha": "e86b13cd",
+          "note": "(release/1.1.1-patch e86b13cd) 1.1.1 audit A4 read: eachQuoteOfARecordGoesToIntelOnce, plus aQuoteTwoLegsCarryGoesToIntelOnce (the case Android can still repeat)"
+        }
+      ],
+      "status": "complete"
+    },
+    {
+      "kotlin": "confidential/src/main/kotlin/ai/teemoon/confidential/ModelNodeAuditPath.kt",
+      "sources": [
+        {
+          "path": "teemoon/Confidential/TrustVerdict.swift",
+          "sha": "c5e329f2",
+          "note": "(release/1.1.1-patch c5e329f2) 1.1.1 audit A5: onPath's wholeHost"
+        }
+      ],
+      "status": "complete"
+    },
+    {
+      "kotlin": "app/src/test/kotlin/ai/teemoon/app/ListedReviewedRowTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/ListedReviewedRowTests.swift",
+          "sha": "c5e329f2",
+          "note": "(release/1.1.1-patch c5e329f2) 1.1.1 audit A5: all nine tests, plus three Android additions (leaks outranks incomplete, a failed entry's compose, a classless running revision)"
+        }
+      ],
+      "status": "complete"
+    },
+    {
+      "kotlin": "app/src/test/kotlin/ai/teemoon/app/EnclaveListAskTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/EnclaveListAskTests.swift",
+          "sha": "beb43b71",
+          "note": "1.1.1 audit A8: the ask selection and its copy; the wire half is confidential's EnclaveListReverifyTest"
+        },
+        {
+          "path": "teemoonTests/EnclaveListAskTests.swift",
+          "sha": "997bc7bf",
+          "note": "A8 body says retry verification"
+        }
+      ],
+      "status": "complete",
+      "note": "1.1.1 audit A8"
+    },
+    {
+      "kotlin": "confidential/src/test/kotlin/ai/teemoon/confidential/EnclaveListReverifyTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/EnclaveListAskTests.swift",
+          "sha": "beb43b71",
+          "note": "1.1.1 audit A8: reverifyAsksNearAIForTheListAgain"
+        }
+      ],
+      "status": "complete",
+      "note": "1.1.1 audit A8"
+    },
+    {
+      "kotlin": "confidential/src/main/kotlin/ai/teemoon/confidential/TierDowngrade.kt",
+      "sources": [
+        {
+          "path": "teemoon/Confidential/TierDowngrade.swift",
+          "sha": "d2d70d45",
+          "note": "1.1.1 item 1 (docs/TIER_DOWNGRADE.md, approved 2026-11-18): SealedModels over a SealedModelStore seam (SharedPreferences `teemoon-settings` string set in the app; iOS UserDefaults `nearai.sealedModels`); the sheet is app/SendChoices.kt E2EEAsk.tierDowngrade over TierDowngradeAsk (E2EEAsk is app's type)"
+        }
+      ],
+      "status": "complete",
+      "note": "formal/TierDowngrade.tla rows in docs/TLA_MAPPING.md"
+    },
+    {
+      "kotlin": "confidential/src/test/kotlin/ai/teemoon/confidential/TierDowngradeTest.kt",
+      "sources": [
+        {
+          "path": "teemoonTests/TierDowngradeTests.swift",
+          "sha": "d2d70d45",
+          "note": "all ten; shortcutsRefusesWhileTheAskIsOwed becomes the policy check (Android has no Shortcuts/Siri send path: a non-UI send reads sendPolicy); + the approved words; app's SendChoicesTest holds the sheet"
+        }
+      ],
+      "status": "complete"
     }
   ],
   "acceptedDivergences": [
@@ -6562,8 +7323,8 @@
       {
         "file": "app/src/main/kotlin/ai/teemoon/app/ChatScreen.kt",
         "mustContain": [
-          "vm.retryLastTurn(acceptedDegrade = true, effort = ",
-          "vm.send(m.prompt, acceptedDegrade = true, images = m.images)"
+          "vm.retryLastTurn(acceptedDegrade = true, downgradeAskShown = downgradeAskShown, effort = ",
+          "vm.send(m.prompt, acceptedDegrade = true, downgradeAskShown = downgradeAskShown, images = m.images)"
         ]
       },
       {

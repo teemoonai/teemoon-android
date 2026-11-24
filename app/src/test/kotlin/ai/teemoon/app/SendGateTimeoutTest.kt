@@ -70,7 +70,7 @@ class SendGateTimeoutTest {
                     verifyManifests = if ("provenance" in pending) ({ _ -> kotlinx.coroutines.awaitCancellation() }) else null,
                     fetchModelLayerManifest = null,
                     verifyTls = { if ("hardware" in pending) kotlinx.coroutines.awaitCancellation() else ai.teemoon.confidential.TlsAttestation.Verified },
-                    now = { if (stale) record.fetchedAt.plusSeconds(ai.teemoon.confidential.ConfidentialSession.ATTESTATION_MAX_AGE_SECONDS + 1) else record.fetchedAt }))
+                    now = { if (stale) record.fetchedAt.plusSeconds(ai.teemoon.confidential.ConfidentialSession.ATTESTATION_MAX_AGE_SECONDS + 1) else record.fetchedAt }), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
             if (stale) { live.refreshAttestation(); testScheduler.runCurrent() } else live.attestation = record
             live.lastRequestUsedE2EE = true
             live.imageProvenance = ai.teemoon.confidential.ManifestProvenance.AllVerified(emptyList(), emptyList())

@@ -72,7 +72,7 @@ class NothingPendingAtSendTest {
         val record = AttestationRecord.preview.copy(model = model)
         val near = Provider.nearAI.copy(id = record.providerID, model = model)
         val session = ConfidentialSession(this, { near }, credentialFor = { "" },
-            services = services ?: ConfidentialSession.Services(tierDeadlineMs = null, skipLiveAttestation = true, now = { record.fetchedAt }))
+            services = services ?: ConfidentialSession.Services(tierDeadlineMs = null, skipLiveAttestation = true, now = { record.fetchedAt }), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         session.verifierSettleTimeoutMs = settleMs
         session.attestation = record
         session.lastRequestUsedE2EE = true

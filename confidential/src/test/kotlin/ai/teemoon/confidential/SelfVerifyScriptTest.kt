@@ -22,6 +22,14 @@ class SelfVerifyScriptTest {
 
     private fun script(attestation: AttestationRecord? = AttestationRecord.preview) = summary(attestation).selfVerifyScript!!
 
+    /** Audit C5 (iOS a5a3f6d3): the script restates the app's repo aliases; a row in only one table is a drift. */
+    @Test fun repoAliasesRestateTheApp() {
+        val block = Regex("REPO_ALIASES = \\{([^}]*)\\}").find(script())!!.groupValues[1]
+        val pairs = Regex("\"([^\"]+)\":\\s*\"([^\"]+)\"").findAll(block).map { it.groupValues[1] to it.groupValues[2] }.toList()
+        assertEquals(ProvenanceParsing.repoAliases, pairs.toMap())
+        assertEquals("a key is repeated in REPO_ALIASES", ProvenanceParsing.repoAliases.size, pairs.size)
+    }
+
     @Test fun nilWithoutAttestation() { assertNull(summary(attestation = null).selfVerifyScript) }
 
     @Test fun embedsSessionValues() {

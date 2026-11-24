@@ -1,6 +1,7 @@
 // ports: teemoon/Confidential/SelfVerifyScript.swift @ v1.0.4 (the script body matches iOS main: 4b9d154/dfc528b's
 //        nearai_repos + FALLBACK_REPOS loop — on GLM-5.3 flash the app showed verified and the script exited 1 — and
 //        c9498d5's keyless "nothing failed")
+//        + a5a3f6d3 (1.1.1 audit C5: REPO_ALIASES gains compose-manager-otelcol, python lines byte-identical to iOS)
 package ai.teemoon.confidential
 
 import java.time.format.DateTimeFormatter
@@ -410,6 +411,7 @@ def main():
     # build record exists for that digest, anywhere in that repo.
     section("4. image provenance — signed build records for the exact image digests")
     REPO_ALIASES = {"compose-manager-launcher": "compose-manager",
+                    "compose-manager-otelcol": "compose-manager",
                     "vllm-proxy-rs": "inference-proxy"}
 
     # Engine images near.ai builds from the compose repo's workflows are

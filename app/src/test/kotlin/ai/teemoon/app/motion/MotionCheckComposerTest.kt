@@ -1,6 +1,6 @@
 // The motion check on the composer (card motion-pass): a photo arriving in the strip and leaving by its x, and a text
 // send in a chat that already has turns. One panel, one strip, the panel's edge one way; after a send the new question
-// travels up to its place in one eased glide, no frame over 96 dp (item 2: it went 102 dp a frame, linear), and stays.
+// travels up to its place in one eased glide, no frame over 1/16 of its travel (iOS 6e45224d's 60 Hz bound; item 2: it went 102 dp a frame, linear), and stays.
 package ai.teemoon.app.motion
 
 import ai.teemoon.app.AppSettings
@@ -20,7 +20,9 @@ import androidx.compose.ui.test.junit4.v2.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextInput
+import kotlin.math.abs
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -103,7 +105,14 @@ class MotionCheckComposerTest {
         assertNone(MotionRules.oneInstance(f, names))
         // the name passes from the old question to the new one on the tap's frame: the new one is judged from there
         val asked = f.filter { it.ms >= 0 }
-        assertNone(MotionRules.monotonic(asked, "chat.lastQuestion", Edge.TOP))
+        // The send's glide is 0.40 s smoothstep (iOS 6e45224d, the maintainer 2026-11-19). iOS bounds it at 42 pt a frame at 60 Hz (21 at
+        // 120 Hz) for a ~670 pt send: 42/670 = 1/16 of the travel a frame, which is smoothstep's peak 1.5 * frame / duration
+        // (1.5/60/0.4). The Android send travels ~767 dp (not 670) and this recorder steps a 16 ms frame (~62.5 Hz), so the same
+        // fraction of the measured travel is the bound: 1/16 of it (~48 dp here). At 0.25 s the peak is ~0.093 of it (71 dp).
+        val top = asked.mapNotNull { it.one("chat.lastQuestion")?.edge(Edge.TOP) }
+        val travel = abs(top.last() - top.first())
+        assertTrue("the send did not travel ($travel dp)", travel > 400)
+        assertNone(MotionRules.monotonic(asked, "chat.lastQuestion", Edge.TOP, jump = travel / 16f + MotionRules.STILL_PX))
         val end = MotionRules.span(asked, "chat.lastQuestion", Edge.TOP)?.second ?: 0
         assertNone(MotionRules.stillAfter(asked, listOf("chat.lastQuestion", "chat.panel"), end))
     }

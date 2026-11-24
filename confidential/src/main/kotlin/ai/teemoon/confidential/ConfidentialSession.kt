@@ -1,4 +1,15 @@
-// ports: teemoon/Confidential/ConfidentialSession.swift @ v1.0.6 (e2eeKey and attestationOutcome poll to their deadline)
+// ports: teemoon/Confidential/ConfidentialSession+Verdict.swift @ 01a337a4 (1.1.1 audit integ read item 8: e2eeDegradedReason: the stale-unrefreshable record is named right after the missing-attestation guard, before every other cause)
+// ports: teemoon/Confidential/RunningPairCheck.swift + TrustScope.swift @ 9d21baba (1.1.1 audit cut review item 3: verifyComposeFiles gives each action log one FetchBudget)
+// ports: teemoon/Confidential/ConfidentialSession+Verifiers.swift @ 01a337a4 (1.1.1 audit integ read item 5: verifyDCAP never throws: a verifier that throws leaves every quote, the listed ones too, unchecked)
+// ports: teemoon/Confidential/ConfidentialSession+Verdict.swift @ 01a337a4 (1.1.1 audit integ read item 3: e2eeDegradedReason: teemoon-fault lines (GPU, TLS), no-evidence, listed verdicts, the GPU own, the TLS own, in iOS order)
+// ports: teemoon/Confidential/ConfidentialSession+Verifiers.swift @ 36d53c97 (a listed NVIDIA couldn't-check is ListedInconclusive)
+// ports: teemoon/Confidential/ConfidentialSession+Verdict.swift @ 38850f79 (pm 2026-11-20: a listed enclave's unchecked DCAP reads the A7 unfinished line; an unchecked read leg keeps the Intel line)
+// ports: teemoon/Confidential/ConfidentialSession+Verifiers.swift @ 49608f08 (1.1.1 audit A10: a listed NVIDIA rejection is ListedFailed(nvidia))
+// ports: teemoon/Confidential/ConfidentialSession+Verdict.swift @ beb43b71 (1.1.1 audit A8: enclaveListFailedAsks)
+// ports: teemoon/Confidential/ConfidentialSession+Verifiers.swift @ 976543da (1.1.1 audit A10: a listed enclave's NVIDIA rejection is recorded as the A10 line)
+// ports: teemoon/Confidential/ConfidentialSession+Verdict.swift @ 976543da (1.1.1 audit A10: e2eeDegradedReason names a listed enclave's DCAP, NVIDIA, action-log, boot-log and list failures; the read enclave keeps its own lines)
+// ports: teemoon/Confidential/ConfidentialSession+Verdict.swift @ e2f62bcc (1.1.1: a model key with no readable quote is a hard failure; its reason is the unbound-key line)
+//        teemoon/Confidential/ConfidentialSession.swift @ v1.0.6 (e2eeKey and attestationOutcome poll to their deadline)
 //        teemoon/Confidential/ConfidentialSession.swift, +Verdict.swift, +Refresh.swift @ 38647a07 (S30: sendPending, pendingKind,
 //        provenancePending, staleRefetchPending, provenanceUncheckedAsks, chipState, the pending confirm reasons)
 //        teemoon/Confidential/ConfidentialSession+Verdict.swift @ v1.0.4
@@ -16,12 +27,20 @@
 //        the Xcode-preview / -DesignTour process flags. The UITEST_SEED_ATTESTATION door IS here (`uiTestSeededDegraded`,
 //        the "degraded" case, and `uiTestPlantsPendingVerifier` for "verifyingPending", f2fb40b), reachable from UiTestSeeding on a
 //        debuggable build.
+//        teemoon/Confidential/ConfidentialSession+Verifiers.swift @ ceb05738 (1.1.1 audit A3: verifyGpu checks every listed enclave's GPU evidence)
+//        teemoon/Confidential/ConfidentialSession+Verifiers.swift @ c5e329f2 (1.1.1 audit A5: the listed scopes resolve their chat path against record.gpuNodeHost)
+//        teemoon/Confidential/ConfidentialSession+Verdict.swift, +Verifiers.swift, ConfidentialSession.swift @ 1fe69e3d (1.1.1 audit A4: listedNearScopes, listedScopeBroken, listedScopeEvidenceAbsent)
+//        teemoon/Confidential/ConfidentialSession+Verdict.swift @ 7814a0fd (C3a: candidatesBroken degrades and is hard; modelCandidatesListFailed asks)
+//        teemoon/Confidential/ConfidentialSession+Verdict.swift @ 217dc4cb (+ d2d70d45: sendPolicy's downgrade guard first; rememberConfirmation accepts it; hasConfirmed false while owed; see TierDowngrade.kt)
 package ai.teemoon.confidential
 
 import ai.teemoon.providers.NearAIModelCatalog
 import ai.teemoon.providers.Provider
 import ai.teemoon.providers.ProviderCapability
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -53,6 +72,8 @@ class ConfidentialSession(
     private val services: Services = Services(),
     /** Where iOS writes its log lines. */
     private val warn: (String) -> Unit = {},
+    /** near.ai models a request went out sealed to (item 1, TIER_DOWNGRADE.md). */
+    val sealedModels: SealedModels,
 ) {
     /**
      * The network and verification seams. A null verifier means the service is
@@ -290,11 +311,11 @@ class ConfidentialSession(
 
     /** The running revisions' files, hash-checked, for the chat path and the answering proxy; reset with the record. */
     var composeBodies: Map<DeployLog.Source, String> = emptyMap()
-        set(value) { field = value; nearScopeCache = null; touch() }
+        set(value) { field = value; nearScopeCache = null; listedScopeCache = null; touch() }
 
     /** (c)'s fetches for the current record, by (commit, file); reset with the record. */
     var composeFileFetches: Map<Pair<String, String>, ComposeFileFetch> = emptyMap()
-        set(value) { field = value; nearScopeCache = null; touch() }
+        set(value) { field = value; nearScopeCache = null; listedScopeCache = null; touch() }
     private var composeFilesJob: Job? = null
     /** The DCAP verdict is being published and (c) is about to start from it: pending across that step, so no read between counts it settled. */
     private var composeFilesStarting = false
@@ -304,49 +325,83 @@ class ConfidentialSession(
      */
     private val composeFilesPending: Boolean get() = composeFilesStarting || composeFilesJob?.isActive == true
 
-    /** Fetches (c)'s pairs once (a) has bound the log: before that nothing from it is named as running. */
+    /** The read enclave's scope and each listed enclave's whose action log (a) has bound: only those name anything as running. */
+    private fun boundScopes(): List<NearTrustScope> =
+        (listOfNotNull(nearScope) + listedNearScopes.orEmpty()).filter { it.deployLogBinding == DeployLogBinding.Bound }
+
+    /** [boundScopes] with each one's place among the read scope and the listed ones: the key of its log's [FetchBudget]. */
+    private fun boundScopesIndexed(): List<IndexedValue<NearTrustScope>> =
+        (listOfNotNull(nearScope) + listedNearScopes.orEmpty()).withIndex().filter { it.value.deployLogBinding == DeployLogBinding.Bound }
+
+    /** Fetches (c)'s pairs once (a) has bound the log, for the read enclave and every listed one (A4): before that nothing from it is named as running. */
     private fun verifyComposeFiles() {
         composeFilesJob?.cancel()
-        val firstScope = nearScope?.takeIf { it.deployLogBinding == DeployLogBinding.Bound } ?: return
+        val firstScopes = boundScopesIndexed().ifEmpty { return }
         val att = attestation
         composeFilesJob = scope.launch {
-            suspend fun fetch(commit: String, file: String): Boolean {
+            // One budget per action log (iOS 9d21baba, 1.1.1 audit cut review item 3: each listed enclave's TrustScope.run fetched its
+            // whole-file sources, pairs and bodies uncapped, so N listed enclaves multiplied the keyless raw.githubusercontent.com
+            // fetches; 200 is about twice the 99 files the largest live log names). The three stages below draw on the log's one budget.
+            // Over it a file is couldn't-check, never a pass and never cached. This session's fetched map is shared by every log (a file at a commit
+            // is one file), so a log whose budget is spent leaves a file another log can still fetch; what no log could read is marked Failed at the end.
+            val budgets = HashMap<Int, FetchBudget>()
+            val overBudget = LinkedHashSet<Pair<String, String>>()
+            suspend fun fetch(logAt: Int, commit: String, file: String): Boolean {
                 if ((commit to file) in composeFileFetches) return true
-                val got = ProvenanceService.default.fetchComposeFile(commit, file)
+                val budget = budgets.getOrPut(logAt) { FetchBudget() }
+                val got = ProvenanceService.default.fetchComposeFile(commit, file, budget)
                 if (!isActive || attestation !== att) return false
+                if (got == ComposeFileFetch.Failed && budget.spent()) { overBudget += commit to file; return true }
                 composeFileFetches = composeFileFetches + ((commit to file) to got)
                 return true
             }
             // Audit's rule A (2026-11-06): every newest whole file first — the walk reads its service names from them,
             // and the whole log is walked — then the reported pairs, newest first, up to the cap; the rest "not fetched".
-            for (src in firstScope.wholeFileSources) if (!fetch(src.commit, src.file)) return@launch
-            val walked = nearScope?.takeIf { it.deployLogBinding == DeployLogBinding.Bound } ?: return@launch
-            for ((commit, file) in ComposeFiles.toFetch(walked.runningServices)) if (!fetch(commit, file)) return@launch
-            // The chat path and the answering proxy read the running revisions' bodies (iOS b3d90fac, 4d2a41e3).
-            val running = (nearScope?.takeIf { it.deployLogBinding == DeployLogBinding.Bound } ?: return@launch)
-                .runningServices.mapNotNull(ChatPath::sourceOf).distinct()
+            for ((at, sc) in firstScopes) for (src in sc.wholeFileSources.distinct()) if (!fetch(at, src.commit, src.file)) return@launch
+            val walked = boundScopesIndexed().ifEmpty { return@launch }
+            for ((at, sc) in walked) for ((commit, file) in ComposeFiles.toFetch(sc.runningServices).distinct()) if (!fetch(at, commit, file)) return@launch
+            // The chat path and the answering proxy read the running revisions' bodies (iOS b3d90fac, 4d2a41e3), the read enclave's and every bound listed
+            // one's (A5: a list entry carries no host, so each resolves its path against the host the app connects to, att.gpuNodeHost)
             val bodies = HashMap<DeployLog.Source, String>()
-            for (src in running) {
-                ProvenanceService.default.fetchComposeBody(src)?.let { bodies[src] = it }
+            var any = false
+            for ((at, sc) in boundScopesIndexed()) for (src in sc.runningServices.mapNotNull(ChatPath::sourceOf).distinct()) {
+                any = true
+                if (src !in bodies) ProvenanceService.default.fetchComposeBody(src, budgets.getOrPut(at) { FetchBudget() })?.let { bodies[src] = it }
                 if (!isActive || attestation !== att) return@launch
             }
-            composeBodies = bodies
+            // A file no log had budget left for: couldn't-check, so it reads inconclusive, not as still running.
+            composeFileFetches = composeFileFetches + overBudget.filter { it !in composeFileFetches }.associateWith { ComposeFileFetch.Failed }
+            if (any) composeBodies = bodies
         }.also { it.invokeOnCompletion { touch() } }   // the end of the pending window is a change: the gate and settleDue re-read
     }
 
     private fun computeNearScope(att: AttestationRecord, dcap: RecordDcapVerification?): NearTrustScope? {
         val report = att.gpuNodeReport ?: return null
         val nonce = att.gpuNonce ?: return null
-        val manager = dcap?.manager
-        val managerTcb = (manager as? DcapVerification.Verified)?.tcbStatus
-        val nodeTcb = (dcap?.gpu as? DcapVerification.Verified)?.tcbStatus
-        val osImageHash = ((report["info"] as? kotlinx.serialization.json.JsonObject)?.get("os_image_hash") as? kotlinx.serialization.json.JsonPrimitive)?.content
-        // Either side of the comparison unchecked is not a disagreement, and an unchecked manager quote is not a failure.
-        val unchecked = manager is DcapVerification.Unchecked || (manager != null && dcap.gpu is DcapVerification.Unchecked)
-        return NearTrustScope.from(report, nonce, att.gpuIntelQuote, osImageHash, managerDcap = manager?.takeUnless { it.isUnchecked }?.let { !it.isHardFailure },
-            tcbDiffers = managerTcb != null && nodeTcb != null && managerTcb != nodeTcb, launcherIndex = LauncherIndex.NotChecked,
-            fetched = composeFileFetches, hardwareUnchecked = unchecked, bodies = composeBodies, host = att.gpuNodeHost)
+        return NearTrustScope.fromDcap(report, nonce, att.gpuIntelQuote, dcap?.gpu, dcap?.manager, composeFileFetches, composeBodies, att.gpuNodeHost)
     }
+
+    /**
+     * The read enclave's trust scope on each enclave near.ai listed, in list order (iOS listedTrustScopes, 1.1.1 audit A4): every
+     * listed enclave holds the sealed key. Null until the DCAP pass has answered for every listed quote and its compose manager's,
+     * and when there is no list. Kept for the record and DCAP verdict it was computed from, like [nearScope].
+     */
+    val listedNearScopes: List<NearTrustScope>?
+        get() {
+            val att = attestation ?: return null
+            val dcap = dcapVerification ?: return null
+            val listed = att.modelCandidates?.takeIf { it.enclaves.isNotEmpty() } ?: return null
+            if (dcap.listed.size != listed.enclaves.size || dcap.listedManagers.size != listed.enclaves.size) return null
+            listedScopeCache?.let { (a, d, v) -> if (a === att && d === dcap) return v }
+            return ModelCandidates.trustScopes(listed, dcap, composeFileFetches, composeBodies, att.gpuNodeHost).also { listedScopeCache = Triple(att, dcap, it) }
+        }
+    private var listedScopeCache: Triple<AttestationRecord, RecordDcapVerification, List<NearTrustScope>>? = null
+
+    /** A listed enclave's action log, boot log or running file contradicts its hardware: evidence, as the read one's (A4). */
+    private val listedScopeBroken: Boolean get() = listedNearScopes?.any { it.severity == NearTrustScope.Severity.HARD } == true
+
+    /** A listed enclave sent no compose-manager quote or no boot log: couldn't check, soft, never clean (A4). */
+    private val listedScopeEvidenceAbsent: Boolean get() = listedNearScopes?.any { it.listedEvidenceAbsent } == true
 
     private val nearScopeBroken: Boolean get() = nearScope?.severity == NearTrustScope.Severity.HARD
     /** NVIDIA NRAS outcome for the record's GPU evidence. null = not yet checked or no GPU evidence; Failed degrades. */
@@ -463,7 +518,8 @@ class ConfidentialSession(
         val provider = activeProviderSource() ?: return null
         if (ProviderCapability.ATTESTATION !in provider.capabilities) return null
         val record = attestation ?: return null
-        return TeeContext.from(provider, apiKey ?: credentialFor(provider), record, warn)
+        // near.ai only: the transport arms the model through this when it seals a request (iOS 6c364e33)
+        return TeeContext.from(provider, apiKey ?: credentialFor(provider), record, warn)?.also { if (provider.isNearAI) it.sealedModels = sealedModels }
     }
 
     /**
@@ -1045,7 +1101,10 @@ class ConfidentialSession(
             // as an unreachable collateral already is.
             val result = try { service(record) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
                 // our bug is not evidence: couldn't check, soft (near-send-gate-rule reverses trust-verifier-error's "hard")
-                warn("[dcap] verifier threw: $e"); RecordDcapVerification(gateway = DcapVerification.Unchecked(VERIFIER_ERROR))
+                // 1.1.1 audit integ read, item 5 (iOS ConfidentialSession+Verifiers.swift @ 01a337a4: DCAPService.verify never throws, a quote it can't
+                // check is unchecked): EVERY quote of the record is unchecked, the listed enclaves' too, so the listed state reads "couldn't finish"
+                // at once and never "checking" until the verdict deadline.
+                warn("[dcap] verifier threw: $e"); couldntCheckEveryQuote(record)
             }
             if (!isActive) return@launch
             composeFilesStarting = true
@@ -1059,6 +1118,20 @@ class ConfidentialSession(
         }
     }
 
+    private fun couldntCheckEveryQuote(record: AttestationRecord): RecordDcapVerification {
+        val unchecked = DcapVerification.Unchecked(VERIFIER_ERROR)
+        val enclaves = record.modelCandidates?.enclaves ?: emptyList()
+        return RecordDcapVerification(
+            gateway = unchecked,
+            model = unchecked.takeIf { record.modelIntelQuote?.isNotEmpty() == true },
+            gpu = unchecked.takeIf { record.gpuIntelQuote?.isNotEmpty() == true },
+            listed = enclaves.map { unchecked },
+            listedManagers = enclaves.map { e ->
+                val cm = e.report?.get("compose_manager_attestation") as? kotlinx.serialization.json.JsonObject
+                unchecked.takeIf { (cm?.get("quote") as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { q -> q.isString } != null }
+            })
+    }
+
     /** Verifies the record's GPU evidence against NVIDIA NRAS. Skipped when there is no nvidia_payload; fail-closed once evidence exists. */
     fun verifyGpu(record: AttestationRecord) {
         // cancel AND drop the handle (F2, iOS's TLA+ model): a record with no GPU evidence returns below, and a kept
@@ -1066,19 +1139,37 @@ class ConfidentialSession(
         nrasJob?.cancel(); nrasJob = null
         gpuAttestation = null
         // A model node that answered with no nvidia_payload couldn't be checked (S37 B4): soft, never verified, about this record
-        val payload = record.nvidiaPayload?.takeIf { it.isNotEmpty() } ?: run {
-            if (record.modelIntelQuote?.isNotEmpty() == true) gpuAttestation = NrasVerification.Inconclusive(NrasVerification.EVIDENCE_ABSENT)
+        val payload = record.nvidiaPayload?.takeIf { it.isNotEmpty() }
+        val modelAbsent = payload == null && record.modelIntelQuote?.isNotEmpty() == true
+        // Every enclave near.ai lists holds the sealed key, so each one's GPU evidence is checked like the model leg's (1.1.1 audit A3).
+        val listed = record.modelCandidates?.enclaves?.map { it.nvidiaPayload } ?: emptyList()
+        val listNonce = record.modelCandidates?.nonce
+        if (payload == null && listed.isEmpty()) {
+            if (modelAbsent) gpuAttestation = NrasVerification.Inconclusive(NrasVerification.EVIDENCE_ABSENT)
             return
         }
         val service = services.verifyNras ?: return
         val nonce = record.modelNonce
         nrasJob = scope.launch {
             // A throw is not NVIDIA's verdict: inconclusive (soft), never pending forever.
-            val result = try { service(payload, nonce) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
+            suspend fun check(p: String, n: String?) = try { service(p, n) } catch (e: kotlinx.coroutines.CancellationException) { throw e } catch (e: Exception) {
                 warn("[nras] verifier threw: $e"); NrasVerification.Inconclusive(VERIFIER_ERROR)
             }
+            // In parallel, read back in input order (model leg first): the verdict is the worst, the reason shown stays stable.
+            val results = coroutineScope {
+                val model = payload?.let { async { check(it, nonce) } }
+                val others = listed.map { p -> async {
+                    if (p.isNullOrEmpty()) NrasVerification.ListedInconclusive(NrasVerification.EVIDENCE_ABSENT)
+                    else check(p, listNonce).let { verdict -> when (verdict) {
+                        is NrasVerification.Failed -> NrasVerification.ListedFailed(verdict.reason)
+                        is NrasVerification.Inconclusive -> NrasVerification.ListedInconclusive(verdict.reason)
+                        else -> verdict
+                    } } // A10: names the listed enclave, never the read one; NVIDIA's own reason rides along for the expert row
+                } }
+                listOfNotNull(model?.await()) + others.awaitAll()
+            }
             if (!isActive) return@launch
-            gpuAttestation = result
+            gpuAttestation = NrasVerification.worst((if (modelAbsent) listOf(NrasVerification.Inconclusive(NrasVerification.EVIDENCE_ABSENT)) else emptyList()) + results)
         }
     }
 
@@ -1157,14 +1248,16 @@ class ConfidentialSession(
             // flagged in the sheet, not degraded (matching near.ai's own verifier).
             if (dcapVerification?.hasHardFailure == true) return AttestationState.DEGRADED
             // Fail-closed: the action log or the boot log does not bind to the model's hardware (NearTrustScope (a)/(b)).
-            if (nearScopeBroken) return AttestationState.DEGRADED
+            if (nearScopeBroken || listedScopeBroken) return AttestationState.DEGRADED
             // Fail-closed: a quote that does not echo our request nonce may be a replay.
             if (attestation.nonceEchoed == false) return AttestationState.DEGRADED
+            // C3a: a listed enclave holding the same key failed a check.
+            if (attestation.candidatesBroken) return AttestationState.DEGRADED
             // Fail-closed: GPU evidence that didn't verify — whether NVIDIA rejected
             // it (hard) or NRAS was unreachable (inconclusive) — breaks the GPU half
             // of the trust chain either way. Both degrade; only a genuine rejection
             // is HARD (see degradeIsHardFailure). null = in flight.
-            if (gpuAttestation is NrasVerification.Failed || gpuAttestation is NrasVerification.Inconclusive) return AttestationState.DEGRADED
+            if (gpuAttestation?.isHardFailure == true || gpuAttestation is NrasVerification.Inconclusive || gpuAttestation is NrasVerification.ListedInconclusive) return AttestationState.DEGRADED
             // Fail-closed: TLS attestation that didn't verify — a fingerprint mismatch
             // (hard, possible MITM) or an unreachable check (inconclusive). NotPerformed
             // (no direct host) is neutral; null = in flight.
@@ -1173,6 +1266,8 @@ class ConfidentialSession(
             if (couldntCheckHardware) return AttestationState.DEGRADED
             // near.ai's tier list never came: can't check, soft, the send asks (formal/ TierTimeout, iOS 83b8d527).
             if (tierGaveUp) return AttestationState.DEGRADED
+            // C3a: the list of enclaves holding the key never came: can't check, soft, the send asks.
+            if (attestation.modelCandidatesListFailed || listedScopeEvidenceAbsent) return AttestationState.DEGRADED
             // Fail-closed: a present-but-malformed key is a broken E2EE promise, not
             // "no E2EE expected". Both e2eeDegradedReason and e2eeBindingIntact
             // require 32 bytes; without this gate a wrong-length key with a verified
@@ -1232,45 +1327,71 @@ class ConfidentialSession(
                 attestationFetchFailed -> "couldn't reach the attestation server."
                 else -> null // still loading
             }
-            if (dcapVerification?.hasHardFailure == true) return "the hardware quote failed intel dcap verification."
+            // 1.1.1 audit integ read item 8 (iOS ConfidentialSession+Verdict.swift @ 01a337a4: recordIsStaleAndUnrefreshable, right after the
+            // missing-attestation guard): a record past its age whose refetch failed is named before any other cause. attestationState and
+            // sendPolicy still read recordStaleUnconfirmed where they did; only the reason's place moved.
+            if (recordStaleUnconfirmed) return "couldn't reach the attestation server."
+            dcapVerification?.takeIf { it.hasHardFailure }?.let { dcap ->
+                // a listed enclave's rejection names the listed enclave, never the read one (A10)
+                val readLegFailed = listOf(dcap.gateway, dcap.model, dcap.gpu).any { it?.isHardFailure == true }
+                return if (readLegFailed) "the hardware quote failed intel dcap verification." else ListedEnclaveReason.ENCLAVE_FAILED
+            }
             if (attestation.codeIdentityVerified == false) return "the running code doesn't match the attested manifest."
             nearScope?.hardBreakReason?.let { return it }
+            listedNearScopes.orEmpty().firstNotNullOfOrNull { it.listedHardBreakReason }?.let { return it }
             // before (a) binds the log it may not be called signed (near-trust-scope v4)
             if (modelComposeIntegrityFailed) return if (nearScope?.deployLogBinding == DeployLogBinding.Bound) NearTrustScope.RECIPE_UNVERIFIED else NearTrustScope.RECIPE_UNVERIFIED_UNBOUND
             if (unpublishedOnlyButE2EEIntact) return "an image has no published attestation. the send is still sealed."
             if (imageProvenance is ManifestProvenance.Incomplete) return "an image couldn't be traced to near.ai's published source."
             if (attestation.nonceEchoed == false) return "the attestation didn't echo this session's nonce (possible replay)."
+            attestation.candidatesReason?.let { return it }
             if (couldntCheckHardware) {
+                // Only listed quotes unchecked: name the listed enclaves, never the read one's Intel line (iOS 38850f79).
+                val readLegUnchecked = dcapVerification?.let { d -> listOf(d.gateway, d.model, d.gpu).any { it?.isUnchecked == true } } == true ||
+                    nearScope?.deployLogBinding == DeployLogBinding.Unchecked || listedNearScopes?.any { it.deployLogBinding == DeployLogBinding.Unchecked } == true
+                if (!readLegUnchecked) return KeyCustodyCopy.listedSentence(KeyCustodyCopy.Listed.UNFINISHED)
                 // our verifier broke: our bug, not the hardware's (trust-hardware-fail-lines), and not an outage either
                 if (dcapVerification?.uncheckedReason == VERIFIER_ERROR) return VERIFIER_BROKE
                 return INTEL_UNREACHABLE
             }
-            gpuAttestation?.let { gpu ->
-                if (gpu is NrasVerification.Failed) return "nvidia gpu attestation failed verification."
-                // teemoon's own fault is never called an outage (pm, 2026-11-06): the approved fault line, as the row says
-                // no GPU evidence was sent (S37 B4): nothing was unreachable, so never "(service unreachable)"
-                if (gpu is NrasVerification.Inconclusive) return when (gpu.reason) {
-                    NrasVerification.TEEMOON_FAULT -> VERIFIER_ERROR
-                    NrasVerification.EVIDENCE_ABSENT -> NrasVerification.EVIDENCE_ABSENT
-                    else -> "nvidia gpu attestation couldn't be completed (service unreachable)."
-                }
-            }
-            tlsAttestation?.let { tls ->
-                // A1: the probe is of the model node's certificate, never the chat's connection (iOS 123d0b28)
-                if (tls.isUnverified) return if (tls.isHardFailure) "the model node's tls certificate doesn't match its attestation."
-                else if (tls.reason == NrasVerification.TEEMOON_FAULT) VERIFIER_ERROR
+            // 1.1.1 audit integ read, item 3 (iOS ConfidentialSession+Verdict.swift @ 01a337a4 e2eeDegradedReason): iOS's order, so the text and
+            // the confirmation key's reason half agree when a listed GPU verdict and a read-leg fault coincide: teemoon's own fault on the GPU leg,
+            // then on the TLS leg, then no GPU evidence sent, then the listed verdicts, then the GPU's own, then the TLS leg's own.
+            // teemoon's own fault is never called an outage (pm, 2026-11-06): the approved fault line, as the row says
+            val gpu = gpuAttestation; val tls = tlsAttestation
+            if (gpu is NrasVerification.Inconclusive && gpu.reason == NrasVerification.TEEMOON_FAULT) return VERIFIER_ERROR
+            // A1: the probe is of the model node's certificate, never the chat's connection (iOS 123d0b28)
+            if (tls is TlsAttestation.Inconclusive && tls.reason == NrasVerification.TEEMOON_FAULT) return VERIFIER_ERROR
+            // no GPU evidence was sent (S37 B4): nothing was unreachable, so never "(service unreachable)"
+            if (gpu is NrasVerification.Inconclusive && gpu.reason == NrasVerification.EVIDENCE_ABSENT) return NrasVerification.EVIDENCE_ABSENT
+            // a listed enclave's NVIDIA rejection reads the listed enclave's line (A10); the read enclave's own keeps its own
+            if (gpu is NrasVerification.ListedFailed) return ListedEnclaveReason.ENCLAVE_FAILED
+            if (gpu is NrasVerification.ListedInconclusive) return KeyCustodyCopy.listedSentence(KeyCustodyCopy.Listed.UNFINISHED)
+            if (gpu != null && !gpu.isVerified) return if (gpu.isHardFailure) "nvidia gpu attestation failed verification."
+                else "nvidia gpu attestation couldn't be completed (service unreachable)."
+            if (tls != null && tls.isUnverified) return if (tls.isHardFailure) "the model node's tls certificate doesn't match its attestation."
                 else "teemoon couldn't check the model node's tls certificate (unreachable)."
-            }
             if (lastRequestUsedE2EE == false) lastE2EEFailReason?.let { return it }
             val key = attestation.modelEd25519PubKey
             if (key == null || key.size != 32) return "the model's encryption key is unavailable."
-            val mqv = attestation.modelQuoteVerification ?: return "the model's hardware attestation is unavailable."
+            // a key with no quote the parser could read is unproven, evidence (iOS release/1.1.1-patch e2f62bcc, a pick of 05a4d9a0): the same line as an unbound key
+            val mqv = attestation.modelQuoteVerification ?: return "the encryption key isn't bound to verified hardware."
             if (!mqv.isVerified) return "the model's hardware attestation failed verification."
             if (attestation.e2eeKeyBoundToModelTEE == false) return "the encryption key isn't bound to verified hardware."
-            if (recordStaleUnconfirmed) return "couldn't reach the attestation server."
             // LAST: GPU/TLS hard failures and a missing key name themselves first (pm 2026-11-14, iOS verify-deadline)
+            if (attestation.modelCandidatesListFailed) return ListedEnclaveReason.LIST_FAILED
+            if (listedScopeEvidenceAbsent) return NrasVerification.EVIDENCE_ABSENT
             if (tierGaveUp) return TIER_REASON
             return null
+        }
+
+    /** near.ai's enclave list failed, it is the cause the send names, and nothing is in flight: the ask offers re-verify (1.1.1 audit A8, iOS beb43b71). */
+    val enclaveListFailedAsks: Boolean
+        get() {
+            val refetching = attestationFetchInFlight && attestationJob?.isCancelled == false
+            if (attestation?.modelCandidatesListFailed != true || verdictsPending || refetching) return false
+            // softButSealed + the reason keep a worse soft cause (Intel unreachable, a missing key) from being hidden
+            return softButSealed && e2eeDegradedReason == ListedEnclaveReason.LIST_FAILED
         }
 
     /** The record is older than [ATTESTATION_MAX_AGE_SECONDS] and the refetch that should replace it failed. */
@@ -1286,16 +1407,16 @@ class ConfidentialSession(
      * would still be sealed end-to-end; the residual risk is an unverified
      * image inside the enclave boundary, not plaintext on the wire. The
      * confirmation alert uses this to say the truth ("still encrypted — code
-     * unverified") instead of the misleading "send unencrypted".
+     * unverified") instead of the misleading "send without encryption".
      */
     val provenanceBlockedButE2EEIntact: Boolean
         // an unpublished-only image is not a provenance block: it exempts only itself (sendgate 0.5.11, iOS 3f5d91a3).
-        // Counted as one, an unpublished image beside a stale record offered "send unencrypted" over a sealed send.
+        // Counted as one, an unpublished image beside a stale record offered "send without encryption" over a sealed send.
         get() = (imageProvenance as? ManifestProvenance.Incomplete)?.let { !it.isUnpublishedOnly } == true && e2eeBindingIntact
 
     /** Clean GitHub 404s only, with the model key bound to verified hardware. Send stays sealed and ungated; the session is not fully verified. */
     val unpublishedOnlyButE2EEIntact: Boolean
-        get() = imageProvenance?.isUnpublishedOnly == true && e2eeBindingIntact && !tierGaveUp
+        get() = imageProvenance?.isUnpublishedOnly == true && e2eeBindingIntact && !tierGaveUp && attestation?.modelCandidatesListFailed != true && !listedScopeEvidenceAbsent
 
     /**
      * Key bound to a verified model TEE; GPU/TLS not in an unverified state.
@@ -1309,17 +1430,18 @@ class ConfidentialSession(
             if (dcapVerification?.hasHardFailure == true) return false
             // not hard is not verified: a quote Intel couldn't check binds nothing (near-send-gate-rule)
             if (couldntCheckHardware) return false
-            if (nearScopeBroken) return false
+            if (nearScopeBroken || listedScopeBroken) return false
             // the model recipe's hash mismatch is evidence (degradeIsHardFailure counts it): never an intact binding.
             // Shipped 1.0.6 missed it here, so an unpublished image beside it sent unasked (audit's F1 addendum).
             if (modelComposeIntegrityFailed) return false
             if (att.codeIdentityVerified == false) return false
             if (att.nonceEchoed == false) return false
+            if (att.candidatesBroken) return false
             val key = att.modelEd25519PubKey ?: return false
             if (key.size != 32) return false
             if (att.modelQuoteVerification?.isVerified != true) return false
             if (att.e2eeKeyBoundToModelTEE == false) return false
-            if (gpuAttestation is NrasVerification.Failed || gpuAttestation is NrasVerification.Inconclusive) return false
+            if (gpuAttestation?.isHardFailure == true || gpuAttestation is NrasVerification.Inconclusive || gpuAttestation is NrasVerification.ListedInconclusive) return false
             if (tlsAttestation?.isUnverified == true) return false
             return true
         }
@@ -1340,8 +1462,9 @@ class ConfidentialSession(
             if (att.codeIdentityVerified == false) return true
             if (modelComposeIntegrityFailed) return true
             if (dcapVerification?.hasHardFailure == true) return true
-            if (nearScopeBroken) return true
+            if (nearScopeBroken || listedScopeBroken) return true
             if (att.nonceEchoed == false) return true
+            if (att.candidatesBroken) return true
             // HARD only for a genuine negative verdict (NVIDIA rejection / nonce
             // replay; TLS fingerprint mismatch). An unreachable NRAS/TLS check is
             // Inconclusive → soft: it still degrades, but must never be branded
@@ -1352,11 +1475,10 @@ class ConfidentialSession(
                 // Plaintext went out unsealed, or the key isn't bound to a verified
                 // model TEE — both are hard breaks of the E2EE guarantee.
                 if (lastRequestUsedE2EE == false) return true
-                val mqv = att.modelQuoteVerification
-                if (mqv != null) {
-                    if (!mqv.isVerified) return true
-                    if (att.e2eeKeyBoundToModelTEE == false) return true
-                }
+                // A key no readable quote proves is unproven: whoever answered chose it. Never "still checking" (1.1.0 audit LOW, iOS release/1.1.1-patch e2f62bcc, a pick of 05a4d9a0).
+                val mqv = att.modelQuoteVerification ?: return true
+                if (!mqv.isVerified) return true
+                if (att.e2eeKeyBoundToModelTEE == false) return true
             }
             // Remaining degrades — provenance Incomplete with E2EE intact, no
             // Ed25519 key, or model attestation simply unavailable — are advisory.
@@ -1371,6 +1493,8 @@ class ConfidentialSession(
      */
     val sendPolicy: TrustSendPolicy
         get() {
+            // Item 1 (iOS d2d70d45): the capability guard is exactly where a demoted model falls out of the gate, so this comes first.
+            if (sealedModelWentPlain) return TrustSendPolicy.CONFIRM
             val policy = TrustVerdict.sendPolicy(requiresConfirmation = requiresE2EEConfirmation, hardFailure = degradeIsHardFailure)
             // S30: an inconclusive provenance lookup asks before the send (T2b), once per record
             return if (policy == TrustSendPolicy.ALLOW && provenanceUncheckedAsks) TrustSendPolicy.CONFIRM else policy
@@ -1379,10 +1503,11 @@ class ConfidentialSession(
     /** DCAP couldn't fetch or read Intel's collateral for a quote, or (a) couldn't for the compose manager's (iOS). */
     val couldntCheckHardware: Boolean
         get() = dcapVerification?.hasUnchecked == true || nearScope?.deployLogBinding == DeployLogBinding.Unchecked
+            || listedNearScopes?.any { it.deployLogBinding == DeployLogBinding.Unchecked } == true
 
     /**
      * A soft state in which the send would still go out sealed — the same peer the send seals to — and not the
-     * provenance-only case: the "still checking near.ai's hardware" confirm, never "send unencrypted"
+     * provenance-only case: the "still checking near.ai's hardware" confirm, never "send without encryption"
      * (near-send-gate-rule, the maintainer 2026-11-06). The predicate is the send's own, not [e2eeBindingIntact].
      */
     val softButSealed: Boolean
@@ -1438,7 +1563,7 @@ class ConfidentialSession(
     }
 
     /** (record, reason) pairs the user has already said "send anyway" to. */
-    private val confirmedDegrades = HashSet<String>()
+    internal val confirmedDegrades = HashSet<String>()   // internal: TierDowngradeTest plants the post-flip key
 
     /** One confirm per (record, reason): the record is its fetch time and nonce; a pending confirm is its own reason. */
     fun confirmationKey(pending: Boolean): String? {
@@ -1453,8 +1578,21 @@ class ConfidentialSession(
             else e2eeDegradedReason ?: (if (provenanceUncheckedAsks) "provenanceUnchecked" else "")
         return "$record|$reason"
     }
-    fun hasConfirmed(pending: Boolean): Boolean = confirmationKey(pending)?.let { it in confirmedDegrades } ?: false
-    fun rememberConfirmation(pending: Boolean) { confirmationKey(pending)?.let { confirmedDegrades += it; touch() } }
+    fun hasConfirmed(pending: Boolean): Boolean {
+        // 1.1.1 audit B1 read (iOS 217dc4cb): the tier-downgrade ask is answered only by its own "send without encryption"
+        // (SealedModels.accept). A tier flip clears neither the record nor confirmedDegrades, so an earlier "send anyway" on the
+        // held record must never count; what kept it shut was only that the key's reason half moves.
+        if (sealedModelWentPlain) return false
+        return confirmationKey(pending)?.let { it in confirmedDegrades } ?: false
+    }
+    fun rememberConfirmation(pending: Boolean, downgradeAskShown: Boolean = false) {   // false by default: only the downgrade ask's own answer says true
+        // "send without encryption" to a downgrade: the consent is the id's removal, asked once per downgrade (item 1).
+        // 1.1.1 audit cut review item 1: the answer carries WHICH ask was shown. The tier can flip to plain while a soft,
+        // list-failed or still-checking ask is open, and that ask's "send anyway" is not this consent: nothing is remembered,
+        // the model stays armed, and the downgrade ask is what the next send shows.
+        if (sealedModelWentPlain) { if (downgradeAskShown) activeProvider?.let { sealedModels.accept(it.model); touch() }; return }
+        confirmationKey(pending)?.let { confirmedDegrades += it; touch() }
+    }
 
     /** The policy the composer asks with: a confirm already given for this record and reason doesn't ask again. */
     val sendPolicyAfterConfirmations: TrustSendPolicy

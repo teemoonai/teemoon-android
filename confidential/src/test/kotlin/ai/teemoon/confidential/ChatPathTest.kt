@@ -1,6 +1,6 @@
 // ports: teemoonTests/ChatPathTests.swift @ 4d2a41e3
 //
-// expected.json chat_path (audit 2026-11-06; fixtures/nearai-trust expected.json af313e2b… since 2026-11-08 (sheet_rows; was 27a39e6f…3a18), the small-models log
+// expected.json chat_path (audit 2026-11-06; fixtures/nearai-trust expected.json 6e8f1e1e… since iOS ce5cada8 (prose only; af313e2b… since 2026-11-08, sheet_rows; was 27a39e6f…3a18), the small-models log
 // actions-5e513dbd72e1-2026-11-04T1933Z.json 4a427d46…641b, up-revision-services.json 55407e8f…01d7, byte-identical to
 // iOS's conformance/nearai-trust): the small-models CVM's signed log and running revisions, per host. A Qwen3.8 chat is
 // off FLUX's path, so FLUX's recipe LEAKS pages don't judge it; a FLUX request is on it. Anything unresolvable counts

@@ -67,6 +67,14 @@ fun ThreadsScreen(
     previews: Map<String, String> = emptyMap(),
     /** The search box survives leaving the list (ChatListSearchMemory). */
     initialQuery: String = "",
+    /**
+     * The restored query's answer, when the caller already holds it: drawn on the first frame instead of after
+     * [onSearch] returns. Only a screenshot test passes it (the app passes null, and a restored query answers through
+     * [onSearch] at once, undebounced): the answer lands in an effect and is drawn by the composition after it, which
+     * Paparazzi does not always run — in a full verify the frame was the first composition, all five chats unfiltered;
+     * alone it was the settled list (DesignSnapshotTest.chatsList_searchMatchesATitle, 2026-11-19).
+     */
+    initialHits: List<ChatSearchResult>? = null,
     onQueryChanged: (String) -> Unit = {},
     /** ChatListSearchMemory.freshOpens: a change opens the list clean — no search, scrolled to the top. */
     freshOpen: Int = 0,
@@ -76,14 +84,16 @@ fun ThreadsScreen(
 ) {
     var query by remember(freshOpen) { mutableStateOf(initialQuery) }
     val listState = remember(freshOpen) { androidx.compose.foundation.lazy.LazyListState() }
-    var hits by remember { mutableStateOf<List<ChatSearchResult>?>(null) }
-    var hitsQuery by remember { mutableStateOf("") }
+    val seeded = initialHits?.takeIf { initialQuery.isNotBlank() }
+    var hits by remember { mutableStateOf(seeded) }
+    var hitsQuery by remember { mutableStateOf(if (seeded != null) initialQuery else "") }
     var indexUnavailable by remember { mutableStateOf(false) }
     var fallbackIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var pendingDeletion by remember { mutableStateOf<ThreadEntity?>(null) }
     LaunchedEffect(query) {
         onQueryChanged(query)
         if (query.isBlank()) { hits = null; indexUnavailable = false; hitsQuery = ""; return@LaunchedEffect }
+        if (query == initialQuery && seeded != null) { hits = seeded; indexUnavailable = false; hitsQuery = query; return@LaunchedEffect }
         if (query != initialQuery) delay(150)   // fresh keystrokes debounce; a restored query answers at once
         val answer = onSearch(query)
         hits = answer; indexUnavailable = answer == null; hitsQuery = query

@@ -375,3 +375,7 @@ chip · web chip … send/stop — with these differences:
   description, and the where chip's long press keeps its menu (model info, copy model id).
 - **TalkBack order** is set with `traversalIndex` inside a traversal group: the strip, the text, "+", where, web, send.
 
+- **The GitHub fetch budget** (iOS 9d21baba) is one `FetchBudget` of 200 per action log, as on iOS, but Android's (c) fetch is one session job
+  over the read scope and every listed one, with one fetched-files map between them (iOS runs `TrustScope.run` per log with its own
+  cache). Each log's budget is kept by its place in that list; a file a spent log could not fetch is left for another log that names it,
+  and one no log could read ends as `ComposeFileFetch.Failed` (couldn't-check), never kept on disk.

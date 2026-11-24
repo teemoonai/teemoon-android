@@ -39,7 +39,7 @@ class TierDeadlineTest {
     /** Every verdict in; only the tier unknown. The clock is the test's virtual time from the record's own fetch. */
     private fun TestScope.session(services: (now: () -> Instant) -> ConfidentialSession.Services = { now -> ConfidentialSession.Services(skipLiveAttestation = true, now = now) }): ConfidentialSession {
         val now = { record.fetchedAt.plusMillis(testScheduler.currentTime) }
-        val s = ConfidentialSession(backgroundScope, { near }, credentialFor = { "" }, services = services(now))
+        val s = ConfidentialSession(backgroundScope, { near }, credentialFor = { "" }, services = services(now), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         s.attestation = record; s.lastRequestUsedE2EE = true
         s.imageProvenance = ManifestProvenance.AllVerified(listOf(ImageRef("nearaidev/cloud-api", "a".repeat(64))), emptyList())
         s.dcapVerification = RecordDcapVerification(gateway = ok, model = ok)
@@ -122,7 +122,7 @@ class TierDeadlineTest {
         var asked = 0
         val s = ConfidentialSession(backgroundScope, { near }, credentialFor = { "" }, services = ConfidentialSession.Services(
             directBase = { "https://model.example" }, fetchRecord = { _, _, _, _, _ -> record }, fetchModelLayerManifest = null, verifyManifests = null,
-            now = { record.fetchedAt.plusMillis(testScheduler.currentTime) }, fetchTiers = { asked++; false }))
+            now = { record.fetchedAt.plusMillis(testScheduler.currentTime) }, fetchTiers = { asked++; false }), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         // iOS VerdictDeadline: a first try and two retries (2 s, 4 s), keyless
         s.refreshAttestation(); testScheduler.advanceTimeBy(7_000); testScheduler.runCurrent()
         assertEquals("asked with the first attestation, and retried twice", 3, asked)

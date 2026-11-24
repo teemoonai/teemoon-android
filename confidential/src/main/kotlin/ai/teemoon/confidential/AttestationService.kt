@@ -1,10 +1,14 @@
+// ports: teemoon/Inference/HTTPClient.swift @ 01a337a4 (1.1.1 audit integ read item 4: data(for:limit:) is a client capability (LimitedHttp), never an identity check)
+// ports: teemoon/Confidential/ModelCandidates.swift @ 01a337a4 (1.1.1 audit integ read item 1: candidateList: the list request is cancelled at its 15 s cap and with its caller (enqueue + cancel on cancellation))
 // ports: teemoon/Confidential/AttestationService+Reports.swift, +Model.swift, +GPU.swift, AttestationService.swift @ d5e40fee (S37: advertised report_data per leg, the model leg's app_compose)
+//        teemoon/Confidential/AttestationService.swift @ 5e36628e (1.1.1 audit A11: the list's body is capped while it streams; HTTPClient.swift's data(for:limit:) is getLimited)
+//        teemoon/Confidential/AttestationService.swift @ 7814a0fd (C3a: fetchCandidateList, adoptCandidates; the list is asked only once the model leg yields a key)
 //        teemoon/Confidential/AttestationService.swift @ v1.0.6 (fetch: three independent legs; only a blackout throws)
 //        teemoon/Confidential/AttestationService+Reports.swift @ v1.0.1
 //        teemoon/Confidential/AttestationService+Model.swift @ v1.0.6 (a 4xx is final)
 //        teemoon/Confidential/AttestationService+GPU.swift @ v1.0.6 (status before decode; a 4xx is final)
 //        teemoon/Confidential/AttestationService+Routing.swift @ v1.0.1
-//        teemoon/Inference/ConfidentialLanguageModel.swift @ 3d561c4 (TEEContext only)
+//        teemoon/Inference/ConfidentialLanguageModel.swift @ 3d561c4 (TEEContext only; sealedModels + noteSealedRequest @ 6c364e33)
 //
 // Orchestrates the near.ai remote attestation report: wire envelopes, host
 // routing, the GPU node fetch, and the model Ed25519 race. The resulting data
@@ -17,16 +21,19 @@ import ai.teemoon.providers.TeemoonHttp
 import ai.teemoon.providers.NearAIModelCatalog
 import ai.teemoon.providers.Provider
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -47,19 +54,82 @@ import java.net.URLEncoder
 /** GET [url] with [headers] → (status, body). Throws on transport failure. */
 typealias AttestationHttp = suspend (url: String, headers: Map<String, String>) -> Pair<Int, ByteArray>
 
+/** A body that passed its limit while it streamed (1.1.1 audit A11; iOS HTTPBodyTooLarge). */
+class HttpBodyTooLarge : IOException("body past its limit")
+
 object AttestationService {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
-    val okHttp: AttestationHttp = run {
-        val client: OkHttpClient by lazy { TeemoonHttp.builder().callTimeout(15, TimeUnit.SECONDS).build() }   // lazy: class-init OkHttp fails under layoutlib (see EndpointDirectory.liveClient)
-        val fn: AttestationHttp = { url, headers ->
-            withContext(Dispatchers.IO) {
-                val b = Request.Builder().url(url).get(); headers.forEach { (k, v) -> b.header(k, v) }
-                client.newCall(b.build()).execute().use { it.code to it.body.bytes() }
-            }
-        }
-        fn
+    private val liveClient: OkHttpClient by lazy { TeemoonHttp.builder().callTimeout(15, TimeUnit.SECONDS).build() }   // lazy: class-init OkHttp fails under layoutlib (see EndpointDirectory.liveClient)
+
+    /**
+     * The capability a client has when it can stop a download at a byte limit (1.1.1 audit integ read, item 4; iOS
+     * HTTPClient.data(for:limit:)). [fetchCandidateList] asks for it by type, never by which client object it was handed,
+     * so a wrapped client keeps the A11 cap during the download instead of silently judging the body after it.
+     */
+    interface LimitedHttp {
+        suspend fun getLimited(url: String, headers: Map<String, String>, limit: Int): Pair<Int, ByteArray>
     }
+
+    /** The production client: plain GETs and capped GETs over one OkHttp client. */
+    class OkHttpAttestation(private val client: () -> OkHttpClient) : suspend (String, Map<String, String>) -> Pair<Int, ByteArray>, LimitedHttp {
+        override suspend fun invoke(url: String, headers: Map<String, String>): Pair<Int, ByteArray> =
+            callCancellable(client(), url, headers) { resp, _ -> resp.code to resp.body.bytes() }
+        override suspend fun getLimited(url: String, headers: Map<String, String>, limit: Int): Pair<Int, ByteArray> =
+            AttestationService.getLimited(client(), url, headers, limit)
+    }
+
+    val okHttp: AttestationHttp = OkHttpAttestation { liveClient }
+
+    /**
+     * GET with a body limit (1.1.1 audit A11; iOS URLSessionHTTP.data(for:limit:)): streams the body and cancels the
+     * transfer once it passes [limit] (or at once when Content-Length says so), so an oversize answer is never downloaded
+     * whole. Throws [HttpBodyTooLarge].
+     */
+    suspend fun getLimited(client: OkHttpClient, url: String, headers: Map<String, String>, limit: Int): Pair<Int, ByteArray> =
+        callCancellable(client, url, headers) { resp, call ->
+            if (resp.body.contentLength() > limit) { call.cancel(); throw HttpBodyTooLarge() }
+            val out = java.io.ByteArrayOutputStream()
+            val buf = ByteArray(8192)
+            resp.body.byteStream().use { input ->
+                while (true) {
+                    val n = input.read(buf)
+                    if (n < 0) break
+                    out.write(buf, 0, n)
+                    if (out.size() > limit) { call.cancel(); throw HttpBodyTooLarge() }
+                }
+            }
+            resp.code to out.toByteArray()
+        }
+
+    /**
+     * One GET that ends WITH its coroutine (1.1.1 audit integ read, item 1; iOS ModelCandidates.candidateList @ 01a337a4: "the
+     * request is cancelled at the cap and when the caller is"). A blocking execute() inside withContext(IO) cannot be cancelled:
+     * withTimeoutOrNull waited out OkHttp's own timeouts, so a stalled key-bearing request outlived the 15 s cap and a model
+     * switch. enqueue + invokeOnCancellation { call.cancel() } closes the connection the moment the coroutine is cancelled; the
+     * body is read on OkHttp's thread, where the same cancel makes the read throw. The request bytes are the caller's, unchanged.
+     */
+    private suspend fun <T> callCancellable(client: OkHttpClient, url: String, headers: Map<String, String>, read: (okhttp3.Response, okhttp3.Call) -> T): T =
+        suspendCancellableCoroutine { cont ->
+            val b = Request.Builder().url(url).get(); headers.forEach { (k, v) -> b.header(k, v) }
+            val call = client.newCall(b.build())
+            cont.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : okhttp3.Callback {
+                override fun onFailure(call: okhttp3.Call, e: IOException) { cont.resumeWithException(e) }
+                override fun onResponse(call: okhttp3.Call, response: okhttp3.Response) {
+                    val r = try { response.use { read(it, call) } } catch (t: Throwable) { cont.resumeWithException(t); return }
+                    cont.resume(r)
+                }
+            })
+        }
+
+    /**
+     * A list larger than this is a list that didn't load (audit 1.1.1 A11): every entry costs a DCAP verify inside the send's
+     * pending hold. The live glm-5.3-flash list is 3 entries, ~0.8 MB.
+     */
+    const val MAX_LIST_BYTES = 4_000_000
+    /** The entry-count half of the same cap (iOS maxListedEnclaves, 86c7c6ce): over it the list counts as failed (listFailed). */
+    const val MAX_LISTED_ENCLAVES = 8
 
     fun randomNonce(): String = ByteArray(32).also { SecureRandom().nextBytes(it) }.toHex()
 
@@ -203,6 +273,15 @@ object AttestationService {
         // Every gateway field below reads through `gw`; a missing gateway must
         // leave them null/empty — never verify or report a quote it did not serve.
         val gw = gateway?.first?.gatewayAttestation
+        // C3a: every enclave near.ai lists for the model holds the key the request is sealed to. Asked only once a key exists
+        // to check against: a leg that gave nothing costs no extra request. Same gateway host as every attestation fetch.
+        val key = modelAtt?.ed25519PubKey
+        var candidates: ModelCandidates.Listed? = null
+        var candidatesAsked = false
+        if (model.isNotEmpty() && key != null) {
+            candidatesAsked = true
+            candidateList(baseUrl, model, apiKey, http)?.let { (body, nonce) -> candidates = adoptCandidates(body, nonce, key) }
+        }
         val quoteVerification = gw?.intelQuote?.takeIf { it.isNotEmpty() }?.let { runCatching { TdxQuoteVerifier.verify(it) }.getOrNull() }
         AttestationRecord(
             composeHash = gw?.info?.composeHash ?: "", mrtd = gw?.info?.tcbInfo?.mrtd ?: "", osImageHash = gw?.info?.osImageHash ?: "",
@@ -222,7 +301,40 @@ object AttestationService {
             gpuNodeReport = gpu?.report,
             // S37 B2/B3: what each leg advertises beside its quote, and the model leg's own measured compose
             gatewayAdvertisedReportData = gw?.reportData, modelAdvertisedReportData = modelAtt?.advertisedReportData,
-            gpuAdvertisedReportData = gpu?.advertisedReportData, modelComposeManifest = modelAtt?.appCompose)
+            gpuAdvertisedReportData = gpu?.advertisedReportData, modelComposeManifest = modelAtt?.appCompose,
+            modelCandidates = candidates, modelCandidatesListFailed = candidatesAsked && candidates == null)
+    }
+
+    /**
+     * The list within [timeoutMs]; the request is cancelled at the cap and when the caller is (a model switch), so no
+     * key-bearing request outlives the fetch that asked for it (1.1.1 audit integ read, item 1; iOS
+     * ModelCandidates.candidateList @ 01a337a4).
+     */
+    suspend fun candidateList(baseUrl: String, model: String, apiKey: String, http: AttestationHttp, timeoutMs: Long = 15_000): Pair<ByteArray, String>? =
+        withTimeoutOrNull(timeoutMs) { fetchCandidateList(baseUrl, model, apiKey, http) }
+
+    /**
+     * The gateway's full list for [model] with a fresh nonce: up to 3 attempts, like the gateway leg (a thrown error or a 5xx
+     * retries; a 4xx or an answer listing nothing is final). Null when it never came — an outage, never a verdict.
+     */
+    suspend fun fetchCandidateList(baseUrl: String, model: String, apiKey: String, http: AttestationHttp): Pair<ByteArray, String>? {
+        // The real client streams and stops at the cap; a planted-bytes seam hands back whole bodies, so the limit is checked on what it returns.
+        val limited: suspend (String, Map<String, String>, Int) -> Pair<Int, ByteArray> =
+            // 1.1.1 audit integ read, item 4 (iOS HTTPClient.data(for:limit:), a protocol requirement): by capability, never by identity
+            if (http is LimitedHttp) { u, h, l -> http.getLimited(u, h, l) }
+            else { u, h, l -> http(u, h).also { if (it.second.size > l) throw HttpBodyTooLarge() } }
+        for (attempt in 0 until 3) {
+            if (attempt > 0) delay(1_000L * (1 shl (attempt - 1)))
+            val nonce = randomNonce()
+            val (status, body) = try { limited(attestationUrl(baseUrl, nonce, "ed25519", model), authHeaders(apiKey), MAX_LIST_BYTES) }
+                catch (e: CancellationException) { throw e } catch (e: HttpBodyTooLarge) { return null } catch (e: Exception) { continue }
+            if (status >= 500) continue
+            if (status >= 400) return null
+            val list = ModelCandidates.list(body)
+            if (list.isEmpty() || list.size > MAX_LISTED_ENCLAVES) return null
+            return body to nonce
+        }
+        return null
     }
 
     /**
@@ -251,6 +363,8 @@ object AttestationService {
         log("Gateway attestation unavailable after 3 attempt(s)")
         return null
     }
+
+    fun adoptCandidates(body: ByteArray, nonce: String, sealedKey: ByteArray): ModelCandidates.Listed? = ModelCandidates.enclaves(body, nonce, sealedKey)
 
     /** The shape ConfidentialSession.Services.fetchRecord takes. */
     fun recordFetcher(http: AttestationHttp = okHttp, log: (String) -> Unit = {}): suspend (String, String, String, String, String) -> AttestationRecord =
@@ -418,6 +532,12 @@ class TeeContext(
     /** E2EE peer; null when the model has no Ed25519 public key (or it converts to a low-order point). */
     val e2eePeer: E2EEPeer?,
 ) {
+    /** near.ai only, set by `ConfidentialSession.currentTeeContext`: where a sealed request arms its model (iOS 6c364e33). */
+    var sealedModels: SealedModels? = null
+
+    /** The transport calls this as a sealed request goes to the network; never for a plain one (TIER_DOWNGRADE.md rule 1). */
+    fun noteSealedRequest() { sealedModels?.arm(model) }
+
     companion object {
         /**
          * Derives the context for one attested request. Completions are routed

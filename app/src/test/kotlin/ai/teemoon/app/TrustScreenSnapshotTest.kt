@@ -34,7 +34,7 @@ class TrustScreenSnapshotTest {
     }
 
     private val scope = CoroutineScope(Dispatchers.Unconfined)
-    private fun session(provider: Provider?) = ConfidentialSession(scope, { provider }, services = ConfidentialSession.Services(skipLiveAttestation = true))
+    private fun session(provider: Provider?) = ConfidentialSession(scope, { provider }, services = ConfidentialSession.Services(skipLiveAttestation = true), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
 
     private fun seeded(): Pair<ConfidentialSession, Provider> {
         val preview = AttestationRecord.preview.copy(fetchedAt = java.time.Instant.now())
@@ -54,7 +54,7 @@ class TrustScreenSnapshotTest {
             directBase = { "https://x.completions.near.ai/v1" }, verifyDcap = { kotlinx.coroutines.awaitCancellation() },
             verifyNras = { _, _ -> kotlinx.coroutines.awaitCancellation() }, verifyTls = { kotlinx.coroutines.awaitCancellation() },
             // provenance answered offline, one image (a pass over none is not a pass): only the three hard verdicts are pending, and nothing reaches the network
-            verifyManifests = { ai.teemoon.confidential.ManifestProvenance.AllVerified(listOf(ai.teemoon.confidential.ImageRef("nearaidev/cloud-api", "a".repeat(64))), emptyList()) }, fetchModelLayerManifest = null))
+            verifyManifests = { ai.teemoon.confidential.ManifestProvenance.AllVerified(listOf(ai.teemoon.confidential.ImageRef("nearaidev/cloud-api", "a".repeat(64))), emptyList()) }, fetchModelLayerManifest = null), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         if (launched) s.adopt(preview, p) else s.attestation = preview
         return s to p
     }
@@ -90,7 +90,7 @@ class TrustScreenSnapshotTest {
                         mutate: (ConfidentialSession) -> Unit = {}): Pair<ConfidentialSession, Provider> {
         val p = Provider.nearAI.copy(id = record.providerID, model = record.model ?: Provider.nearAI.model)
         val s = ConfidentialSession(scope, { p }, services = if (now != null) ConfidentialSession.Services(skipLiveAttestation = true, now = { now })
-            else ConfidentialSession.Services(skipLiveAttestation = true))
+            else ConfidentialSession.Services(skipLiveAttestation = true), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         s.attestation = record; s.lastRequestUsedE2EE = true
         s.dcapVerification = ai.teemoon.confidential.RecordDcapVerification(gateway = ai.teemoon.confidential.DcapVerification.Verified(ai.teemoon.confidential.DcapTcbStatus.UP_TO_DATE, "01", ""))
         s.gpuAttestation = NrasVerification.Verified; s.tlsAttestation = TlsAttestation.Verified
@@ -157,7 +157,7 @@ class TrustScreenSnapshotTest {
         paparazzi.snapshot { TeemoonTheme { Surface { TrustScreen(snap, onBack = {}, onReverify = {}) } } }
     }
 
-    /** trust-leaks-wording: a reviewed build is the one state that says "only it can read this". */
+    /** trust-leaks-wording: a reviewed build is the one state whose hero ends "'s enclave key" (iOS 37de10d9). */
     @Test fun trustAuditReviewed_everyday() {
         val snap = withAudit(ai.teemoon.confidential.EverydayAuditState.REVIEWED)
         paparazzi.snapshot { TeemoonTheme { Surface { TrustScreen(snap, onBack = {}, onReverify = {}) } } }

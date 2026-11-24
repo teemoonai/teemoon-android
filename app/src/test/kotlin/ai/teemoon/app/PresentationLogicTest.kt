@@ -1,7 +1,7 @@
 // ports: teemoonTests/DebugCopyRedactionTests.swift @ v1.0.1 (7 of 9 — the two card-copy tests need the iOS debug views),
 //        teemoonTests/MarkdownStreamSplitterTests.swift @ v1.0.1 (both suites, 19), teemoonTests/TranscriptViewportTests.swift @ v1.0.1 (16),
 //        teemoonTests/TranscriptApplyPolicyTests.swift @ v1.0.1 (8), teemoonTests/FreshStartTests.swift @ v1.0.1 (7),
-//        teemoonTests/FollowGlideTests.swift @ 5d37f9c2 (4) + android-only: AppSettings migration and the grounding rule.
+//        teemoonTests/FollowGlideTests.swift @ 6e45224d (5) + android-only: AppSettings migration and the grounding rule.
 package ai.teemoon.app
 
 import org.junit.Assert.assertEquals
@@ -160,6 +160,18 @@ class TranscriptTest {
     /** FollowGlideTests.aReserveSizedDeltaIsAJump_aWrapBurstIsNot @ 5d37f9c2. */
     @Test fun aReserveSizedDeltaIsAJump_aWrapBurstIsNot() { assertTrue(FollowGlide.isJump(475.0)); assertFalse(FollowGlide.isJump(46.0)); assertFalse(FollowGlide.isJump(23.0)) }
     @Test fun midGlideNoiseDoesNotRetarget_aBurstDoes() { assertFalse(FollowGlide.shouldRetarget(23.0)); assertTrue(FollowGlide.shouldRetarget(46.0)) }
+    /**
+     * FollowGlideTests.theSendJumpStepsAtMost21PointsAFrameAt120Hz @ 6e45224d: the send's jump strobed — 0.25 s smoothstep over a
+     * typical ~670 pt send moved up to 67 pt a frame at 60 Hz. The maintainer picked 0.40 s ("A", 2026-11-19).
+     */
+    @Test fun theSendJumpStepsAtMost21PointsAFrameAt120Hz() {
+        val travel = 670.0
+        val glide = FollowGlide(0.0, travel, 0.0, FollowGlide.JUMP_GLIDE_DURATION, eased = true)
+        fun peak(hz: Double) = (0 until (glide.duration * hz).toInt() + 2).maxOf { i -> glide.offset((i + 1) / hz) - glide.offset(i / hz) }
+        assertTrue("${peak(120.0)} pt per frame at 120 Hz", peak(120.0) <= 21)
+        assertTrue("${peak(60.0)} pt per frame at 60 Hz", peak(60.0) <= 42)
+        assertEquals(travel, glide.offset(glide.duration), 0.01)
+    }
     @Test fun aWrapIsMidTravelAtHalfwayAndLandedAtTheDuration() {
         val g = FollowGlide(100.0, 123.0, 1000.0, FollowGlide.FOLLOW_GLIDE_DURATION)
         assertEquals(100.0, g.offset(1000.0), 0.01); val mid = g.offset(1000.06); assertTrue(mid > 108 && mid < 115); assertFalse(g.isFinished(1000.06)); assertEquals(123.0, g.offset(1000.12), 0.01); assertTrue(g.isFinished(1000.12))

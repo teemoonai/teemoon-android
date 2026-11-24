@@ -13,7 +13,7 @@ class HonestyBannerTest {
     @Test fun theRecipeMismatchBannerSaysSignedOnlyOnceBound() {
         val record = AttestationRecord.preview
         val p = Provider.nearAI.copy(id = record.providerID, model = record.model ?: Provider.nearAI.model)
-        val s = ConfidentialSession(CoroutineScope(Dispatchers.Unconfined), { p }, services = ConfidentialSession.Services(skipLiveAttestation = true, now = { record.fetchedAt }))
+        val s = ConfidentialSession(CoroutineScope(Dispatchers.Unconfined), { p }, services = ConfidentialSession.Services(skipLiveAttestation = true, now = { record.fetchedAt }), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         s.attestation = record
         s.modelLayerVerification = ModelLayerVerification.HASH_MISMATCH
         for (b in listOf<DeployLogBinding?>(null, DeployLogBinding.NotBound(DeployLogBinding.Reason.NO_LOG), DeployLogBinding.Unchecked,

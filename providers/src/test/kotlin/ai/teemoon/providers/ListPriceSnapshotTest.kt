@@ -35,6 +35,16 @@ class ListPriceSnapshotTest {
         assertTrue(ListPriceSnapshot.price("api.openai.com", "").isEmpty())
     }
 
+    /** The 1.1.1 cut's refresh (iOS ff889422, snapshot 2026-11-19): new rows, repriced rows, 145 rows in all. */
+    @Test fun theOneOneOneRefreshIsCarried() {
+        assertEquals("2026-11-19", ListPriceSnapshot.SNAPSHOT_DATE)
+        assertEquals(145, ListPriceSnapshot.prices.size)
+        assertEquals("$2.00/$10.00", ListPriceSnapshot.price("api.openai.com", "gpt-6.2-sol"))
+        assertEquals("$3.00/$15.00", ListPriceSnapshot.price("generativelanguage.googleapis.com", "models/gemini-4-neon"))
+        assertEquals("$0.02/$0.09", ListPriceSnapshot.price("api.openai.com", "gpt-oss-20b"))
+        assertEquals("$0.44/$2.20", ListPriceSnapshot.price("api.mistral.ai", "mistral-medium-3.1"))
+    }
+
     @Test fun snapshotIsWellFormed() {
         assertTrue(ListPriceSnapshot.prices.size > 50)
         val namespaces = ListPriceSnapshot.hosts.values.toSet()

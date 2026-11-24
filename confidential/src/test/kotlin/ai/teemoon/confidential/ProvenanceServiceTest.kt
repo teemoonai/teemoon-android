@@ -354,4 +354,39 @@ class ProvenanceServiceTest {
         assertTrue(asked.isNotEmpty())
         assertEquals(emptyList<String>(), asked.filter { "docker.io" in it })
     }
+
+    // --- 1.1.1 audit cut review item 3 (iOS RunningPairBudgetTests, 9d21baba): one GitHub budget per action log ---
+
+    private fun composePath(commit: String, file: String) = "/${MODEL_COMPOSE_REPO}/$commit/$file"
+    private fun composeBody(path: String) = "# $path\nservices:\n  svc:\n    image: nearaidev/x@sha256:abc\n".toByteArray()
+    private fun sha256Of(b: ByteArray) = MessageDigest.getInstance("SHA-256").digest(b).joinToString("") { "%02x".format(it) }
+
+    /** Past the budget a file is couldn't-check: nothing is asked, nothing is kept, and a later fetch with a budget still reads it. */
+    @Test fun aSpentBudgetFetchesNothingAndKeepsNothing() = runTest {
+        val asked = ArrayList<String>()
+        val cache = InMemoryProvenanceCacheStore()
+        val svc = service({ url, _ -> asked += URI(url).path; ProvenanceResponse(200, emptyMap(), composeBody(URI(url).path)) }, cache)
+        val budget = FetchBudget(1)
+        assertTrue(svc.fetchComposeFile("c0", "prod/f0.yaml", budget) is ComposeFileFetch.Digest)
+        assertEquals(ComposeFileFetch.Failed, svc.fetchComposeFile("c1", "prod/f1.yaml", budget))
+        assertNull(svc.fetchComposeBody(DeployLog.Source("c2", "prod/f2.yaml", ""), budget))
+        assertEquals("only the first fetch went to the network", 1, asked.size)
+        assertEquals("an over-budget answer was kept", listOf(ProvenanceService.COMPOSE_FILE_KEY + "c0/prod/f0.yaml"), cache.load().keys.toList())
+        assertTrue("an over-budget answer was cached", svc.fetchComposeFile("c1", "prod/f1.yaml") is ComposeFileFetch.Digest)
+    }
+
+    /** The chat path's body fetches draw on the same budget as the pairs: 10 pairs + 1000 bodies = the budget, no more. */
+    @Test fun aRunawayBodyListStopsAtTheBudget() = runTest {
+        val asked = ArrayList<String>()
+        val svc = service({ url, _ -> asked += URI(url).path; ProvenanceResponse(200, emptyMap(), composeBody(URI(url).path)) })
+        val budget = FetchBudget()
+        for (i in 0 until 10) svc.fetchComposeFile("p$i", "prod/p$i.yaml", budget)
+        val sources = (0 until ComposeFiles.FETCH_BUDGET * 5).map { i ->
+            DeployLog.Source("b$i", "prod/f$i.yaml", sha256Of(composeBody(composePath("b$i", "prod/f$i.yaml"))))
+        }
+        val bodies = sources.mapNotNull { svc.fetchComposeBody(it, budget) }
+        assertEquals("pairs + bodies made ${asked.size} GitHub fetches", ComposeFiles.FETCH_BUDGET, asked.size)
+        assertEquals(ComposeFiles.FETCH_BUDGET - 10, bodies.size)
+        assertTrue("every body was read past the budget", bodies.size < sources.size)
+    }
 }

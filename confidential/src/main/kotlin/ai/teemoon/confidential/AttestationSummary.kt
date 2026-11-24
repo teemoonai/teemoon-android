@@ -1,4 +1,8 @@
-// ports: teemoon/Confidential/AttestationSummary.swift @ v1.0.1, the code pillar's verified line @ 0c3708c (everything but StepState, its own file;
+// ports: teemoon/Confidential/AttestationSummary.swift @ 39ba0919 (deadlinePassed threads into listedEnclaves (Android: session.tierGaveUp))
+// ports: teemoon/Confidential/AttestationSummary.swift @ 36d53c97 (listedInconclusive: nrasState, nrasDetail, the expert row)
+// ports: teemoon/Confidential/AttestationSummary.swift @ 49608f08 (1.1.1 audit A10: gpuRowDetail keeps NVIDIA's reason beside a listed enclave's line)
+// ports: teemoon/Confidential/AttestationSummary.swift @ 37de10d9 (1.1.1 audit A9: headerSubtitle, the key rows and the private pillar line)
+// ports: teemoon/Confidential/AttestationSummary.swift @ a6f11ac7 (1.1.1 audit A7: listedEnclaves), then teemoon/Confidential/AttestationSummary.swift @ v1.0.1, the code pillar's verified line @ 0c3708c (everything but StepState, its own file;
 //        runResult / verificationRun are the VerificationRun.swift extension, in VerificationRun.kt)
 package ai.teemoon.confidential
 
@@ -77,6 +81,8 @@ data class AttestationSummary(
     val dcapVerification: RecordDcapVerification? = null,
     /** NVIDIA NRAS outcome for the record's GPU evidence (null = pending). */
     val nrasVerification: NrasVerification? = null,
+    /** Trust scope for each listed enclave (null = pending or no list; 1.1.1 audit A4). */
+    val listedTrustScopes: List<NearTrustScope>? = null,
     /** TLS-attestation outcome — HTTPS terminates in the model TEE (null = pending). */
     val tlsAttestation: TlsAttestation? = null,
     /**
@@ -107,6 +113,8 @@ data class AttestationSummary(
     val e2eeIntact: Boolean = false,
     /** No image could be checked: the pass settled inconclusive with nothing kept (trust-provenance-unchecked). */
     val provenanceUnchecked: Boolean = false,
+    /** [ConfidentialSession.tierGaveUp] (iOS deadlinePassed): a listed check still missing then reads "couldn't finish", never "checking" (iOS 39ba0919). */
+    val deadlinePassed: Boolean = false,
     /** modelNodeAudit: "only you … can read" is said only over a reviewed build (trust-leaks-wording, iOS 8bfe33cb). */
     val auditState: EverydayAuditState? = null,
     val leaksExposure: String? = null,
@@ -183,7 +191,7 @@ data class AttestationSummary(
                         auditState == EverydayAuditState.LEAKS && leaksExposure != null -> "${AuditedSealText.LEAKS_LEAD} $leaksExposure"
                         provenanceUnchecked -> PROVENANCE_UNCHECKED_HEADER
                         auditState != EverydayAuditState.REVIEWED -> AuditedSealText.NOT_REVIEWED
-                        else -> "only you and the attested TEE hardware can read these messages."
+                        else -> "sealed to the attested enclave key. near.ai's key service decides which enclaves hold it."
                     }
                 }
                 AttestationState.DEGRADED -> {
@@ -288,6 +296,9 @@ data class AttestationSummary(
     val keyInUnverifiedQuote: Boolean
         get() = attestation?.e2eeKeyInModelReportData == true && attestation.modelQuoteVerification?.isVerified == false
 
+    /** The enclaves near.ai lists for the model, as the key-custody lines word them (audit 1.1.1 A7). */
+    val listedEnclaves: KeyCustodyCopy.Listed get() = KeyCustodyCopy.listed(attestation, dcapVerification, nrasVerification, listedTrustScopes, deadlinePassed)
+
     /** DCAP or NVIDIA hasn't answered: the seal can't be claimed yet, however the key binding reads (Q4, iOS). */
     val hardwareChecksPending: Boolean
         get() = listOf(dcapState, nrasState).any { it == StepState.LIVE || it == StepState.PENDING }
@@ -319,7 +330,13 @@ data class AttestationSummary(
      * The expert card's GPU row is NVIDIA's result in every state; never the GPU node's Intel TDX line (A2, the maintainer
      * 2026-11-08; iOS 123d0b28). It said "TDX quote verified on device" once NVIDIA had passed.
      */
-    val gpuRowDetail: String get() = nrasDetail
+    val gpuRowDetail: String
+        get() {
+            // A listed enclave's rejection or couldn't-check keeps NVIDIA's own reason here, and only here (1.1.1 audit A10, iOS 49608f08)
+            (nrasVerification as? NrasVerification.ListedFailed)?.let { return "$nrasDetail ${it.nvidia}" }
+            (nrasVerification as? NrasVerification.ListedInconclusive)?.let { return "$nrasDetail ${if (it.nvidia == NrasVerification.EVIDENCE_ABSENT) NO_NVIDIA_EVIDENCE else it.nvidia}" }
+            return nrasDetail
+        }
 
     /**
      * Response ECDSA signature — true if all verified, false if any mismatch, null if no data yet.
@@ -445,8 +462,8 @@ data class AttestationSummary(
                 is NrasVerification.Verified -> StepState.DONE
                 // Both are unverified (the session degrades either way), but only a rejection is red: NVIDIA
                 // unreachable is the orange "couldn't check", as Intel's is (trust-unchecked-glyph, pm 2026-11-06).
-                is NrasVerification.Failed -> StepState.STUCK
-                is NrasVerification.Inconclusive -> StepState.UNCHECKED
+                is NrasVerification.Failed, is NrasVerification.ListedFailed -> StepState.STUCK
+                is NrasVerification.Inconclusive, is NrasVerification.ListedInconclusive -> StepState.UNCHECKED
                 null -> if (state == AttestationState.VERIFYING) StepState.LIVE else StepState.PENDING
             }
         }
@@ -455,8 +472,10 @@ data class AttestationSummary(
         get() = when (val n = nrasVerification) {
             is NrasVerification.Verified -> "NVIDIA confirmed genuine attested GPUs for this request"
             is NrasVerification.Failed -> n.reason
+            is NrasVerification.ListedFailed -> ListedEnclaveReason.ENCLAVE_FAILED
             // A2: a node that sent no GPU evidence says exactly that; the banner keeps S37's reason line
             is NrasVerification.Inconclusive -> if (n.reason == NrasVerification.EVIDENCE_ABSENT) NO_NVIDIA_EVIDENCE else n.reason
+            is NrasVerification.ListedInconclusive -> n.reason
             null -> "Checking GPU evidence with NVIDIA…"
         }
 
@@ -615,14 +634,14 @@ data class AttestationSummary(
                 boolRow("Model TEE verified", modelTdxValid,
                     if (modelTdxValid == false) "Model TDX signature verification failed" else "The model runs inside its own attested enclave"),
                 boolRow("Encryption key bound to TEE", e2eeKeyBound,
-                    if (e2eeKeyBound == false) "Ed25519 key not in model TDX report_data" else "The key was generated inside that enclave"),
+                    if (e2eeKeyBound == false) "Ed25519 key not in model TDX report_data" else "The key is in that enclave's hardware quote"),
                 boolRow("Signing key bound to hardware", keyBoundToHardware,
-                    if (keyBoundToHardware == false) "Address not in TDX report_data" else "The response-signing key lives in the enclave"),
+                    if (keyBoundToHardware == false) "Address not in TDX report_data" else "The response-signing key is in that enclave's hardware quote"),
                 stepRow("Response signatures", responseSigState, responseSigDetail),
             )
             val st = pillarState(checks)
             val line = when (st) {
-                PillarState.VERIFIED -> "Messages are end-to-end encrypted to this specific enclave — only it can read them."
+                PillarState.VERIFIED -> "Messages are end-to-end encrypted to this enclave's key. near.ai's key service can give that key to other enclaves; teemoon checks the ones near.ai lists."
                 PillarState.ATTENTION -> privacyAttentionLine
                 PillarState.CHECKING -> "Establishing the encrypted channel to the model enclave…"
             }
@@ -643,7 +662,7 @@ data class AttestationSummary(
     private val privacyAttentionLine: String
         get() {
             if (attestation?.modelEd25519PubKey == null) {
-                return "Encryption to the model is unavailable right now — messages use TLS to the verified enclave."
+                return "Encryption to the model is unavailable right now — messages go to near.ai's gateway over ordinary TLS, not sealed to the model."
             }
             if (lastRequestUsedE2EE == false && lastE2EEFailReason != null) return lastE2EEFailReason
             return "The model’s encryption could not be fully verified."
@@ -674,7 +693,9 @@ data class AttestationSummary(
         get() = when (val n = nrasVerification) {
             is NrasVerification.Verified -> "NVIDIA verdict PASS · evidence nonce matched"
             is NrasVerification.Failed -> "failed — ${n.reason}"
+            is NrasVerification.ListedFailed -> "failed — ${ListedEnclaveReason.ENCLAVE_FAILED}"
             is NrasVerification.Inconclusive -> "couldn't complete — ${n.reason}"
+            is NrasVerification.ListedInconclusive -> "couldn't complete — ${n.reason}"
             null -> null
         }
 

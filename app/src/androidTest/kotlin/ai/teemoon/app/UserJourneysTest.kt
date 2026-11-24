@@ -729,14 +729,14 @@ class UserJourneysTest {
         assertTrue("the failed state lost its retry", tagExists("modelBrowser.retry"))
     }
 
-    /** E1: degraded — the first send asks; "send unencrypted" sends (the turn leaves: it streams, or the host answers with an error). */
+    /** E1: degraded — the first send asks; "send without encryption" sends (the turn leaves: it streams, or the host answers with an error). */
     @Test fun theDegradedGatesSendAnywaySends() {
         keyFile(".NEAR_AI_API_KEY", "uitest-near-key")
         launch(UiTestSeeding.EXTRA_PRESETS to "nearai", UiTestSeeding.EXTRA_ATTESTATION to "degraded")
         tapTag("chat.composer"); field(0).performTextInput("hello anyway"); Thread.sleep(300); tapTag("chat.send")
         // the bypass names what it does (TrustSnapshot.bypassLabel): unencrypted here; "send anyway (still encrypted)" only when provenance alone is short
-        compose.waitUntil(15_000) { exists("send unencrypted") }
-        tap("send unencrypted")
+        compose.waitUntil(15_000) { exists("send without encryption") }
+        tap("send without encryption")
         compose.waitUntil(30_000) { tagExists("chat.stop") || tagExists("chat.error") }
         assertTrue("the prompt is not in the transcript", exists("hello anyway"))
     }

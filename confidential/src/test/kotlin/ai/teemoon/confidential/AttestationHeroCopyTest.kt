@@ -106,7 +106,7 @@ class AttestationHeroCopyTest {
     @Test fun okState_isUnchanged() {
         val s = summary(state = AttestationState.OK)
         assertEquals("end-to-end encrypted", s.headerTitle)
-        assertEquals("only you and the attested TEE hardware can read these messages.", s.headerSubtitle)
+        assertEquals("sealed to the attested enclave key. near.ai's key service decides which enclaves hold it.", s.headerSubtitle)
         assertEquals("checkmark.shield.fill", s.headerIcon)
         assertEquals(AttestationSummary.HeaderSeverity.OK, s.headerSeverity)
     }
@@ -146,5 +146,14 @@ class AttestationHeroCopyTest {
         assertEquals("connection info", none.headerTitle)
         assertEquals("this provider does not support hardware attestation.", none.headerSubtitle)
         assertEquals("globe", none.headerIcon)
+    }
+
+    /** 1.1.1 audit A9 (iOS 37de10d9): the private pillar says what the quote holds and what the messages are sealed to,
+     *  never that the key was made in or lives in an enclave, or that only it can read them. */
+    @Test fun privacyPillar_saysTheKeyIsInTheQuote() {
+        val p = summary(state = AttestationState.OK).pillars.first { it.id == "private" }
+        assertEquals("Messages are end-to-end encrypted to this enclave's key. near.ai's key service can give that key to other enclaves; teemoon checks the ones near.ai lists.", p.summaryLine)
+        assertEquals("The key is in that enclave's hardware quote", p.checks.first { it.label == "Encryption key bound to TEE" }.detail)
+        assertEquals("The response-signing key is in that enclave's hardware quote", p.checks.first { it.label == "Signing key bound to hardware" }.detail)
     }
 }

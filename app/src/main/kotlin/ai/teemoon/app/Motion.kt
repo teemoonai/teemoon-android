@@ -56,8 +56,9 @@ object Motion {
     /** A page popped by a back gesture, seeked by the finger: linear, so the page stays under it (PredictiveBack). */
     fun <T> backSeek(): FiniteAnimationSpec<T> = tween(MEDIUM2_MS, easing = LinearEasing)
     /**
-     * A reserve-sized move of the transcript (the send's prompt travelling to the top): FollowGlide's jump, 0.25 s
-     * smoothstep, eased both ends — iOS's same shape, where a linear 120 ms ran 100 dp a frame.
+     * A reserve-sized move of the transcript (the send's prompt travelling to the top): FollowGlide's jump, 0.4 s
+     * smoothstep (the maintainer's 2026-11-19 choice, iOS 6e45224d; 0.25 s stepped up to 67 dp a frame), eased both ends — iOS's same
+     * shape, where a linear 120 ms ran 100 dp a frame.
      */
     fun <T> jump(): FiniteAnimationSpec<T> = tween((FollowGlide.JUMP_GLIDE_DURATION * 1000).toInt(), easing = Easing { t -> t * t * (3 - 2 * t) })
     /** A row put back after a swipe that didn't reach its action. */

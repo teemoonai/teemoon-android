@@ -32,7 +32,7 @@ class SentMarkSettleTest {
     /** A fully verified near.ai record but for TLS, still checking; a sealed send was marked pending on it. */
     private fun markedWhileChecking(scope: CoroutineScope, tls: CompletableDeferred<TlsAttestation>): Pair<ConfidentialSession, MutableList<String>> {
         val s = ConfidentialSession(scope, { near }, services = ConfidentialSession.Services(skipLiveAttestation = true,
-            directBase = { "https://model.example" }, verifyTls = { tls.await() }, now = { record.fetchedAt }))
+            directBase = { "https://model.example" }, verifyTls = { tls.await() }, now = { record.fetchedAt }), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         s.attestation = record; s.lastRequestUsedE2EE = true
         s.imageProvenance = ManifestProvenance.AllVerified(listOf(ImageRef("nearaidev/cloud-api", "a".repeat(64))), emptyList())
         s.dcapVerification = RecordDcapVerification(gateway = upToDate, model = upToDate)
@@ -88,7 +88,7 @@ class SentMarkSettleTest {
     @Test fun theSealChecksNeverReadTheKey() {
         var asked = 0
         val s = ConfidentialSession(CoroutineScope(kotlinx.coroutines.Dispatchers.Unconfined), { near }, credentialFor = { asked++; "sk" },
-            services = ConfidentialSession.Services(skipLiveAttestation = true, now = { record.fetchedAt }))
+            services = ConfidentialSession.Services(skipLiveAttestation = true, now = { record.fetchedAt }), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         s.attestation = record
         val sealed = s.canSeal; s.softButSealed
         assertEquals("the seal checks read the API key", 0, asked)

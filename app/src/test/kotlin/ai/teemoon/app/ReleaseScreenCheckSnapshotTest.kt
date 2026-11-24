@@ -76,7 +76,7 @@ class ReleaseScreenCheckSnapshotTest {
         val s = ConfidentialSession(scope, { p }, services = ConfidentialSession.Services(skipLiveAttestation = true,
             directBase = { "https://x.completions.near.ai/v1" }, verifyDcap = { awaitCancellation() },
             verifyNras = { _, _ -> awaitCancellation() }, verifyTls = { awaitCancellation() },
-            verifyManifests = { ManifestProvenance.AllVerified(listOf(ImageRef("nearaidev/cloud-api", "a".repeat(64))), emptyList()) }, fetchModelLayerManifest = null))
+            verifyManifests = { ManifestProvenance.AllVerified(listOf(ImageRef("nearaidev/cloud-api", "a".repeat(64))), emptyList()) }, fetchModelLayerManifest = null), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         s.adopt(preview, p)
         return s to p
     }
@@ -91,7 +91,7 @@ class ReleaseScreenCheckSnapshotTest {
         val record = if (now == null) base.copy(fetchedAt = java.time.Instant.now()) else base
         val p = Provider.nearAI.copy(id = record.providerID, model = record.model ?: Provider.nearAI.model)
         val s = ConfidentialSession(scope, { p }, services = if (now != null) ConfidentialSession.Services(skipLiveAttestation = true, now = { now })
-            else ConfidentialSession.Services(skipLiveAttestation = true))
+            else ConfidentialSession.Services(skipLiveAttestation = true), sealedModels = ai.teemoon.confidential.SealedModels(ai.teemoon.confidential.InMemorySealedModelStore()))
         s.attestation = record; s.lastRequestUsedE2EE = true
         s.dcapVerification = RecordDcapVerification(gateway = DcapVerification.Verified(DcapTcbStatus.UP_TO_DATE, "01", ""))
         s.gpuAttestation = NrasVerification.Verified; s.tlsAttestation = TlsAttestation.Verified

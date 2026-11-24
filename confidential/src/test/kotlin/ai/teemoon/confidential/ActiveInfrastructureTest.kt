@@ -1,7 +1,7 @@
 // ports: teemoonTests/ActiveInfrastructureTests.swift @ 71f83846
 //
 // The sheet's "running now, per the action log" list shows active infrastructure only (the maintainer, 2026-11-08): the rows
-// the log vouches for, plus this chat's path. Vectors: fixtures/nearai-trust expected.json sheet_rows (af313e2b…,
+// the log vouches for, plus this chat's path. Vectors: fixtures/nearai-trust expected.json sheet_rows (6e8f1e1e… since iOS ce5cada8, prose only; af313e2b… before,
 // byte-identical to iOS's conformance/nearai-trust). Before this, the 2026-11-08 glm-5-3-flash sheet listed all 20
 // never-closed services, among them GLM 5.2's 2 Oct proxy and engines, the 21 Oct canary set and a 23 Sep TP4 pair, each
 // "can't tell whether this is still running", beside the four live engines. When the path can't be derived the whole list

@@ -1,5 +1,5 @@
 // ports: teemoon/Confidential/DCAPVerifier.swift @ v1.0.6 (DCAPVerification, DCAPTcbStatus — value types only)
-//        teemoon/Confidential/DCAPService.swift @ v1.0.6 (RecordDCAPVerification and its rollups; the
+//        teemoon/Confidential/DCAPService.swift @ ba0842d1 (RecordDCAPVerification and its rollups, with `listed`; the
 //        service that runs dcap-qvl over a record is DcapService.kt)
 package ai.teemoon.confidential
 
@@ -77,8 +77,15 @@ data class RecordDcapVerification(
      * reported there, not a second DCAP line.
      */
     val manager: DcapVerification? = null,
+    /**
+     * Every enclave near.ai listed for the model, in list order: each holds the sealed key, so each quote goes through the
+     * same DCAP path as [model] and the same gates read it (iOS RecordDCAPVerification.listed, ba0842d1; audit 1.1.1 A1).
+     */
+    val listed: List<DcapVerification> = emptyList(),
+    /** Each listed enclave's compose-manager quote, in list order (null = the entry carries none): NearTrustScope (a) reads it as it reads [manager] (1.1.1 audit A4). Not among [present]. */
+    val listedManagers: List<DcapVerification?> = emptyList(),
 ) {
-    private val present: List<DcapVerification> get() = listOfNotNull(gateway, model, gpu)
+    private val present: List<DcapVerification> get() = listOfNotNull(gateway, model, gpu) + listed
 
     /**
      * True when any present quote hard-fails DCAP — verification failure
@@ -113,7 +120,8 @@ data class RecordDcapVerification(
      */
     val failureReason: String?
         get() {
-            for ((label, outcome) in listOf("gateway" to gateway, "model" to model, "gpu" to gpu)) {
+            val listedLabels = listed.mapIndexed { i, o -> "listed enclave ${i + 1}" to o }
+            for ((label, outcome) in listOf("gateway" to gateway, "model" to model, "gpu" to gpu) + listedLabels) {
                 when (outcome) {
                     is DcapVerification.Failed -> return "$label quote — ${outcome.reason}"
                     is DcapVerification.Verified -> when {

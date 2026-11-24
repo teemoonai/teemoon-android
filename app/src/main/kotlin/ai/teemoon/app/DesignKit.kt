@@ -658,7 +658,7 @@ fun UpDownChevrons(tint: Color = TeemoonColors.secondaryLabel, sizeDp: Dp = 12.d
 @Composable
 fun IosAlert(
     title: String, message: String, actions: List<Pair<String, () -> Unit>>, onDismiss: () -> Unit,
-    /** Labels drawn red: iOS's role .destructive, e.g. "send unencrypted" (E2EESendChoice, iOS f600e4e). */
+    /** Labels drawn red: iOS's role .destructive, e.g. "send without encryption" (E2EESendChoice, iOS f600e4e). */
     destructive: Set<String> = emptySet(),
 ) {
     // An alert is three kinds of copy and each is a separate row: a title that
@@ -1362,8 +1362,15 @@ fun E2EETag() {
  * colour at 56pt — a quiet mark, not an illustration. Phase 0 is new, 4 is full; the lit limb is a half disc
  * plus an ellipse whose width follows the phase.
  */
+/**
+ * The day the empty transcript's moon is drawn for: null is today. A screenshot test pins it, because the phase
+ * follows the real calendar and a golden recorded on one day stopped matching a few days later (ShareInSnapshotTest,
+ * recorded 2026-11-14, every one red on near-import on 2026-11-19 once the phase reached waxing gibbous).
+ */
+val LocalMoonDate = androidx.compose.runtime.staticCompositionLocalOf<java.time.LocalDate?> { null }
+
 @Composable
-fun MoonGlyph(phase: Int = MoonPhase.index(), modifier: Modifier = Modifier) {
+fun MoonGlyph(phase: Int = MoonPhase.index(LocalMoonDate.current ?: java.time.LocalDate.now()), modifier: Modifier = Modifier) {
     // ChatView: `moonphase.*` at 32×32 in `.quaternary` (quaternaryLabel ≈ 18% of the label colour) — a mark, not a
     // picture. It was 56dp in tertiaryLabel here, three times the ink of the iOS one, until the captures were measured.
     val lit = TeemoonColors.label.copy(alpha = 0.18f); val dim = TeemoonColors.label.copy(alpha = 0.06f)

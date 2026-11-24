@@ -2,14 +2,17 @@
 
 **private AI chat, your key.**
 
-[teemoon.ai](https://teemoon.ai) · [Google Play](https://play.google.com/store/apps/details?id=ai.teemoon) · [changelog](CHANGELOG.md) · [audit](https://github.com/teemoonai/audits/blob/main/client/teemoon-android/v1.1.0-3918-ee2c8b3.md) · Android 10+, 64-bit
+[teemoon.ai](https://teemoon.ai) · [Google Play](https://play.google.com/store/apps/details?id=ai.teemoon) · [changelog](CHANGELOG.md) · [audit](https://github.com/teemoonai/audits/tree/main/client/teemoon-android) · Android 10+, 64-bit
 
 teemoon is a private AI chat app with no teemoon server: your phone talks directly to the model you pick — on the phone, on a computer you own, or in a cloud with your own key. no account, no analytics; keys are kept encrypted on the phone under a key the Android Keystore holds, and chats stay on the device. this is the Android client. it follows [teemoon-ios](https://github.com/teemoonai/teemoon-ios)'s design and checks; where Android does something its own way, [`docs/ANDROID_NATIVE.md`](docs/ANDROID_NATIVE.md) lists it.
 
-## new in 1.1.0
+## new in 1.1.1
 
-- **images.** paste one into your chat, share one from any app, or take a photo; each is decoded in an isolated process with no permissions and re-encoded, so location and camera details are removed before sending.
-- **near.ai Private Chat import.** near.ai shut down Private Chat on November 15, 2026; bring your exported chats with their images: settings → chats → import from near.ai.
+- **every enclave near.ai lists is checked.** near.ai runs a model on more than one secure enclave under one key; before a sealed send your phone now checks each enclave near.ai lists for it, not only the first, and the worst result wins.
+- **who holds the key, said plainly.** the trust screens say that near.ai's key service decides which secure enclaves get the key, and what teemoon found for the enclaves near.ai listed.
+- **an ask before a plain send.** a near.ai model you've sent to sealed asks once before its first send without encryption.
+
+new in 1.1.0: images (paste, share in or take a photo, decoded in an isolated process) and near.ai Private Chat import.
 
 full list: [`CHANGELOG.md`](CHANGELOG.md).
 
@@ -30,7 +33,7 @@ the GitHub apk contains no Google Play libraries; the Play build is the same sou
 ## features
 
 - **one app, three places to run a model.** on the phone: Gemma 4 via LiteRT-LM, offline, on the NPU, GPU or CPU. on a computer you own: ollama, LM Studio, llama.cpp or any OpenAI-compatible server on your network, and you can pull models onto your ollama server from the app. in the cloud: any OpenAI-compatible endpoint, with presets for near.ai, Grok, Fireworks, OpenRouter, NVIDIA or Brave Answers, and live model lists with prices and per-model capabilities.
-- **verified end-to-end encryption.** near.ai models that run in attested secure enclaves are sealed end to end, and your phone verifies the enclave itself: the Intel TDX quote against Intel's data, the GPU evidence through NVIDIA's service, and, in a separate probe of the model's host, that its certificate is the one its attestation names. a failed check blocks the send; one it can't finish asks first. every other cloud provider is plain TLS, and the app says so on the row. the limit, in the 1.1.0 audit's words: near.ai runs each model on more than one secure enclave, and they share one encryption key; the app checks the first enclave near.ai lists, so the other enclaves can open the message too and the app has not checked them. a fix is planned for 1.1.1 (check every enclave near.ai lists); it will not cover an enclave near.ai does not list.
+- **verified end-to-end encryption.** near.ai models that run in attested secure enclaves are sealed end to end, and your phone verifies the enclave itself: the Intel TDX quote against Intel's data, the GPU evidence through NVIDIA's service, and, in a separate probe of the model's host, that its certificate is the one its attestation names. a failed check blocks the send; one it can't finish asks first. every other cloud provider is plain TLS, and the app says so on the row. the limit: near.ai runs each model on more than one secure enclave, and they share one encryption key, and near.ai's key service decides which enclaves get it. since 1.1.1 the app checks every enclave near.ai lists for the model before a sealed send, and the worst result wins; an enclave the key service admits that near.ai doesn't list can still hold the key, and the app can't check it.
 - **audited.** each release's tagged commit gets a review of every way the app could pass your API keys or your messages to anyone but the provider you chose, published in [teemoonai/audits](https://github.com/teemoonai/audits/tree/main/client/teemoon-android): teemoon's own AI-assisted review, not an audit by an outside firm. near.ai's confidential-inference stack is reviewed in the same repo, per attested identity, and the app shows an audit link for a near.ai enclave only when its exact identity is listed there.
 - **images.** take a photo, pick from your photos or paste — up to 10 per message, to a cloud or home model that reads images, or to Gemma 4 on the phone when the phone has the memory for it (a phone that can never fit it says so and offers the smaller model). every image is decoded in an isolated process with no permissions (JPEG, PNG, GIF and BMP by the memory-safe Wuffs) and re-encoded from its pixels, so no EXIF, XMP or GPS location is kept or sent: [`docs/IMAGE_DECODER.md`](docs/IMAGE_DECODER.md). the model picker can show only the models that read images. share text or photos into teemoon from any app; it opens as a draft, and nothing is sent until you tap send.
 - **bring your near.ai chats.** import near.ai Private Chat's export file: your chats' text, and their images where the export embeds them. imported chats keep their near.ai titles.
@@ -48,9 +51,9 @@ the GitHub apk contains no Google Play libraries; the Play build is the same sou
 ## security and audits
 
 - **reporting.** security issues go through [private vulnerability reporting](https://github.com/teemoonai/teemoon-android/security/advisories/new), not a public issue; see [`SECURITY.md`](SECURITY.md).
-- **the 1.1.0 audit.** [v1.1.0-3918-ee2c8b3](https://github.com/teemoonai/audits/blob/main/client/teemoon-android/v1.1.0-3918-ee2c8b3.md), verdict in its own words: "QUALIFIED-PASS — no way was found for the app to pass a key or a message to anyone but the chosen provider without the user's action; one medium-severity issue was found after release (the app verifies one of several near.ai enclaves that share a key); one low-severity issue is open and accepted for 1.1.0; a real phone and a live-provider run of the signed release app were not part of the review". it is teemoon's own AI-assisted review, not an audit by an outside firm; earlier releases' pages are in [teemoonai/audits](https://github.com/teemoonai/audits/tree/main/client/teemoon-android).
-- **reproducible.** 1.1.0 (3918) is **verified**: a clean rebuild of tag `v1.1.0-3918` on GitHub Actions matches the published apk, 198 entries compared, signature files set aside ([run](https://github.com/teemoonai/teemoon-android/actions/runs/44283096289)).
-- **known issues.** open issues for each release, including the audit's medium and low above, are listed in [`CHANGELOG.md`](CHANGELOG.md).
+- **audits.** each release's audit page is in [teemoonai/audits](https://github.com/teemoonai/audits/tree/main/client/teemoon-android). it is teemoon's own AI-assisted review, not an audit by an outside firm; earlier releases' pages, including [1.1.0's](https://github.com/teemoonai/audits/blob/main/client/teemoon-android/v1.1.0-3918-ee2c8b3.md), are in [teemoonai/audits](https://github.com/teemoonai/audits/tree/main/client/teemoon-android).
+- **reproducible.** each GitHub release's notes carry its rebuild verdict, 1.1.1's on [its release](https://github.com/teemoonai/teemoon-android/releases/tag/v1.1.1-3919). 1.1.0 (3918) is **verified**: a clean rebuild of tag `v1.1.0-3918` on GitHub Actions matches the published apk, 198 entries compared, signature files set aside ([run](https://github.com/teemoonai/teemoon-android/actions/runs/44283096289)).
+- **known issues.** open issues and known limits for each release are listed in [`CHANGELOG.md`](CHANGELOG.md).
 
 ## building and testing
 

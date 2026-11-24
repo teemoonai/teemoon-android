@@ -58,15 +58,19 @@ class DesignSnapshotTest {
         val imported = ThreadEntity("imp", "Montréal trip notes from near.ai", now - 200_000_000)
         val hit = ai.teemoon.chat.search.ChatSearchResult("m3", "t3", "user", now - 86_400_000, "flights to \u0001montreal\u0002 in may?")
         paparazzi.snapshot { TeemoonTheme { ThreadsScreen(threads = threads + imported, onOpen = {}, onNew = {}, onClose = {}, previews = previews,
-            initialQuery = "montreal", onSearch = { listOf(hit) }, nowMs = { now }) } }
+            // the answer seeded, not awaited: onSearch lands in an effect, and a full verify drew the frame before it did
+            initialQuery = "montreal", initialHits = listOf(hit), onSearch = { listOf(hit) }, nowMs = { now }) } }
     }
 
     /** The default theme IS dark: no `dark =` here, so this snapshot fails if the pin (Theme.kt) ever follows the system again. */
+    // The chrome pinned (LocalTranscriptChrome): the transcript's padding is measured, then composed again, and a full
+    // verify drew the frame before that second composition by luck — the whole transcript 44 px high.
     @Test fun chat_transcript_dark() {
-        paparazzi.snapshot { TeemoonTheme { ChatScreen(focusOnEmpty = false, vm = chatVm(), title = "glm-5.2 · near.ai", hasProvider = true, onOpenSettings = {}, webSearchState = WebSearchChipState.OFF,
+        paparazzi.snapshot { TeemoonTheme { androidx.compose.runtime.CompositionLocalProvider(LocalTranscriptChrome provides TranscriptChromePx(title = 44, inset = 108)) {
+            ChatScreen(focusOnEmpty = false, vm = chatVm(), title = "glm-5.2 · near.ai", hasProvider = true, onOpenSettings = {}, webSearchState = WebSearchChipState.OFF,
             // the chip as the app sets it for that place (pm on the card: "choose where" under a glm-5.2 header was the
             // fixture's), and the "+" as the app always has it
-            whereModel = "glm-5.2", wherePlace = "near.ai", whereLocality = ai.teemoon.providers.WhereLocality.CLOUD, onOpenWhere = {}, pickImages = { _, _ -> emptyList() }) } }
+            whereModel = "glm-5.2", wherePlace = "near.ai", whereLocality = ai.teemoon.providers.WhereLocality.CLOUD, onOpenWhere = {}, pickImages = { _, _ -> emptyList() }) } } }
     }
 
     @Test fun whereSheet_dark() {

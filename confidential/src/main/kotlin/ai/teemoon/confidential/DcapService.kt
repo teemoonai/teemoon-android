@@ -1,5 +1,6 @@
-// ports: teemoon/Confidential/DCAPVerifier.swift @ v1.0.6 (DCAPVerifier; the value types are in DcapVerification.kt)
-//        teemoon/Confidential/DCAPService.swift @ v1.0.6 (DCAPService)
+// ports: teemoon/Confidential/DCAPService.swift @ e86b13cd (1.1.1 audit A4 read: dcap-qvl's answer memoised by quote for one record's pass);
+//        teemoon/Confidential/DCAPVerifier.swift @ v1.0.6 (DCAPVerifier; the value types are in DcapVerification.kt)
+//        teemoon/Confidential/DCAPService.swift @ ba0842d1 (DCAPService; 1.1.1 audit A1: every listed enclave's quote goes through verifyQuote)
 //
 // Real Intel TDX quote verification via Phala's dcap-qvl (the exact library
 // near.ai's own verifier uses), through the vendored Android binding. This
@@ -107,18 +108,37 @@ class DcapService(collateral: CollateralProvider, engine: DcapQvlEngine = Androi
 
     private suspend fun verifyHere(record: AttestationRecord, nowSecs: Long? = null): RecordDcapVerification {
         val now = nowSecs ?: record.fetchedAt.epochSecond
+        // dcap-qvl's answer per quote for this record (iOS DCAPService.forOneRecord, e86b13cd): a quote two legs carry, the read enclave being one of the
+        // listed, goes to Intel once. teemoon's own checks, the advertised report_data and the cross-check still run per caller on that answer.
+        val answers = HashMap<String, DcapVerification>()
+        val listed = ArrayList<DcapVerification>()
+        for ((i, enclave) in (record.modelCandidates?.enclaves ?: emptyList()).withIndex()) {
+            // A listed enclave with no quote is evidence, never skipped (ModelCandidates.check says so too). Each holds the sealed
+            // key, so each quote goes through the model leg's own path and the same gates read it (audit 1.1.1 A1).
+            val quote = enclave.quoteHex
+            if (quote.isNullOrEmpty()) { listed.add(DcapVerification.Failed("listed enclave carries no quote")); continue }
+            listed.add(verifyQuote(answers, quote, "listed ${i + 1}", runCatching { TdxQuoteVerifier.verify(quote) }.getOrNull(), now, enclave.advertisedReportData)
+                ?: DcapVerification.Failed("listed enclave carries no quote"))
+        }
+        // Each listed enclave's compose-manager quote, in the same pass (1.1.1 audit A4; iOS e86b13cd: each quote of a record goes to Intel once)
+        val listedManagers = (record.modelCandidates?.enclaves ?: emptyList()).mapIndexed { i, enclave ->
+            val cm = enclave.report?.get("compose_manager_attestation") as? kotlinx.serialization.json.JsonObject
+            val quote = (cm?.get("quote") as? kotlinx.serialization.json.JsonPrimitive)?.takeIf { it.isString }?.content
+            verifyQuote(answers, quote, "listed ${i + 1} compose-manager", null, now)
+        }
         return RecordDcapVerification(
-            gateway = verifyQuote(record.intelQuote, "gateway", record.quoteVerification, now, record.gatewayAdvertisedReportData),
-            model = verifyQuote(record.modelIntelQuote, "model", record.modelQuoteVerification, now, record.modelAdvertisedReportData),
-            gpu = verifyQuote(record.gpuIntelQuote, "gpu", record.gpuQuoteVerification, now, record.gpuAdvertisedReportData),
-            manager = verifyQuote(record.managerQuote, "compose-manager", null, now))
+            listed = listed, listedManagers = listedManagers,
+            gateway = verifyQuote(answers, record.intelQuote, "gateway", record.quoteVerification, now, record.gatewayAdvertisedReportData),
+            model = verifyQuote(answers, record.modelIntelQuote, "model", record.modelQuoteVerification, now, record.modelAdvertisedReportData),
+            gpu = verifyQuote(answers, record.gpuIntelQuote, "gpu", record.gpuQuoteVerification, now, record.gpuAdvertisedReportData),
+            manager = verifyQuote(answers, record.managerQuote, "compose-manager", null, now))
     }
 
-    private suspend fun verifyQuote(quoteHex: String?, label: String, crossCheck: TdxVerificationResult?, nowSecs: Long, advertised: String? = null): DcapVerification? {
+    private suspend fun verifyQuote(answers: MutableMap<String, DcapVerification>, quoteHex: String?, label: String, crossCheck: TdxVerificationResult?, nowSecs: Long, advertised: String? = null): DcapVerification? {
         if (quoteHex.isNullOrEmpty()) return null
         // teemoon's own evidence first (S37 B1/B2): it must not wait on Intel answering, nor lean on dcap-qvl's policy
         QuoteChecks.failure(quoteHex, advertised)?.let { why -> log("[dcap] $label quote failed teemoon's own check: $why"); return DcapVerification.Failed(why) }
-        val outcome = verifier.verify(quoteHex, nowSecs)
+        val outcome = answers.getOrPut(quoteHex) { verifier.verify(quoteHex, nowSecs) }
         val verified = outcome as? DcapVerification.Verified ?: run { log("[dcap] $label quote failed: $outcome"); return outcome }
         if (!QuoteChecks.advertisedMatches(advertised, verified.reportDataHex)) {
             log("[dcap] $label advertised report_data is not the verified quote's")

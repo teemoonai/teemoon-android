@@ -116,4 +116,14 @@ class NearTrustScopeTest {
         assertEquals(BootLogReplay.Absent, s.bootLogReplay)
         assertEquals(NearTrustScope.Severity.SOFT, s.severity)
     }
+
+    /** 1.1.1 audit integ read, item 2 (iOS TrustScope.swift @ 01a337a4 run(): info.tcb_info may be a STRING holding the JSON). */
+    @Test fun aTcbInfoStringHoldingTheJsonReadsLikeTheObject() {
+        val asString = JsonObject(report + ("info" to JsonObject(info + ("tcb_info" to JsonPrimitive(tcb.toString())))))
+        val s = scope(asString); val o = scope()
+        assertEquals(BootLogReplay.Matches, s.bootLogReplay)
+        assertEquals(o.bootLogReplay, s.bootLogReplay)
+        assertEquals(o.composeManager, s.composeManager)
+        assertEquals(NearTrustScope.Severity.NONE, s.severity)
+    }
 }

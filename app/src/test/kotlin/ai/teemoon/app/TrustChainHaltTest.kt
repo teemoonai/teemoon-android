@@ -12,7 +12,7 @@ import org.junit.Test
 class TrustChainHaltTest {
     private val claims = listOf(
         TrustClaim("msg", TrustClaim.Status.ORIGIN, "your message", "readable only here"),
-        TrustClaim("sealed", TrustClaim.Status.OK, "sealed so only m can open it", ""),
+        TrustClaim("sealed", TrustClaim.Status.OK, "sealed to m's enclave key", ""),
         TrustClaim("identity", TrustClaim.Status.OK, "it's the real, published m", ""),
         TrustClaim("signed", TrustClaim.Status.OK, "every reply comes back signed by m", ""),
     )

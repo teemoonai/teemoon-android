@@ -8,7 +8,7 @@
 //        theAnsweringProxyRefutesAnEviction)
 //
 // Trust scope (c), audit's canonical rule A (2026-11-06) over fixtures/nearai-trust and rule 3, over fixtures/nearai-trust
-// (expected.json sha256 af313e2b… since 2026-11-08, was 27a39e6f…3a18; up-revision-services.json 55407e8f…01d7, and the whole-file bodies under
+// (expected.json sha256 6e8f1e1e… since iOS ce5cada8, prose only; af313e2b… since 2026-11-08, was 27a39e6f…3a18; up-revision-services.json 55407e8f…01d7, and the whole-file bodies under
 // compose-files/<commit>/<file>, byte-identical to iOS's conformance/nearai-trust).
 package ai.teemoon.confidential
 

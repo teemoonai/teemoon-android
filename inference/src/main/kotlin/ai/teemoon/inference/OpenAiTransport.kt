@@ -1,4 +1,5 @@
 // ports: teemoon/Inference/HTTPTransport.swift @ v1.0.1 — REBUILD (§5.3) over OkHttp
+//        + 6c364e33: a sealed request arms its near.ai model as it goes to the network (TeeContext.noteSealedRequest)
 //        + the reasoning-effort fields of 3d561c4 (sha not bumped: c238886 and c76f3bd sit between and are not audited here)
 //        + the 600 s header wait / 240 s stream idle of 8780c32 (StreamTimeouts)
 //        + onResponse at the response headers, for the provider wait of 9e090f8
@@ -205,6 +206,10 @@ class OpenAiTransport(
         // cancellation never reached them: a request stopped while the provider held it kept going, and its reply
         // arrived after the stop (and was billed). The watcher is a sibling suspended on another IO thread; its
         // finally runs the moment the turn is cancelled, and OkHttp's cancel fails the blocked read with an IOException.
+        // A sealed request arms its near.ai model HERE, as it is handed to the network and before any reply can exist: a send that
+        // errors or is stopped before a reply counts too (1.1.1 audit B1 read, iOS 6c364e33). Never for a plain one: no context,
+        // or a record with no usable key, has no codec. It adds no byte to the request; it writes one model id to the preferences.
+        if (isE2EEActive) teeContext?.noteSealedRequest()
         val call = client.newCall(request)
         val finished = java.util.concurrent.atomic.AtomicBoolean(false)
         val watcher = launch { try { awaitCancellation() } finally { if (!finished.get()) call.cancel() } }
